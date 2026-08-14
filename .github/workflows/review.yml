@@ -1,0 +1,132 @@
+# The review, as one referenced step.
+#
+# A repository that wants the panel adds three lines calling this workflow.
+# It does NOT get a copy of the lens set, the prompts or the runner — that
+# duplication is the defect this story exists to remove, and a vendored copy
+# looks harmless for about a month before the copies start disagreeing about
+# what the bar is.
+#
+# The definition and the runner arrive together, from one checkout at one ref.
+# That is deliberate: a runner from one revision reading a lens set from
+# another is the same drift wearing different clothes, and pinning them
+# jointly makes it impossible rather than merely unlikely.
+name: review
+
+on:
+  workflow_call:
+    inputs:
+      governance-ref:
+        description: >-
+          Which revision of the reviewer to run. Defaults to main, so a fix to
+          the lens set or the runner reaches every repository at once — which
+          is the point of there being one home.
+        type: string
+        required: false
+        default: main
+      model:
+        description: >-
+          Override the pinned judge. Leave this alone unless you know why you
+          are changing it: the same commit judged by two models is two
+          verdicts, and a judge that varies between repositories is a bar that
+          moved without anyone deciding to move it.
+        type: string
+        required: false
+        default: ''
+    secrets:
+      anthropic-api-key:
+        description: The key the panel calls with. One model call per lens.
+        required: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 is load-bearing, and it is the single most likely line
+      # here to be "tidied up" by someone speeding up CI. The default is a
+      # shallow clone with no merge base, so the diff below comes out empty —
+      # and a review of nothing finds nothing wrong. The runner refuses an
+      # empty diff precisely because of this, so the failure is loud rather
+      # than a green tick over nothing; but the fix is this line.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The base ref goes through the environment rather than into the command
+      # line. Every `${{ }}` interpolated directly into a `run:` is a script
+      # injection: the expansion happens before the shell sees it, so a value
+      # containing $(...) or backticks executes. A branch name is a less
+      # likely carrier than a title, but the rule is not worth having two
+      # versions of.
+      - name: Work out what changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # Only a pull request has a base to diff against. On a push or a
+          # merge group this is empty, and `origin/` is a malformed ref — git
+          # would fail with a message about refs, which sends the reader to
+          # look at their repository when the answer is that this workflow
+          # only means anything on a pull request. Say that instead.
+          if [ -z "${BASE_REF}" ]; then
+            echo "No base ref. This workflow reviews a pull request against its base," >&2
+            echo "and the event that triggered it has no base — so there is nothing to" >&2
+            echo "compare. Call it from an \`on: pull_request\` workflow." >&2
+            exit 1
+          fi
+          git diff --merge-base "origin/${BASE_REF}" HEAD > "${RUNNER_TEMP}/review.diff"
+
+      - name: Fetch the reviewer and the definition together
+        uses: actions/checkout@v4
+        with:
+          repository: verevoir/aigency-governance
+          ref: ${{ inputs.governance-ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: .aigency-review
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the reviewer
+        working-directory: .aigency-review
+        run: |
+          npm ci
+          npm run build
+
+      # The title is attacker-controlled on any repository that takes outside
+      # pull requests, so it reaches the process as an argument through the
+      # environment and never as shell text.
+      #
+      # continue-on-error, then the verdict is taken again below. The report
+      # must be published whether the review passed or failed — a red result
+      # nobody can read is barely better than no result — and publishing must
+      # not be able to change the verdict. Those are two separate steps for
+      # exactly that reason.
+      - name: Review
+        id: review
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+          AIGENCY_REVIEW_LENSES: .aigency-review/review/lenses.json
+          AIGENCY_REVIEW_MODEL: ${{ inputs.model }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -o pipefail
+          node .aigency-review/dist/cli/review.js "${PR_TITLE}" \
+            < "${RUNNER_TEMP}/review.diff" \
+            | tee "${RUNNER_TEMP}/review.md"
+
+      - name: Publish the report
+        if: always()
+        run: cat "${RUNNER_TEMP}/review.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      # The verdict, taken from the step that produced it rather than
+      # recomputed. `success` here means the binary exited 0, which it does
+      # only for an approval — a rejection and a could-not-run are both 1, and
+      # both are red.
+      - name: Take the verdict
+        if: always()
+        run: |
+          if [ "${{ steps.review.outcome }}" != "success" ]; then
+            echo "The review did not approve. The report is in the job summary."
+            exit 1
+          fi
