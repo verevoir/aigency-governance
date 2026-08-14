@@ -52,8 +52,16 @@ describe('runPanel', () => {
 
   // The reason this uses allSettled rather than all. With `all`, the first
   // rejection abandons the lenses that had already finished — four completed
-  // reviews discarded, and the report unable to say which four. This is the
-  // test that goes red if someone simplifies it.
+  // reviews discarded, and the report unable to say which four.
+  //
+  // Proven by mutation, and the proof is weaker than it looks: swapping in
+  // `Promise.all` makes this test go red by THROWING out of `runPanel` at the
+  // await, not by failing an assertion. The `toHaveLength(2)` line below — the
+  // one that actually encodes "the finished reviews survived" — is never
+  // reached under the mutation. So this goes red reliably and reports "something
+  // threw" rather than "completed work was discarded". That cannot be written
+  // around: under correct code there is nothing to catch. It is a limit worth
+  // stating rather than a gap worth closing.
   it('keeps the reviews that finished when one reviewer throws', async () => {
     const run = await runPanel(SET, SUBJECT, (lensId) =>
       lensId === 'honesty' ? Promise.reject(new Error('socket hang up')) : Promise.resolve(REJECT),
@@ -65,13 +73,20 @@ describe('runPanel', () => {
     expect(run.verdict.findings).toHaveLength(2);
   });
 
+  // Rejects with a bare string on purpose. The rule that would object to that,
+  // `@typescript-eslint/prefer-promise-reject-errors`, exists to stop us
+  // WRITING non-Error rejections; a reviewer transport we do not control can
+  // produce one anyway, and the branch that stringifies it is unreachable from
+  // a test that only rejects with Errors. The previous version of this test
+  // rejected with `new Error` and its name was a claim its body did not make.
+  // No disable directive here: that rule is type-checked and this config loads
+  // only `tseslint.configs.recommended`, so it is not enabled — and a disable
+  // for a rule that is not on is itself a comment claiming something untrue.
   it('does not lose a rejection that was not an Error', async () => {
     const run = await runPanel(SET, SUBJECT, (lensId) =>
-      lensId === 'correctness'
-        ? Promise.reject(new Error('rate limited'))
-        : Promise.resolve(APPROVE),
+      lensId === 'correctness' ? Promise.reject('rate limited') : Promise.resolve(APPROVE),
     );
-    expect(run.verdict.unran[0]?.reason).toContain('rate limited');
+    expect(run.verdict.unran[0]?.reason).toBe('reviewer threw: rate limited');
   });
 
   // A transport failure and an unreadable reply are the same fact from here:

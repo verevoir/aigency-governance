@@ -23,6 +23,12 @@ export {
   REPLY_CONTRACT,
   VERDICT_MARKER,
 } from './review/replyContract.js';
-export { buildPrompt, type Prompt, type Subject } from './review/prompt.js';
+export {
+  buildPrompt,
+  NO_PRACTICES_NOTICE,
+  renderPrompt,
+  type Prompt,
+  type Subject,
+} from './review/prompt.js';
 export { parseReply } from './review/parseReply.js';
 export { runPanel, type PanelRun, type Reviewer } from './review/panel.js';

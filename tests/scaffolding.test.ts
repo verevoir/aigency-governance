@@ -62,6 +62,7 @@ const PUBLISHED = [
   'CANNOT_RUN_WORD',
   'FINDING_MARKER',
   'LensSetError',
+  'NO_PRACTICES_NOTICE',
   'PanelMismatchError',
   'REASON_MARKER',
   'REJECTED_WORD',
@@ -73,6 +74,7 @@ const PUBLISHED = [
   'loadLensSet',
   'parseLensSet',
   'parseReply',
+  'renderPrompt',
   'runPanel',
 ];
 

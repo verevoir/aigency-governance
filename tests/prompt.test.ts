@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Lens } from '../src/review/lensSet.js';
-import { buildPrompt, type Subject } from '../src/review/prompt.js';
+import {
+  buildPrompt,
+  NO_PRACTICES_NOTICE,
+  renderPrompt,
+  type Subject,
+} from '../src/review/prompt.js';
 import { REPLY_CONTRACT } from '../src/review/replyContract.js';
 
 const CORRECTNESS: Lens = {
@@ -57,6 +62,12 @@ describe('buildPrompt — the shared half', () => {
   // The other side of the same property, and the one that actually breaks:
   // a lens detail leaking into the shared half makes every prefix different
   // while every test asserting identity still passes for a single lens.
+  // Weaker than it reads, and worth saying so: it asserts the shared half does
+  // not contain the string 'Correctness', which holds because the preamble
+  // happens not to use that word. A lens titled `Panel`, `Change` or `Review`
+  // would fail this against correct code. The property is really "the shared
+  // half is a function of the subject alone", and the byte-identity test above
+  // is what pins that. This is a second angle, not a second property.
   it('leaks nothing lens-specific into the cacheable half', () => {
     const { shared } = buildPrompt(CORRECTNESS, SUBJECT);
     expect(shared).not.toContain(CORRECTNESS.focus);
@@ -75,17 +86,13 @@ describe('buildPrompt — the bar', () => {
   // from a bar with nothing in it, and the reviewer would proceed either way.
   it('says the bar is absent rather than rendering an empty one', () => {
     for (const practices of [undefined, '', '   ', '\n\n']) {
-      expect(buildPrompt(CORRECTNESS, SUBJECT, practices).shared).toContain(
-        'No practices were supplied',
-      );
+      expect(buildPrompt(CORRECTNESS, SUBJECT, practices).shared).toContain(NO_PRACTICES_NOTICE);
     }
   });
 
   it('does not announce an absent bar when one was supplied', () => {
     const bar = 'Missing, empty and broken are three answers.';
-    expect(buildPrompt(CORRECTNESS, SUBJECT, bar).shared).not.toContain(
-      'No practices were supplied',
-    );
+    expect(buildPrompt(CORRECTNESS, SUBJECT, bar).shared).not.toContain(NO_PRACTICES_NOTICE);
   });
 });
 
@@ -108,5 +115,21 @@ describe('buildPrompt — the per-lens half', () => {
     const { perLens } = buildPrompt(CORRECTNESS, SUBJECT);
     expect(perLens).not.toContain(SUBJECT.diff);
     expect(perLens).not.toContain(REPLY_CONTRACT);
+  });
+});
+
+describe('renderPrompt', () => {
+  it('puts the shared half first, which is the whole point of the split', () => {
+    const prompt = buildPrompt(CORRECTNESS, SUBJECT);
+    const rendered = renderPrompt(prompt);
+    expect(rendered.indexOf(prompt.shared)).toBe(0);
+    expect(rendered.indexOf(prompt.perLens)).toBeGreaterThan(prompt.shared.length);
+  });
+
+  it('loses nothing from either half', () => {
+    const prompt = buildPrompt(HONESTY, SUBJECT);
+    const rendered = renderPrompt(prompt);
+    expect(rendered).toContain(prompt.shared);
+    expect(rendered).toContain(prompt.perLens);
   });
 });

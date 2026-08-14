@@ -21,12 +21,37 @@ export interface Subject {
   readonly diff: string;
 }
 
+/**
+ * The two halves of what a reviewer is shown.
+ *
+ * **`shared` must precede `perLens` in whatever is finally sent.** This is a
+ * contract the type cannot enforce and the tests cannot catch: a transport
+ * that concatenated them the other way round would pass every assertion in
+ * this repository and quietly make every prefix different, which is the exact
+ * property the split exists to create. `renderPrompt` below is the right
+ * answer for any caller that wants one string; a caller that needs them apart
+ * — to send `shared` as a cacheable block and `perLens` as the message after
+ * it — is the case this shape exists for, and is on its honour.
+ */
 export interface Prompt {
-  /** Identical for every lens reviewing this subject. */
+  /** Identical for every lens reviewing this subject. Goes first. */
   readonly shared: string;
-  /** The only part that varies by lens. */
+  /** The only part that varies by lens. Goes last. */
   readonly perLens: string;
 }
+
+/** The two halves in the one order that preserves the shared prefix. */
+export function renderPrompt(prompt: Prompt): string {
+  return `${prompt.shared}\n\n${prompt.perLens}`;
+}
+
+/**
+ * What a reviewer is told when no practices were supplied. Exported because
+ * the tests assert on it, and a sentence typed in two places drifts the same
+ * way the reply markers would have.
+ */
+export const NO_PRACTICES_NOTICE =
+  'No practices were supplied for this run. Judge against the lens below and say so in your reasoning if the absence matters.';
 
 /**
  * Build the prompt for one lens.
@@ -37,10 +62,7 @@ export interface Prompt {
  * reviewer judging against nothing knows it is judging against nothing.
  */
 export function buildPrompt(lens: Lens, subject: Subject, practices?: string): Prompt {
-  const bar =
-    practices === undefined || practices.trim() === ''
-      ? 'No practices were supplied for this run. Judge against the lens below and say so in your reasoning if the absence matters.'
-      : practices;
+  const bar = practices === undefined || practices.trim() === '' ? NO_PRACTICES_NOTICE : practices;
 
   const shared = [
     'You are one lens of a review panel. Several reviewers are reading this same change, each along a different dimension, and their verdicts are combined. Review only your own dimension: another lens is covering the rest, and a finding outside your dimension is noise in someone else’s report.',
