@@ -1,5 +1,16 @@
-// The package's own name, exported so the scaffolding has something real to
-// typecheck, lint and test. It goes when this project's first real export
-// lands — an obvious placeholder is safer than one dressed up as a feature,
-// because the second kind survives review.
-export const packageName = '@verevoir/aigency-governance';
+export {
+  LensSetError,
+  parseLensSet,
+  SUPPORTED_VERSION,
+  type Lens,
+  type LensSet,
+} from './review/lensSet.js';
+export { loadLensSet, type LoadResult, type ReadResult, type SourceReader } from './review/load.js';
+export {
+  aggregate,
+  PanelMismatchError,
+  type Finding,
+  type LensResult,
+  type Outcome,
+  type Verdict,
+} from './review/verdict.js';

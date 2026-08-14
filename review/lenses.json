@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "lenses": [
+    {
+      "id": "correctness",
+      "title": "Correctness",
+      "focus": "Does the change do what the diff, its comments and its description say it does? Read the claim and the code as two independent assertions and look for the gap between them. Prefer a concrete failing input over a description of a risk."
+    },
+    {
+      "id": "honesty",
+      "title": "Honesty of the record",
+      "focus": "Anything that reports a state it did not observe: a comment claiming a property the code does not have, a log line or return value describing work that did not happen, a success reported over an empty result, documentation asserting a behaviour the implementation lacks."
+    },
+    {
+      "id": "failure-modes",
+      "title": "Failure distinguishable from silence",
+      "focus": "Where the change can fail, can a reader tell which failure happened? Missing, empty and broken must stay three answers. A swallowed error, a catch that returns a default, or a single word covering two outcomes belongs here."
+    },
+    {
+      "id": "verification",
+      "title": "Verification that verifies",
+      "focus": "Would each new or changed test fail if the code it covers were wrong? Look for assertions that hold vacuously, suites that pass because they found nothing to run, and guards whose only test exercises the pure function underneath rather than the guard."
+    },
+    {
+      "id": "blast-radius",
+      "title": "Scope, collateral and credentials",
+      "focus": "What does this change touch that it did not need to touch? Reformatting, drive-by renames, widened permissions, a credential reaching a wider process than before, or a bound that moved without being named."
+    }
+  ]
+}

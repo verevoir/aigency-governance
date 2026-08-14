@@ -8,6 +8,13 @@
       "timeoutMs": 600000
     },
     {
+      "name": "format",
+      "kind": "bootstrap",
+      "command": ["npm", "run", "format"],
+      "description": "Apply the repository's own formatting. Declared as bootstrap and ordered after install, because it runs prettier from node_modules and a tree that has not installed cannot format. It writes to the tree — that is the point, and it is why it is not a gate.",
+      "timeoutMs": 300000
+    },
+    {
       "name": "verify",
       "kind": "gate",
       "command": ["npm", "run", "verify"],
