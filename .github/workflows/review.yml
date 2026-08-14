@@ -70,9 +70,18 @@ jobs:
       # an empty diff to be caught downstream, it dies with "ambiguous
       # argument: unknown revision". Red immediately, which is the better
       # outcome, and the runner's empty-diff guard never sees it.
+      #
+      # persist-credentials: false here as well. The reason is weaker than on
+      # the governance checkout — this token is the caller's own, short-lived
+      # and scoped to the repository being reviewed — but `npm ci` runs in a
+      # subdirectory of this workspace, so a postinstall script can read
+      # <workspace>/.git/config either way. Nothing pushes from here, so the
+      # credential has no work to do after the clone, and leaving it costs
+      # nothing to remove.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # Every value that reaches a shell goes through the environment rather
       # than through `${{ }}`, because that expansion happens before the shell
@@ -161,6 +170,15 @@ jobs:
       # defended against someone adding a working-directory, which would still
       # have broken the second. Half a fix under a comment describing a whole
       # one is worse than neither.
+      # Through GITHUB_WORKSPACE rather than ${{ github.workspace }}, which is
+      # the same value by the sanctioned route. The first attempt at this fix
+      # used the expression form and put a ${{ }} back into a run: — not
+      # exploitable, since the runner supplies that value, but the argument
+      # against it was never that it was exploitable. It was that a file
+      # teaching a rule and breaking it on the same screen teaches the wrong
+      # thing. The env: line above keeps the expression form, correctly:
+      # env: is not a shell context, and that is the pattern this file argues
+      # for rather than against.
       #
       # continue-on-error, with the verdict taken again below: the report must
       # be published whether the review passed or failed, and publishing must
@@ -175,7 +193,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -o pipefail
-          node "${{ github.workspace }}/.aigency-review/dist/cli/review.js" "${PR_TITLE:-this change}" \
+          node "${GITHUB_WORKSPACE}/.aigency-review/dist/cli/review.js" "${PR_TITLE:-this change}" \
             < "${RUNNER_TEMP}/review.diff" \
             | tee "${RUNNER_TEMP}/review.md"
 
@@ -214,8 +232,17 @@ jobs:
       # "the review did not approve" about a review that did not happen. That
       # is the most visible surface in the whole workflow saying the one thing
       # this system exists to prevent.
+      #
+      # The `success() || failure()` guard is not redundant beside
+      # `== 'failure'`, and deleting it as noise is the obvious mistake. Bare
+      # `== 'failure'` carries an implicit success(), so a failing Publish
+      # step would skip this one — the job still goes red, but the annotation
+      # and the sentence explaining it vanish, and a consumer sees a red run
+      # whose only red step is a `cat`. That is publishing changing what the
+      # verdict says, which is the one thing the two steps are split apart to
+      # prevent.
       - name: Take the verdict
-        if: steps.review.outcome == 'failure'
+        if: (success() || failure()) && steps.review.outcome == 'failure'
         run: |
           echo "::error title=Review::The review did not approve. The report is in the job summary."
           exit 1
