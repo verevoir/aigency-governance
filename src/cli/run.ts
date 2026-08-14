@@ -93,6 +93,36 @@ export async function runReview(
   }
 
   const { settings } = resolved;
+
+  // Nothing to review is not the same as nothing wrong with it. A workflow
+  // that computed its diff against the wrong base, or cloned shallowly, hands
+  // this an empty string — and five lenses would each read it, find nothing,
+  // and approve. That is the most likely way this stops working without
+  // anybody noticing, so it is checked here rather than trusted upstream.
+  //
+  // After the settings, because a configuration problem must be fixed
+  // whatever the diff turns out to be. Before the factory, because an empty
+  // diff should cost nothing.
+  if (subject.diff.trim() === '') {
+    return {
+      report: [
+        '## Review: Could not run',
+        '',
+        `**${subject.title}**`,
+        '',
+        'The diff was empty, so there was nothing to review.',
+        '',
+        'This is almost always a wiring problem rather than an empty change:',
+        'a diff computed against the wrong base, a shallow clone with no merge',
+        'base to compare against, or a fetch depth of 1. Check how the diff was',
+        'produced before concluding the change is empty.',
+        '',
+        'Nothing was reviewed. This is a red result and not a passing one.',
+      ].join('\n'),
+      exitCode: 1,
+    };
+  }
+
   const wired = deps(settings);
 
   const loaded = await loadLensSet(settings.lensSource, wired.read);

@@ -178,6 +178,67 @@ describe('runReview, given a configuration it cannot use', () => {
   });
 });
 
+// The guard that stops this system failing silently. Every other red result
+// here is something going wrong loudly; this is the one where everything
+// works perfectly and reviews nothing.
+describe('runReview, given a diff with nothing in it', () => {
+  const nothing: readonly { readonly what: string; readonly diff: string }[] = [
+    { what: 'empty', diff: '' },
+    // Not the same test twice. A guard written as `diff === ''` passes the
+    // case above and fails this one, and a workflow that produced a stray
+    // newline instead of a diff is the same defect wearing a different hat.
+    { what: 'whitespace only', diff: '\n  \t\n' },
+  ];
+
+  for (const { what, diff } of nothing) {
+    it(`is red and constructs nothing when the diff is ${what}`, async () => {
+      const fakes = harness();
+
+      const outcome = await runReview(env(), { ...SUBJECT, diff }, fakes.deps);
+
+      // The environment here is complete and the lens set loads: without the
+      // guard this run reaches the panel, every lens approves an empty diff
+      // and the outcome is a green 0. So the code below is what the guard
+      // changed, and nothing else.
+      expect(outcome.exitCode).toBe(1);
+      expect(outcome.report).toContain('The diff was empty');
+      // The wiring causes, named. A report that said only "empty diff" sends
+      // someone to look at a change they can see is not empty.
+      expect(outcome.report).toContain('wrong base');
+      expect(outcome.report).toContain('shallow clone');
+      expect(outcome.report).toContain('fetch depth of 1');
+      expect(outcome.report).toContain('Nothing was reviewed');
+      expect(fakes.calls.factory).toBe(0);
+      expect(fakes.calls.read).toEqual([]);
+      expect(fakes.calls.reviewed).toEqual([]);
+    });
+  }
+
+  // Pins the ORDER, which the comment in run.ts asserts and nothing else
+  // holds: a guard placed before resolveSettings would pass both tests above
+  // and this one would go red. A configuration problem must be reported even
+  // when the diff is empty, because it has to be fixed either way — and
+  // "your diff is empty" sends someone to look at their workflow when what
+  // they actually need is a secret.
+  it('reports a missing key rather than an empty diff when both are wrong', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(
+      env({ ANTHROPIC_API_KEY: undefined }),
+      { ...SUBJECT, diff: '' },
+      fakes.deps,
+    );
+
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.report).toContain('ANTHROPIC_API_KEY');
+    // The half that makes this a test of order rather than a second test of
+    // the settings check: both faults are present, and only one of them may
+    // be reported.
+    expect(outcome.report).not.toContain('The diff was empty');
+    expect(fakes.calls.factory).toBe(0);
+  });
+});
+
 describe('runReview, given a lens set it cannot load', () => {
   // Every one of these is a run that reviewed NOTHING. The exit code is the
   // whole point: a definition that failed to load must not exit 0 on the

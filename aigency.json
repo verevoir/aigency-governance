@@ -15,12 +15,27 @@
       "timeoutMs": 300000
     },
     {
+      "name": "build",
+      "kind": "bootstrap",
+      "command": ["npm", "run", "build"],
+      "description": "Emit dist/ from src/ using tsconfig.build.json. Bootstrap rather than gate for the same reason format is: it writes to the tree, and a gate whose verdict describes a tree it changed is not a verdict. Ordered after install because tsc comes from node_modules.",
+      "timeoutMs": 300000
+    },
+    {
       "name": "verify",
       "kind": "gate",
       "command": ["npm", "run", "verify"],
       "description": "The bar: typecheck, test, lint. One script, so the gate the belt runs and the gate CI runs cannot drift apart (S1).",
       "blocking": true,
       "timeoutMs": 900000
+    },
+    {
+      "name": "cli",
+      "kind": "gate",
+      "command": ["node", "scripts/check-cli.mjs"],
+      "description": "Start the emitted binary and check it refuses an empty diff. The only check in this repository that runs the artifact rather than the source, and the only one that can catch the emitted files landing somewhere bin does not point. Costs nothing: an empty diff returns before any client is constructed.",
+      "blocking": true,
+      "timeoutMs": 120000
     }
   ]
 }
