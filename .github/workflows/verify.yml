@@ -1,0 +1,24 @@
+# The gate, run by CI.
+#
+# It runs `npm run verify` and nothing else. The repository declares what
+# verification means (constraints.md C4); a workflow that listed the checks
+# itself would be a second declaration, free to drift from package.json, and
+# the drift would show up as CI passing something the repo would have failed.
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
