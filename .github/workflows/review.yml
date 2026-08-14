@@ -109,6 +109,15 @@ jobs:
           # considered.
           git diff --merge-base "origin/${BASE_REF}" HEAD > "${RUNNER_TEMP}/review.diff"
 
+      # persist-credentials: false, and it matters more here than it usually
+      # does. Left at its default, checkout writes this token into
+      # .aigency-review/.git/config as a header credential — and the next step
+      # runs `npm ci` in that same directory, so any postinstall script in the
+      # dependency tree can read it. That was survivable when this was the
+      # ambient GITHUB_TOKEN: scoped to the calling repository, expiring with
+      # the job. It is not survivable for a long-lived cross-repository token,
+      # which is what fixing the previous defect turned it into. Nothing here
+      # pushes, so the credential has no work to do after the clone.
       - name: Fetch the reviewer and the definition together
         uses: actions/checkout@v4
         with:
@@ -116,11 +125,16 @@ jobs:
           ref: ${{ inputs.governance-ref }}
           token: ${{ secrets.governance-token }}
           path: .aigency-review
+          persist-credentials: false
 
-      # No `cache: npm`, and that is a decision rather than an oversight. The
-      # cache keys off a lockfile at the workspace root, which is the CALLING
-      # repository's and not the reviewer's — so it would cache the wrong
-      # lockfile. It looks like an obvious speed-up and is not one.
+      # No `cache: npm`, and it is a choice rather than an impossibility — an
+      # earlier comment here said the latter, which was wrong. `setup-node`
+      # takes `cache-dependency-path`, and this step runs after the governance
+      # checkout, so pointing it at .aigency-review/package-lock.json would
+      # cache the right lockfile. It is left off because the key would then be
+      # a lockfile from a ref that floats with main, cached per consumer
+      # repository — a cache that is sometimes stale in a way nobody can see
+      # from either repository. Left as a deliberate cost, not an oversight.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -138,12 +152,15 @@ jobs:
       # environment and never as shell text. The `:-` default is needed
       # because the runner's own fallback is nullish — an empty title is a
       # string, so it passes straight through and heads the report with
-      # nothing.
+      # nothing. Note that this is now the second fallback for an empty title,
+      # the first being the runner's own. They can drift, and only one of them
+      # is covered by a test.
       #
-      # The lens path is absolute. Relative worked only because this step
-      # happens not to set working-directory while the one above does, and two
-      # adjacent steps with different working directories is exactly what an
-      # edit breaks.
+      # Both paths are absolute — the lens set and the entrypoint. An earlier
+      # version absolutised only the first while claiming the step was
+      # defended against someone adding a working-directory, which would still
+      # have broken the second. Half a fix under a comment describing a whole
+      # one is worse than neither.
       #
       # continue-on-error, with the verdict taken again below: the report must
       # be published whether the review passed or failed, and publishing must
@@ -158,7 +175,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -o pipefail
-          node .aigency-review/dist/cli/review.js "${PR_TITLE:-this change}" \
+          node "${{ github.workspace }}/.aigency-review/dist/cli/review.js" "${PR_TITLE:-this change}" \
             < "${RUNNER_TEMP}/review.diff" \
             | tee "${RUNNER_TEMP}/review.md"
 
@@ -189,8 +206,16 @@ jobs:
       # line. A real comment would need pull-requests: write declared by the
       # CALLER, and would fail on fork pull requests, which are precisely the
       # ones where outside code is being judged.
+      #
+      # `== 'failure'` rather than `!= 'success'`, and the difference is a
+      # false statement. A skipped step has an outcome of '', which is not
+      # 'success' — so the loose form fires when the checkout or the build
+      # failed and the review never ran, and annotates the Checks tab with
+      # "the review did not approve" about a review that did not happen. That
+      # is the most visible surface in the whole workflow saying the one thing
+      # this system exists to prevent.
       - name: Take the verdict
-        if: (success() || failure()) && steps.review.outcome != 'success'
+        if: steps.review.outcome == 'failure'
         run: |
           echo "::error title=Review::The review did not approve. The report is in the job summary."
           exit 1
