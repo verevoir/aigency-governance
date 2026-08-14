@@ -17,7 +17,11 @@ function couldNotRun(lens: string, reason: string): LensResult {
 }
 
 describe('exitCodeFor', () => {
-  it('is zero only for an approval', () => {
+  // Named for what it checks. The universal — that ONLY an approval is zero —
+  // is carried by the two tests below, and this one passed a mutation that
+  // broke it. A test name asserting more than its body is the same defect as
+  // a comment doing so.
+  it('is zero for an approval', () => {
     expect(exitCodeFor('approved')).toBe(0);
   });
 

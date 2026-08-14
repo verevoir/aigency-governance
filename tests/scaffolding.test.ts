@@ -20,8 +20,10 @@
 import { describe, expect, it } from 'vitest';
 
 import type {
+  AnthropicConfig,
   FetchLike,
   Finding,
+  HttpPost,
   Lens,
   LensResult,
   LensSet,
@@ -57,6 +59,8 @@ export type PublishedTypes = [
   PanelRun,
   ReportContext,
   FetchLike,
+  AnthropicConfig,
+  HttpPost,
 ];
 
 // Type-only exports vanish at runtime, so this list is the VALUES the barrel
@@ -74,6 +78,7 @@ const PUBLISHED = [
   'SUPPORTED_VERSION',
   'VERDICT_MARKER',
   'aggregate',
+  'anthropicReviewer',
   'buildPrompt',
   'exitCodeFor',
   'fileReader',
@@ -82,6 +87,7 @@ const PUBLISHED = [
   'parseLensSet',
   'parseReply',
   'readerFor',
+  'redact',
   'renderPrompt',
   'renderReport',
   'runPanel',
