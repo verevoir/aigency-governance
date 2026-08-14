@@ -1,0 +1,19 @@
+{
+  "commands": [
+    {
+      "name": "install",
+      "kind": "bootstrap",
+      "command": ["npm", "ci"],
+      "description": "Install dependencies exactly as the lockfile pins them.",
+      "timeoutMs": 600000
+    },
+    {
+      "name": "verify",
+      "kind": "gate",
+      "command": ["npm", "run", "verify"],
+      "description": "The bar: typecheck, test, lint. One script, so the gate the belt runs and the gate CI runs cannot drift apart (S1).",
+      "blocking": true,
+      "timeoutMs": 900000
+    }
+  ]
+}
