@@ -40,3 +40,13 @@ export {
   type AnthropicConfig,
   type HttpPost,
 } from './review/anthropic.js';
+export {
+  DEFAULT_LENS_SOURCE,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MODEL,
+  renderMissing,
+  resolveSettings,
+  type MissingSetting,
+  type ReviewSettings,
+  type SettingsResult,
+} from './review/settings.js';

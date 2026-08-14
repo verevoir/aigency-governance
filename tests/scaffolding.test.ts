@@ -28,12 +28,15 @@ import type {
   LensResult,
   LensSet,
   LoadResult,
+  MissingSetting,
   Outcome,
   PanelRun,
   Prompt,
   ReadResult,
   ReportContext,
   Reviewer,
+  ReviewSettings,
+  SettingsResult,
   SourceReader,
   Subject,
   Verdict,
@@ -61,6 +64,9 @@ export type PublishedTypes = [
   FetchLike,
   AnthropicConfig,
   HttpPost,
+  MissingSetting,
+  ReviewSettings,
+  SettingsResult,
 ];
 
 // Type-only exports vanish at runtime, so this list is the VALUES the barrel
@@ -68,6 +74,9 @@ export type PublishedTypes = [
 const PUBLISHED = [
   'APPROVED_WORD',
   'CANNOT_RUN_WORD',
+  'DEFAULT_LENS_SOURCE',
+  'DEFAULT_MAX_TOKENS',
+  'DEFAULT_MODEL',
   'FINDING_MARKER',
   'LensSetError',
   'NO_PRACTICES_NOTICE',
@@ -88,8 +97,10 @@ const PUBLISHED = [
   'parseReply',
   'readerFor',
   'redact',
+  'renderMissing',
   'renderPrompt',
   'renderReport',
+  'resolveSettings',
   'runPanel',
 ];
 
