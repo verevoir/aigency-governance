@@ -32,3 +32,5 @@ export {
 } from './review/prompt.js';
 export { parseReply } from './review/parseReply.js';
 export { runPanel, type PanelRun, type Reviewer } from './review/panel.js';
+export { exitCodeFor, renderReport, type ReportContext } from './review/report.js';
+export { fileReader, httpReader, readerFor, type FetchLike } from './review/readers.js';

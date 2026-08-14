@@ -20,6 +20,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type {
+  FetchLike,
   Finding,
   Lens,
   LensResult,
@@ -29,6 +30,7 @@ import type {
   PanelRun,
   Prompt,
   ReadResult,
+  ReportContext,
   Reviewer,
   SourceReader,
   Subject,
@@ -53,6 +55,8 @@ export type PublishedTypes = [
   Prompt,
   Reviewer,
   PanelRun,
+  ReportContext,
+  FetchLike,
 ];
 
 // Type-only exports vanish at runtime, so this list is the VALUES the barrel
@@ -71,10 +75,15 @@ const PUBLISHED = [
   'VERDICT_MARKER',
   'aggregate',
   'buildPrompt',
+  'exitCodeFor',
+  'fileReader',
+  'httpReader',
   'loadLensSet',
   'parseLensSet',
   'parseReply',
+  'readerFor',
   'renderPrompt',
+  'renderReport',
   'runPanel',
 ];
 

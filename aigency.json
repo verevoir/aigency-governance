@@ -3,8 +3,8 @@
     {
       "name": "install",
       "kind": "bootstrap",
-      "command": ["npm", "ci"],
-      "description": "Install dependencies exactly as the lockfile pins them.",
+      "command": ["npm", "install"],
+      "description": "Install dependencies and reconcile the lockfile with package.json. NOT `npm ci`, and the difference is load-bearing: bootstrap prepares a tree that is being changed, so a turn that adds a dependency must be able to record it. `npm ci` refuses a lockfile that does not match, which made taking any dependency at all impossible through the belt. CI keeps `npm ci` — see .github/workflows/verify.yml — so the lockfile is still authoritative wherever the verdict counts (ADR 011). The lockfile diff is the sensor here; it does not block, and a change that grows it must be accounted for in the reason given.",
       "timeoutMs": 600000
     },
     {
