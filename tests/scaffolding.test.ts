@@ -26,8 +26,12 @@ import type {
   LensSet,
   LoadResult,
   Outcome,
+  PanelRun,
+  Prompt,
   ReadResult,
+  Reviewer,
   SourceReader,
+  Subject,
   Verdict,
 } from '../src/index.js';
 import * as surface from '../src/index.js';
@@ -45,17 +49,31 @@ export type PublishedTypes = [
   LensResult,
   Outcome,
   Verdict,
+  Subject,
+  Prompt,
+  Reviewer,
+  PanelRun,
 ];
 
 // Type-only exports vanish at runtime, so this list is the VALUES the barrel
 // publishes and deliberately not the types beside them.
 const PUBLISHED = [
+  'APPROVED_WORD',
+  'CANNOT_RUN_WORD',
+  'FINDING_MARKER',
   'LensSetError',
   'PanelMismatchError',
+  'REASON_MARKER',
+  'REJECTED_WORD',
+  'REPLY_CONTRACT',
   'SUPPORTED_VERSION',
+  'VERDICT_MARKER',
   'aggregate',
+  'buildPrompt',
   'loadLensSet',
   'parseLensSet',
+  'parseReply',
+  'runPanel',
 ];
 
 describe('the published surface', () => {
