@@ -34,7 +34,9 @@ import type {
   Prompt,
   ReadResult,
   ReportContext,
+  ReviewDeps,
   Reviewer,
+  ReviewOutcome,
   ReviewSettings,
   SettingsResult,
   SourceReader,
@@ -67,6 +69,8 @@ export type PublishedTypes = [
   MissingSetting,
   ReviewSettings,
   SettingsResult,
+  ReviewDeps,
+  ReviewOutcome,
 ];
 
 // Type-only exports vanish at runtime, so this list is the VALUES the barrel
@@ -102,6 +106,7 @@ const PUBLISHED = [
   'renderReport',
   'resolveSettings',
   'runPanel',
+  'runReview',
 ];
 
 describe('the published surface', () => {

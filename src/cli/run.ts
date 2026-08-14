@@ -1,0 +1,115 @@
+// The whole review, composed — every step from an environment to an exit code.
+//
+// Deliberately not the binary. Reading argv, touching stdin and calling
+// process.exit belong at the process boundary; everything that DECIDES
+// anything lives here, where a test can drive it with fakes and no network.
+// The binary that wraps this should be short enough to read in one go, and
+// should contain no branch that is not visible from here.
+//
+// The order below is not arbitrary. Each step is a gate on the next, and each
+// failure costs money if it is checked late: a missing key discovered after
+// five model calls has already been paid for. So configuration is settled
+// first, then the definition is fetched, and only then does anything reach a
+// provider.
+
+import { loadLensSet } from '../review/load.js';
+import { runPanel } from '../review/panel.js';
+import type { Reviewer } from '../review/panel.js';
+import type { Subject } from '../review/prompt.js';
+import { exitCodeFor, renderReport } from '../review/report.js';
+import type { SourceReader } from '../review/load.js';
+import { renderMissing, resolveSettings, type ReviewSettings } from '../review/settings.js';
+
+export interface ReviewDeps {
+  /** How the lens set is fetched. */
+  readonly read: SourceReader;
+  /** How one lens is reviewed. */
+  readonly review: Reviewer;
+  /** The bar, if the composition could fetch one. */
+  readonly practices?: string;
+}
+
+export interface ReviewOutcome {
+  readonly report: string;
+  /** 0 only for an approval. Everything else, including "could not run", is red. */
+  readonly exitCode: number;
+}
+
+function couldNotRun(subject: string, source: string, reason: string): ReviewOutcome {
+  return {
+    report: [
+      '## Review: Could not run',
+      '',
+      `**${subject}**`,
+      '',
+      reason,
+      '',
+      'Nothing was reviewed. This is a red result and not a passing one — a green',
+      'badge over a review that never ran is worse than a red one over a review',
+      'that failed, because nobody investigates green.',
+      '',
+      '---',
+      '',
+      `Lens set: \`${source}\`.`,
+    ].join('\n'),
+    exitCode: 1,
+  };
+}
+
+/**
+ * Run a review.
+ *
+ * `deps` is a factory rather than a value because the reviewer needs the
+ * settings — specifically the key — and the settings are not known until this
+ * function has resolved them. Taking a ready-made reviewer would mean the
+ * caller resolving settings too, in a second place, which is where the two
+ * would drift.
+ *
+ * It is also what makes the most important assertion in the suite possible:
+ * the factory is not called at all when the configuration is incomplete, so a
+ * run that cannot be configured cannot spend money.
+ */
+export async function runReview(
+  env: Record<string, string | undefined>,
+  subject: Subject,
+  deps: (settings: ReviewSettings) => ReviewDeps,
+): Promise<ReviewOutcome> {
+  const resolved = resolveSettings(env);
+
+  if (resolved.kind === 'incomplete') {
+    return { report: renderMissing(resolved.missing), exitCode: 1 };
+  }
+  if (resolved.kind === 'invalid') {
+    return {
+      report: [
+        'The review could not run: the configuration is present and wrong.',
+        '',
+        ...resolved.problems.map((problem) => `  ${problem}`),
+        '',
+        'This is a red result, not a passing one. Nothing was reviewed.',
+      ].join('\n'),
+      exitCode: 1,
+    };
+  }
+
+  const { settings } = resolved;
+  const wired = deps(settings);
+
+  const loaded = await loadLensSet(settings.lensSource, wired.read);
+  if (loaded.kind === 'unavailable') {
+    // The three reasons stay apart all the way to the report. A reader who is
+    // told only "could not load" cannot tell whether to fix a URL, wait for an
+    // outage, or revert a bad commit to the definition.
+    return couldNotRun(
+      subject.title,
+      loaded.source,
+      `The lens set could not be read (${loaded.why}): ${loaded.reason}`,
+    );
+  }
+
+  const run = await runPanel(loaded.set, subject, wired.review, wired.practices);
+  return {
+    report: renderReport(run.verdict, { source: loaded.source, subject: subject.title }),
+    exitCode: exitCodeFor(run.verdict.outcome),
+  };
+}
