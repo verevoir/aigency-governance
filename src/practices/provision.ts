@@ -36,6 +36,44 @@
 // makes the second assertion true before any test runs: `provision` takes a
 // bound `read` function and nothing else, so there is no reference through
 // which a write could happen even if one wanted to.
+//
+// THE BOUND. `provision` returns practices that go straight into a prompt,
+// and the story's own row says the floor has already broken a context cap
+// once — bounded like every model-facing payload. So the bound is a
+// REQUIRED parameter, not optional and not defaulted. A default here is
+// precisely how a cap gets forgotten a second time: a caller that must name
+// a number has to think about what it can afford to send, and a caller that
+// inherits one never does. This function was shipped once without a bound at
+// all, built from a paraphrase of the row rather than the row itself — the
+// habit of quoting stories verbatim was in place and was only ever applied
+// to stories not yet started. This is the fix.
+//
+// The bound measures what actually reaches the model — `title` and `body`
+// concatenated, via `practiceSize` below — not the count of matches. Cutting
+// the fifth of five practices because of a COUNT is arbitrary; cutting it
+// because the PAYLOAD is full is a measurement, and only the second is
+// testable as a property of the output rather than a guess about its shape.
+//
+// Matches are included in order until the next one would push the running
+// total over the bound, then that one and everything after it is dropped —
+// a prefix, not a best-fit pack, so which practices survive is predictable
+// from the order the corpus declares them in rather than from a bin-packing
+// choice nobody asked for.
+//
+// A single practice that is, by itself, larger than the whole bound is NOT
+// truncated to fit. It is dropped, and counted in the marker exactly like any
+// other omission. Truncating a governance rule quotes half of it as though it
+// were the whole rule, and a reader of a half-quoted rule has no way to tell
+// that it is half — that is a wrong answer wearing the shape of a right one,
+// which is worse than an honest, visible omission. Dropping it is the
+// deliberate choice; the alternative was considered and rejected here rather
+// than left to fall out of the loop.
+//
+// Whenever anything is dropped, the `practices` outcome carries `elided`,
+// naming how many practices were omitted and the corpus source — the same
+// principle S7 states for every lens: an elision that does not announce
+// itself turns a partial answer into a wrong one, and the reader cannot tell
+// which they have.
 
 import type { ReadResult, SourceReader } from '../review/load.js';
 
@@ -139,8 +177,19 @@ export function parseCorpus(text: string): Corpus {
   return { version: SUPPORTED_CORPUS_VERSION, practices };
 }
 
+/** Names an elision: how many practices were omitted, and from where. */
+export interface Elided {
+  readonly omittedCount: number;
+  readonly source: string;
+}
+
 export type ProvisionResult =
-  | { readonly kind: 'practices'; readonly practices: readonly Practice[] }
+  | {
+      readonly kind: 'practices';
+      readonly practices: readonly Practice[];
+      /** Present only when the bound cut something. Absence means nothing was dropped. */
+      readonly elided?: Elided;
+    }
   | {
       readonly kind: 'nothing-matched';
       readonly query: string;
@@ -163,7 +212,58 @@ function matches(practice: Practice, needle: string): boolean {
 }
 
 /**
- * Provision practices from a corpus.
+ * What actually reaches the model: title and body concatenated. The id is
+ * structural — a lookup key, not prose a reviewer reads — and does not count
+ * against the bound.
+ */
+export function practiceSize(practice: Practice): number {
+  return practice.title.length + practice.body.length;
+}
+
+/**
+ * Cut `matched` to fit `maxChars`, measured by `practiceSize`, not by count.
+ *
+ * A prefix, not a best-fit pack: practices are included in the order they
+ * matched until the next one would push the running total over the bound,
+ * then that one and everything after it stops being considered. A practice
+ * larger than the whole bound on its own is dropped rather than truncated —
+ * see the file header for why — and counted in `elided` exactly like any
+ * other omission.
+ */
+function boundToFit(
+  matched: readonly Practice[],
+  maxChars: number,
+  source: string,
+): ProvisionResult {
+  const included: Practice[] = [];
+  let used = 0;
+
+  for (const practice of matched) {
+    const size = practiceSize(practice);
+    if (used + size > maxChars) {
+      break;
+    }
+    included.push(practice);
+    used += size;
+  }
+
+  const omittedCount = matched.length - included.length;
+  if (omittedCount === 0) {
+    return { kind: 'practices', practices: included };
+  }
+  return {
+    kind: 'practices',
+    practices: included,
+    elided: { omittedCount, source },
+  };
+}
+
+/**
+ * Provision practices from a corpus, bounded to `maxChars`.
+ *
+ * `maxChars` is required. See the file header for why it is not optional and
+ * not defaulted — the floor this replaces broke a context cap once by
+ * inheriting a bound nobody had to think about.
  *
  * Never throws for a bad definition or a bad source: an unavailable corpus
  * is a result the caller must turn into `unavailable`, the same discipline
@@ -174,6 +274,7 @@ export async function provision(
   query: string,
   source: string,
   read: SourceReader,
+  maxChars: number,
 ): Promise<ProvisionResult> {
   let found: ReadResult;
   try {
@@ -215,5 +316,5 @@ export async function provision(
     };
   }
 
-  return { kind: 'practices', practices: matched };
+  return boundToFit(matched, maxChars, source);
 }
