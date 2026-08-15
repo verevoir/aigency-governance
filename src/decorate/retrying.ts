@@ -44,8 +44,13 @@ export function retrying<A extends unknown[], R>(
   // attempts is a port that never runs, and finding that out on the day
   // something breaks is finding it out at the worst moment.
   if (!Number.isSafeInteger(policy.attempts) || policy.attempts < 1) {
+    // String() rather than JSON.stringify, because JSON.stringify(NaN) and
+    // JSON.stringify(Infinity) are both "null" — so a message promising to
+    // name the value would have named the wrong one for precisely the inputs
+    // a bad computation produces. A message that is confidently wrong about
+    // what it was given is worse than one that says nothing.
     throw new RetryPolicyError(
-      `attempts must be a positive whole number, got ${JSON.stringify(policy.attempts)}`,
+      `attempts must be a positive whole number, got ${String(policy.attempts)}`,
     );
   }
 

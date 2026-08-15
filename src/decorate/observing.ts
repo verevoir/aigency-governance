@@ -14,7 +14,12 @@ export interface Observation {
   readonly name: string;
   readonly ms: number;
   readonly outcome: 'ok' | 'threw';
-  /** Present only when it threw, so the two cases are never confused. */
+  /**
+   * Present only when it threw, and never empty. A throw carrying no message
+   * is recorded as its kind, so "threw with nothing to say" and "did not
+   * throw" stay two facts rather than one field being empty in a way a reader
+   * has to know to check.
+   */
   readonly cause?: string;
 }
 
@@ -38,11 +43,24 @@ export function observing<A extends unknown[], R>(
         name,
         ms: now() - started,
         outcome: 'threw',
-        cause: cause instanceof Error ? cause.message : String(cause),
+        cause: describe(cause),
       });
       throw cause;
     }
   };
+}
+
+/**
+ * What to record about a thrown value. Never returns the empty string: an
+ * empty `cause` on a `threw` observation is the missing/empty/broken
+ * distinction surviving on one field instead of two.
+ */
+function describe(cause: unknown): string {
+  if (cause instanceof Error) {
+    return cause.message === '' ? `${cause.name} with no message` : cause.message;
+  }
+  const rendered = String(cause);
+  return rendered === '' ? `${typeof cause} with no message` : rendered;
 }
 
 /**
