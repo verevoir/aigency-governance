@@ -36,6 +36,13 @@
       "description": "Start the emitted binary and check it refuses an empty diff. The only check in this repository that runs the artifact rather than the source, and the only one that can catch the emitted files landing somewhere bin does not point. Costs nothing: an empty diff returns before any client is constructed.",
       "blocking": true,
       "timeoutMs": 120000
+    },
+    {
+      "name": "review",
+      "kind": "release",
+      "command": ["node", "scripts/review-head.mjs"],
+      "description": "Run the review panel against the HEAD commit. A release step rather than a gate because it costs money — one model call per lens — and a gate that bills on every verification is a gate someone turns off. Requires ANTHROPIC_API_KEY in the environment; without it the run reports which setting is missing and where to put it, and exits red without calling anything.",
+      "timeoutMs": 900000
     }
   ]
 }
