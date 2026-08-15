@@ -26,6 +26,13 @@ arrive fresh on every run, from `main` here — which is the point of there bein
 one home: a fix to the bar reaches every repository on its next run, rather than
 whenever someone remembers to re-vendor it.
 
+Two optional inputs exist and most repositories should leave both alone:
+`governance-ref` pins which revision of the reviewer runs, defaulting to `main`
+so a fix reaches you without you doing anything, and `model` overrides the
+pinned judge. Changing the second means your repository is judged by a different
+model from every other one, which is a bar that has moved without anyone
+deciding to move it.
+
 ### The two secrets, and where to put them
 
 **Settings → Secrets and variables → Actions → New repository secret.**
@@ -61,16 +68,27 @@ that would need `pull-requests: write` granted by your workflow, and this job
 reads a contributor-authored diff and a contributor-authored title. Write access
 is the last thing that path should have.
 
+An approval emits no annotation — only the job summary. The Checks tab entry
+appears when the review does **not** approve, which is deliberate: the workflow
+gates it on the review having actually failed, so a run that died before
+reviewing does not get annotated as though it had rejected something.
+
 An incomplete review reports the lenses that did **not** run before it reports
 any findings, because addressing the findings and not noticing the gap is the
 failure that matters.
 
 ### On a fork's pull request
 
-Secrets are not passed to workflows triggered by a fork, so the key arrives
-blank and the run reports it as missing. That is the correct behaviour and not a
-bug: the alternative is spending your key on a diff written by someone outside
-your repository.
+Secrets are not passed to workflows triggered from a fork, so **both** arrive
+blank — and it is the governance token, not the key, that stops the run first.
+The checkout of this repository fails with `Repository not found` before the
+runner is ever built, so nothing reaches the code that would report a missing
+key.
+
+The outcome is right: the run is red, and your key is not spent reviewing a diff
+written by someone outside your repository. The message is not the one you would
+expect from the rest of this document — if you go looking in the log for
+`ANTHROPIC_API_KEY is not configured`, it will not be there.
 
 ## Running it locally
 
@@ -85,19 +103,22 @@ git diff --merge-base origin/main HEAD | node dist/cli/review.js "what you are r
 copy over HTTP, which needs a token, and you get a missing-token report instead
 of a review.
 
-Run `npm run build` after changing anything under `src/`. The `cli` gate does not
-catch a stale `dist/` — it exercises the empty-diff guard, which returns before
-any of the code you changed runs.
+Run `npm run build` after changing anything under `src/`. The `cli` gate covers
+less than its name suggests: it starts the emitted binary, so the CLI boundary
+and settings resolution genuinely are exercised — but it stops at the empty-diff
+guard. Everything downstream of that guard is invisible to it: `readers`,
+`load`, `panel`, `prompt`, `anthropic`, `parseReply` and `report`. A stale build
+of any of those passes.
 
 ## Settings
 
-| Variable                      | Default                            | Notes                                                                                                        |
-| ----------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `ANTHROPIC_API_KEY`           | —                                  | Required.                                                                                                    |
-| `AIGENCY_REVIEW_LENSES`       | the published `review/lenses.json` | A URL or a path.                                                                                             |
-| `AIGENCY_REVIEW_LENSES_TOKEN` | `GITHUB_TOKEN`                     | Only needed when the source is fetched over HTTP.                                                            |
-| `AIGENCY_REVIEW_MODEL`        | pinned in `src/review/settings.ts` | Leave it alone unless you know why. The same commit judged by two models is two verdicts.                    |
-| `AIGENCY_REVIEW_MAX_TOKENS`   | 4096                               | A value that is present and not a positive whole number is refused, never silently replaced by this default. |
+| Variable                      | Default                            | Notes                                                                                                                                                                          |
+| ----------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ANTHROPIC_API_KEY`           | —                                  | Required.                                                                                                                                                                      |
+| `AIGENCY_REVIEW_LENSES`       | the published `review/lenses.json` | A URL or a path.                                                                                                                                                               |
+| `AIGENCY_REVIEW_LENSES_TOKEN` | `GITHUB_TOKEN`                     | Only needed when the lens set comes from `raw.githubusercontent.com`, which is the published default. Any other `https://` source is fetched anonymously and no token is sent. |
+| `AIGENCY_REVIEW_MODEL`        | pinned in `src/review/settings.ts` | Leave it alone unless you know why. The same commit judged by two models is two verdicts.                                                                                      |
+| `AIGENCY_REVIEW_MAX_TOKENS`   | 4096                               | A value that is present and not a positive whole number is refused, never silently replaced by this default.                                                                   |
 
 ## If the diff is empty
 
