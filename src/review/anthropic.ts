@@ -87,7 +87,8 @@ function textFrom(body: string): string {
   } catch {
     throw new Error('response was not JSON');
   }
-  const content = (parsed as { content?: unknown }).content;
+  const document = parsed as { content?: unknown; stop_reason?: unknown };
+  const content = document.content;
   if (!Array.isArray(content)) {
     throw new Error('response carried no content array');
   }
@@ -96,7 +97,17 @@ function textFrom(body: string): string {
     .map((block) => block.text ?? '')
     .join('');
   if (text === '') {
-    throw new Error(`response carried no text (${String(content.length)} block(s))`);
+    // Name the block kinds and the stop reason. The first version said only
+    // "no text (N block(s))", which is true and undiagnosable: four lenses
+    // failed with it and the cause could not be established from the message.
+    // A reply that is one thinking block truncated at the token ceiling and a
+    // reply that is one tool_use block are different problems, and the two
+    // fields that separate them were both already in the response.
+    const kinds = (content as TextBlock[]).map((block) => block.type).join(', ');
+    const stop = typeof document.stop_reason === 'string' ? document.stop_reason : 'absent';
+    throw new Error(
+      `response carried no text: ${String(content.length)} block(s) [${kinds}], stop_reason ${stop}`,
+    );
   }
   return text;
 }
@@ -139,9 +150,39 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
       throw new Error(redact(`request failed: ${(cause as Error).message}`, secrets));
     }
 
-    const raw = await response.text().catch(() => '');
+    // Three outcomes, not two, and the panel reviewing this file on its first
+    // real run is what found that. The previous version was
+    // `await response.text().catch(() => '')` — a body that failed to arrive
+    // became the empty string, which reached `textFrom` and was reported as
+    // "response was not JSON": the same words a genuinely malformed body
+    // produces. That collapses "the transport broke mid-response" and "the
+    // provider sent us garbage" into one message, and they are fixed by
+    // different people. It was also the exact catch-that-returns-a-default
+    // this module warns against two functions down, in the file that warns
+    // about it.
+    let raw = '';
+    let bodyError: string | undefined;
+    try {
+      raw = await response.text();
+    } catch (cause) {
+      bodyError = (cause as Error).message;
+    }
+
     if (!response.ok) {
-      throw new Error(redact(`HTTP ${String(response.status)}: ${raw.slice(0, 500)}`, secrets));
+      // Status first. It is the more useful fact, and a body that also failed
+      // to read is a detail on top of it rather than a replacement for it.
+      throw new Error(
+        redact(
+          bodyError === undefined
+            ? `HTTP ${String(response.status)}: ${raw.slice(0, 500)}`
+            : `HTTP ${String(response.status)}, and the body could not be read: ${bodyError}`,
+          secrets,
+        ),
+      );
+    }
+
+    if (bodyError !== undefined) {
+      throw new Error(redact(`response body could not be read: ${bodyError}`, secrets));
     }
 
     try {

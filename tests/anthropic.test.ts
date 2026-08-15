@@ -283,7 +283,7 @@ describe('failures', () => {
   it('throws naming the block count when content is empty', async () => {
     const post = serving(200, '{"content":[]}');
     const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe('response carried no text (0 block(s))');
+    expect(error.message).toBe('response carried no text: 0 block(s) [], stop_reason absent');
   });
 
   // The case the count is in the message for: blocks arrived, none was text.
@@ -292,7 +292,23 @@ describe('failures', () => {
   it('throws rather than returning empty when the only block is a tool_use', async () => {
     const post = serving(200, '{"content":[{"type":"tool_use","id":"tu_1"}]}');
     const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe('response carried no text (1 block(s))');
+    expect(error.message).toBe(
+      'response carried no text: 1 block(s) [tool_use], stop_reason absent',
+    );
+  });
+
+  // The failure that actually happened on the first real run: four lenses
+  // returned one thinking block and nothing else, having hit the token
+  // ceiling before they wrote a word of the verdict. The old message said
+  // "no text (1 block(s))" for this AND for the tool_use case above, so the
+  // run could not be diagnosed from its own output. Both distinguishing
+  // fields are asserted, because either one alone leaves the two cases
+  // telling the same story.
+  it('names the block kind and the stop reason for a truncated thinking block', async () => {
+    const post = serving(200, '{"content":[{"type":"thinking"}],"stop_reason":"max_tokens"}');
+    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
+    expect(error.message).toContain('thinking');
+    expect(error.message).toContain('max_tokens');
   });
 
   it('joins two text blocks into one reply', async () => {
@@ -326,7 +342,7 @@ describe('failures', () => {
   it('throws rather than coercing a text block whose text is not a string', async () => {
     const post = serving(200, '{"content":[{"type":"text","text":42}]}');
     const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe('response carried no text (1 block(s))');
+    expect(error.message).toBe('response carried no text: 1 block(s) [text], stop_reason absent');
   });
 
   // The 500-character cap on an echoed error body. Without it a provider that
@@ -339,13 +355,15 @@ describe('failures', () => {
     expect(error.message.length).toBeLessThan(600);
   });
 
-  // Pinning what the code actually does, not what would be ideal. The headers
-  // arrived and the body did not; `.catch(() => '')` turns that into an empty
-  // string, which then reads as `response was not JSON`. That message is true
-  // of the empty string and misleading about what happened — the same
-  // conflation `textFrom` refuses for an empty reply. Recorded here so the
-  // behaviour is visible rather than discovered in an incident.
-  it('reports a body that failed to read as a non-JSON response', async () => {
+  // The regression test for the defect the review panel found in this very
+  // file. This test previously pinned the WRONG behaviour, with a comment
+  // explaining that it was doing so: `.catch(() => '')` turned a body that
+  // never arrived into the empty string, which read as `response was not
+  // JSON`. It now pins the right one, and the second assertion is the
+  // load-bearing half — without it a transport that went back to swallowing
+  // the error could satisfy a looser check, and the whole point is that the
+  // broken transport and the malformed body no longer say the same thing.
+  it('reports a 2xx body that failed to read as unreadable, not as non-JSON', async () => {
     const post = fakePost(() =>
       Promise.resolve({
         ok: true,
@@ -354,7 +372,26 @@ describe('failures', () => {
       }),
     );
     const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe('response was not JSON');
+    expect(error.message).toBe('response body could not be read: aborted mid-body');
+    expect(error.message).not.toContain('response was not JSON');
+  });
+
+  // The same failure on the other side of the ok check, which is a separate
+  // branch and would otherwise be the one piece of this fix with no test.
+  // The status is the more useful fact and must survive: an unreadable body
+  // on a 429 is still a 429, and reporting only the read failure would lose
+  // the reason to back off.
+  it('keeps the status when a non-ok response also fails to read', async () => {
+    const post = fakePost(() =>
+      Promise.resolve({
+        ok: false,
+        status: 429,
+        text: () => Promise.reject(new Error('aborted mid-body')),
+      }),
+    );
+    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
+    expect(error.message).toContain('429');
+    expect(error.message).toContain('aborted mid-body');
   });
 });
 
