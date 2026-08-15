@@ -63,7 +63,11 @@ if (diff.out.trim() === '') {
 console.log(`Reviewing HEAD: ${subject.out.trim()}`);
 console.log(`Diff is ${String(diff.out.split('\n').length)} lines.\n`);
 
-const review = await capture(process.execPath, ['dist/cli/review.js', subject.out.trim()], diff.out);
+const review = await capture(
+  process.execPath,
+  ['dist/cli/review.js', subject.out.trim()],
+  diff.out,
+);
 
 console.log(review.out);
 if (review.err.trim() !== '') {
