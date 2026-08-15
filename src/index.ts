@@ -51,3 +51,5 @@ export {
   type SettingsResult,
 } from './review/settings.js';
 export { runReview, type ReviewDeps, type ReviewOutcome } from './cli/run.js';
+export { retrying, RetryPolicyError, type RetryPolicy, type Sleep } from './decorate/retrying.js';
+export { observing, type Clock, type Observation, type Recorder } from './decorate/observing.js';
