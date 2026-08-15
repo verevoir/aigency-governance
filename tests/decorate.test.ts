@@ -52,6 +52,9 @@ describe('retrying — it may not change an outcome', () => {
   });
 
   it('does not retry a failure the policy says cannot be helped', async () => {
+    // The count is the guard here, not the throw. Under a mutation that
+    // ignores the policy the cause is still thrown — just three attempts
+    // later — so `.rejects.toThrow` stays green and only `calls` goes red.
     let calls = 0;
     const always = (): Promise<string> => {
       calls += 1;
@@ -237,6 +240,26 @@ describe('observing — it may not change an outcome either', () => {
       expect(seen[0]?.cause).not.toBe('');
       expect(seen[0]?.cause).toBeDefined();
     }
+  });
+
+  // Closes the gap M6 exposed. `tickingClock` advances per reading, so `ms`
+  // is the same whether the second read happens before or after the
+  // operation — it pins where the number comes from, not what it spans. This
+  // clock only moves when the OPERATION moves it, so a record written before
+  // the await reads 0 and a record written after reads 250. Without this,
+  // nothing in the suite proves a successful operation's record is written
+  // after the operation finishes; M6 was caught only through the failure
+  // path.
+  it('records a duration that spans the operation, not one taken before it', async () => {
+    let now = 0;
+    const clock = (): number => now;
+    const seen: Observation[] = [];
+    const advancesTheClock = (): Promise<string> => {
+      now += 250;
+      return Promise.resolve('ok');
+    };
+    await observing('port', advancesTheClock, recorderInto(seen), clock)();
+    expect(seen[0]?.ms).toBe(250);
   });
 
   it('records no cause at all when nothing was thrown', async () => {
