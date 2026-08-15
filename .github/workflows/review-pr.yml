@@ -1,0 +1,36 @@
+# What a consumer repository's copy of this file looks like — and this is one.
+#
+# Governance reviews its own pull requests through exactly the workflow every
+# other repository will call. That is deliberate: an example that diverges
+# from the thing it is an example of is the first place drift appears and the
+# last place anyone looks.
+name: review-pr
+
+on:
+  pull_request:
+
+jobs:
+  review:
+    # `./` rather than `verevoir/aigency-governance/...@main`, and the
+    # difference has a real cost that is being accepted rather than missed.
+    #
+    # With a local path, GitHub runs the reusable workflow from the pull
+    # request's OWN commit. So a change to the reviewer is tested by the pull
+    # request that makes it, which is the only way a reviewer can ever be
+    # improved safely — and it also means a pull request can modify the thing
+    # that reviews it. For this repository that trade is right: the alternative
+    # is a reviewer nobody can change without merging blind.
+    #
+    # The other five repositories will pin `@main` and will NOT have that
+    # property, which is the correct asymmetry: they consume the reviewer, this
+    # one develops it.
+    uses: ./.github/workflows/review.yml
+    secrets:
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+      # The one case where the ambient token is enough: the repository being
+      # checked out IS the repository running the job. Every other caller needs
+      # a token that can see across, which is why the reusable workflow makes
+      # this a required secret rather than an optional one — a default that
+      # silently worked here and silently failed everywhere else is the defect
+      # that was already found and fixed once.
+      governance-token: ${{ secrets.GITHUB_TOKEN }}
