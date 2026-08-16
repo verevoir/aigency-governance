@@ -42,6 +42,7 @@ import type { Reviewer } from '../review/panel.js';
 import type { Subject } from '../review/prompt.js';
 import { exitCodeFor, renderReport } from '../review/report.js';
 import type { SourceReader } from '../review/load.js';
+import type { Verdict } from '../review/verdict.js';
 import {
   renderMissing,
   resolveSettings,
@@ -77,6 +78,18 @@ export interface ReviewOutcome {
   readonly report: string;
   /** 0 only for an approval. Everything else, including "could not run", is red. */
   readonly exitCode: number;
+  /**
+   * The verdict the report was rendered from — the same structured object
+   * `runPanel` produced, not a re-derivation of the markdown. Absent,
+   * deliberately, on every path that returns before the panel ever runs: a
+   * missing setting, a present-and-wrong one, an empty diff, an unreachable
+   * lens set. An empty Verdict (zero findings, zero unran lenses) would be
+   * indistinguishable from a panel that ran every lens and approved, and
+   * those are opposite outcomes — so this is `undefined` rather than a
+   * fabricated stand-in, the same way `Finding.evidence` is absent rather
+   * than invented when nothing was actually checked.
+   */
+  readonly verdict?: Verdict;
 }
 
 /**
@@ -293,5 +306,8 @@ export async function runReview(
   return {
     report: renderReport(run.verdict, { source: loaded.source, subject: subject.title }),
     exitCode: exitCodeFor(run.verdict.outcome),
+    // The same Verdict the report was rendered from — not recomputed, not
+    // re-derived from the markdown above.
+    verdict: run.verdict,
   };
 }

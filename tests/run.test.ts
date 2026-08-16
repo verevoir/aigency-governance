@@ -178,6 +178,7 @@ describe('runReview, given a configuration it cannot use', () => {
       factory: fakes.calls.factory,
       read: fakes.calls.read,
       reviewed: fakes.calls.reviewed,
+      verdict: outcome.verdict,
     }).toEqual({
       exitCode: 1,
       namesKey: true,
@@ -185,6 +186,7 @@ describe('runReview, given a configuration it cannot use', () => {
       factory: 0,
       read: [DEFAULT_LENS_SOURCE],
       reviewed: [],
+      verdict: undefined,
     });
   });
 
@@ -230,6 +232,9 @@ describe('runReview, given a configuration it cannot use', () => {
 
     expect(outcome.exitCode).toBe(1);
     expect(outcome.report).toContain('red result, not a passing one');
+    // No panel ran, so there is no Verdict to report — not a fabricated
+    // empty one, which would be indistinguishable from an approval.
+    expect(outcome.verdict).toBeUndefined();
   });
 });
 
@@ -300,6 +305,7 @@ describe('runReview, given a diff with nothing in it', () => {
         factory: fakes.calls.factory,
         read: fakes.calls.read,
         reviewed: fakes.calls.reviewed,
+        verdict: outcome.verdict,
       }).toEqual({
         exitCode: 1,
         namesEmptyDiff: true,
@@ -310,6 +316,7 @@ describe('runReview, given a diff with nothing in it', () => {
         factory: 0,
         read: [DEFAULT_LENS_SOURCE],
         reviewed: [],
+        verdict: undefined,
       });
     });
   }
@@ -342,6 +349,8 @@ describe('runReview, given a lens set it cannot load', () => {
       // the panel, so the types already forbid this. It is here because the
       // claim matters, not because it could plausibly fail alone.
       expect(fakes.calls.reviewed).toEqual([]);
+      // No parsed lens set means no panel and no Verdict.
+      expect(outcome.verdict).toBeUndefined();
     });
   }
 
@@ -371,6 +380,13 @@ describe('runReview, when the panel runs', () => {
     expect(outcome.report).toContain('## Review: Approved');
     expect(outcome.report).toContain('Every lens reviewed and none had a finding.');
     expect([...fakes.calls.reviewed].sort()).toEqual(['correctness', 'honesty']);
+    // The returned Verdict is the panel's own, not re-derived from the
+    // markdown: same outcome, same lenses.
+    expect(outcome.verdict?.outcome).toBe('approved');
+    expect(outcome.verdict?.results.map((result) => result.lens).sort()).toEqual([
+      'correctness',
+      'honesty',
+    ]);
   });
 
   it('exits 1 and carries the finding when one lens rejects', async () => {
@@ -384,6 +400,9 @@ describe('runReview, when the panel runs', () => {
     expect(outcome.report).toContain('## Review: Rejected');
     expect(outcome.report).toContain('a real finding');
     expect(outcome.report).toContain('honesty');
+    expect(outcome.verdict?.outcome).toBe('rejected');
+    expect(outcome.verdict?.findings).toHaveLength(1);
+    expect(outcome.verdict?.findings[0]?.lens).toBe('honesty');
   });
 
   // The half-run panel. Its findings are real and must survive, but they are
@@ -404,6 +423,13 @@ describe('runReview, when the panel runs', () => {
     expect(outcome.report).toContain('socket hang up');
     // The work that did happen is not discarded on the way to the report.
     expect(outcome.report).toContain('a real finding');
+    // The fact the markdown alone could never give a caller back: which
+    // lens could not run, and why — now in the returned Verdict itself,
+    // not just in prose.
+    expect(outcome.verdict?.outcome).toBe('could_not_run');
+    expect(outcome.verdict?.unran).toEqual([
+      { lens: 'honesty', reason: 'reviewer threw: socket hang up' },
+    ]);
   });
 
   it('names the source the definition actually came from', async () => {
