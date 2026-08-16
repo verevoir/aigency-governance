@@ -10,13 +10,16 @@ export {
   aggregate,
   PanelMismatchError,
   type Finding,
+  type FindingEvidence,
   type LensResult,
   type Outcome,
   type Verdict,
 } from './review/verdict.js';
 export {
+  ABSENT_MARKER,
   APPROVED_WORD,
   CANNOT_RUN_WORD,
+  EVIDENCE_MARKER,
   FINDING_MARKER,
   REASON_MARKER,
   REJECTED_WORD,
@@ -31,6 +34,7 @@ export {
   type Subject,
 } from './review/prompt.js';
 export { parseReply } from './review/parseReply.js';
+export { findingIsVerified, verifyLensResult } from './review/verifyFindings.js';
 export { runPanel, type PanelRun, type Reviewer } from './review/panel.js';
 export { exitCodeFor, renderReport, type ReportContext } from './review/report.js';
 export {

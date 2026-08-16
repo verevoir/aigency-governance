@@ -22,8 +22,10 @@
 //   name a concern was read as approving cleanly.
 
 import {
+  ABSENT_MARKER,
   APPROVED_WORD,
   CANNOT_RUN_WORD,
+  EVIDENCE_MARKER,
   FINDING_MARKER,
   REASON_MARKER,
   REJECTED_WORD,
@@ -52,6 +54,69 @@ function taggedLines(lines: readonly string[], marker: string): string[] {
 
 function cannotRun(lens: string, reason: string): LensResult {
   return { lens, outcome: 'could_not_run', findings: [], reason };
+}
+
+/**
+ * Findings and the evidence that follows each one, read in one pass.
+ *
+ * A finding's evidence is the line immediately after it — blank lines are
+ * skipped, but the first non-blank line decides, and if that line is not
+ * `EVIDENCE:` or `ABSENT:` the finding carries no evidence at all. Generous
+ * about formatting (a reviewer's habit of a blank line before the next thing
+ * does not cost it its evidence), strict about content: text anywhere else
+ * in the reply is never scavenged for a match, because that would let a
+ * finding "find" evidence that was never offered for it.
+ *
+ * An empty summary is handled exactly as it always was — counted, not kept,
+ * and never looked ahead for evidence, because there is nothing here for
+ * evidence to be evidence OF. What this function does NOT do is decide
+ * whether the evidence it read holds up against a diff; that check needs the
+ * diff, which a reply's text alone does not carry, and belongs to
+ * `verifyFindings.ts`.
+ */
+function parseFindings(
+  lines: readonly string[],
+  lens: string,
+): { findings: Finding[]; emptyFindings: number } {
+  const findings: Finding[] = [];
+  let emptyFindings = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    if (!line.trimStart().startsWith(FINDING_MARKER)) {
+      continue;
+    }
+    const summary = line.trimStart().slice(FINDING_MARKER.length).trim();
+    if (summary === '') {
+      emptyFindings++;
+      continue;
+    }
+
+    let evidence: Finding['evidence'];
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j] ?? '';
+      if (next.trim() === '') {
+        continue;
+      }
+      const trimmed = next.trimStart();
+      if (trimmed.startsWith(EVIDENCE_MARKER)) {
+        const text = trimmed.slice(EVIDENCE_MARKER.length).trim();
+        if (text !== '') {
+          evidence = { kind: 'quote', text };
+        }
+      } else if (trimmed.startsWith(ABSENT_MARKER)) {
+        const text = trimmed.slice(ABSENT_MARKER.length).trim();
+        if (text !== '') {
+          evidence = { kind: 'absence', text };
+        }
+      }
+      break;
+    }
+
+    findings.push(evidence === undefined ? { lens, summary } : { lens, summary, evidence });
+  }
+
+  return { findings, emptyFindings };
 }
 
 /**
@@ -88,11 +153,7 @@ export function parseReply(lens: string, text: string): LensResult {
   // Kept apart because they mean different things. A named finding is
   // information; an empty marker is a reviewer that was about to say
   // something. Neither may be read as silence.
-  const findingLines = taggedLines(lines, FINDING_MARKER);
-  const findings: Finding[] = findingLines
-    .filter((summary) => summary !== '')
-    .map((summary) => ({ lens, summary }));
-  const emptyFindings = findingLines.length - findings.length;
+  const { findings, emptyFindings } = parseFindings(lines, lens);
 
   if (verdict === APPROVED_WORD) {
     if (findings.length > 0) {

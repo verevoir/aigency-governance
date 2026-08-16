@@ -10,6 +10,7 @@ import type { LensSet } from './lensSet.js';
 import { parseReply } from './parseReply.js';
 import { buildPrompt, type Prompt, type Subject } from './prompt.js';
 import { aggregate, type LensResult, type Verdict } from './verdict.js';
+import { verifyLensResult } from './verifyFindings.js';
 
 /**
  * Whatever actually asks a model. Takes the two prompt halves separately so a
@@ -40,7 +41,10 @@ export async function runPanel(
       // Non-null: every lens id was just written into the map above.
       const prompt = prompts.get(lens.id) as Prompt;
       const reply = await review(lens.id, prompt);
-      return parseReply(lens.id, reply);
+      // A finding that cannot be verified against the diff it claims to be
+      // about is a finding no one should act on (C2, C3) — see
+      // verifyFindings.ts for what this does to the result and why.
+      return verifyLensResult(parseReply(lens.id, reply), subject.diff);
     }),
   );
 

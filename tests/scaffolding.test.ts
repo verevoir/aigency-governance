@@ -24,6 +24,7 @@ import type {
   Clock,
   FetchLike,
   Finding,
+  FindingEvidence,
   HttpPost,
   KeyFileReader,
   KeyFileResult,
@@ -64,6 +65,7 @@ export type PublishedTypes = [
   SourceReader,
   LoadResult,
   Finding,
+  FindingEvidence,
   LensResult,
   Outcome,
   Verdict,
@@ -94,11 +96,13 @@ export type PublishedTypes = [
 // Type-only exports vanish at runtime, so this list is the VALUES the barrel
 // publishes and deliberately not the types beside them.
 const PUBLISHED = [
+  'ABSENT_MARKER',
   'APPROVED_WORD',
   'CANNOT_RUN_WORD',
   'DEFAULT_LENS_SOURCE',
   'DEFAULT_MAX_TOKENS',
   'DEFAULT_MODEL',
+  'EVIDENCE_MARKER',
   'FINDING_MARKER',
   'LensSetError',
   'NO_PRACTICES_NOTICE',
@@ -114,6 +118,7 @@ const PUBLISHED = [
   'buildPrompt',
   'exitCodeFor',
   'fileReader',
+  'findingIsVerified',
   'httpReader',
   'keyFileReader',
   'loadLensSet',
@@ -129,6 +134,7 @@ const PUBLISHED = [
   'retrying',
   'runPanel',
   'runReview',
+  'verifyLensResult',
 ];
 
 describe('the published surface', () => {

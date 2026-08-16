@@ -5,6 +5,7 @@ import { runPanel, type Reviewer } from '../src/review/panel.js';
 import type { Subject } from '../src/review/prompt.js';
 import {
   APPROVED_WORD,
+  EVIDENCE_MARKER,
   FINDING_MARKER,
   REJECTED_WORD,
   VERDICT_MARKER,
@@ -22,7 +23,9 @@ const SET: LensSet = {
 const SUBJECT: Subject = { title: 'a change', description: 'some prose', diff: '+const x = 1;' };
 
 const APPROVE = `${VERDICT_MARKER} ${APPROVED_WORD}`;
-const REJECT = `${VERDICT_MARKER} ${REJECTED_WORD}\n${FINDING_MARKER} a real finding`;
+// Carries evidence genuinely present in SUBJECT.diff, so a sound rejection
+// behaves in these tests exactly as it did before verification existed.
+const REJECT = `${VERDICT_MARKER} ${REJECTED_WORD}\n${FINDING_MARKER} a real finding\n${EVIDENCE_MARKER} const x = 1;`;
 
 function replying(byLens: Record<string, string>): Reviewer {
   return (lensId) => Promise.resolve(byLens[lensId] ?? APPROVE);
@@ -47,7 +50,36 @@ describe('runPanel', () => {
   it('rejects when one lens rejects, carrying its finding', async () => {
     const run = await runPanel(SET, SUBJECT, replying({ honesty: REJECT }));
     expect(run.verdict.outcome).toBe('rejected');
-    expect(run.verdict.findings).toEqual([{ lens: 'honesty', summary: 'a real finding' }]);
+    expect(run.verdict.findings).toEqual([
+      {
+        lens: 'honesty',
+        summary: 'a real finding',
+        evidence: { kind: 'quote', text: 'const x = 1;' },
+      },
+    ]);
+  });
+
+  // The wiring this story adds: a finding whose evidence is not in the diff
+  // (C2) must not stand as a rejection, and the failure must be visible
+  // rather than a finding quietly dropped (C3). Whole-value comparison so a
+  // silently-changed reason string is caught, not just a changed outcome.
+  it('downgrades a rejection to could_not_run when its evidence is not in the diff', async () => {
+    const manufactured =
+      `${VERDICT_MARKER} ${REJECTED_WORD}\n` +
+      `${FINDING_MARKER} the retry loop has no ceiling\n` +
+      `${EVIDENCE_MARKER} while (true) { attempt(); }`;
+    const run = await runPanel(SET, SUBJECT, replying({ honesty: manufactured }));
+    expect(run.verdict.outcome).toBe('could_not_run');
+    expect(run.verdict.findings).toEqual([]);
+    expect(run.verdict.unran).toEqual([
+      {
+        lens: 'honesty',
+        reason:
+          '1 of 1 finding(s) did not verify against the diff, so the whole rejection is withheld:\n' +
+          '  - "the retry loop has no ceiling" — quoted evidence not found in the diff: ' +
+          '"while (true) { attempt(); }"',
+      },
+    ]);
   });
 
   // The reason this uses allSettled rather than all. With `all`, the first

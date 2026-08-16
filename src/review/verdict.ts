@@ -8,10 +8,34 @@
 
 export type Outcome = 'approved' | 'rejected' | 'could_not_run';
 
+/**
+ * What a finding claims to rest on — named so it can be checked, not
+ * trusted (C2). Two shapes because a claim about the diff comes in two
+ * directions and they are verified oppositely: `quote` says something is
+ * THERE — verified by finding the text; `absence` says something is NOT
+ * there — verified by not finding it. Collapsing them into one
+ * `evidence: string` would make a finding about a gap read the same as one
+ * about a line, and the two need opposite checks. See `verifyFindings.ts`
+ * for where the check itself happens — this type only makes the claim
+ * checkable.
+ */
+export type FindingEvidence =
+  | { readonly kind: 'quote'; readonly text: string }
+  | { readonly kind: 'absence'; readonly text: string };
+
 export interface Finding {
   readonly lens: string;
   readonly summary: string;
   readonly detail?: string;
+  /**
+   * What this finding rests on, verbatim from the reviewer's reply.
+   * Optional at this type only — a `Finding` built directly by code that has
+   * already established trust another way (mainly tests) need not carry
+   * one. A finding parsed from a real reply with no evidence line is
+   * exactly the unverifiable case `verifyFindings.ts` exists to catch, and
+   * it is treated as failing verification, never as passing by default.
+   */
+  readonly evidence?: FindingEvidence;
 }
 
 export interface LensResult {
