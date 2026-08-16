@@ -152,6 +152,98 @@ describe('createApiHandler', () => {
     });
   });
 
+  // A type system does not police a wire. `ApiRequest['route']` is a closed
+  // union, which rules an unrecognised value out for a caller that compiled
+  // against it — not for a wire caller sending parsed JSON that never did.
+  // Falling through to `enact` on garbage input would let malformed input
+  // reach the verb that changes things, so each case here proves both the
+  // response shape AND that neither the reader nor the judge was ever
+  // reached — "rejected" and "rejected without doing anything" are
+  // different claims, and only the second is safe.
+  describe('an unrecognised route', () => {
+    it('rejects an unknown route by name, and never reaches the reader or the judge', async () => {
+      let reads = 0;
+      let judgeCalls = 0;
+      const counting: SourceReader = () => {
+        reads += 1;
+        return Promise.resolve({ kind: 'text', text: ONE_PRACTICE });
+      };
+      const judge: Judge = () => {
+        judgeCalls += 1;
+        return Promise.resolve({ allow: true });
+      };
+      const gate = createPracticeGate('s', counting, AMPLE_BOUND);
+      const handle = createApiHandler(gate, judge);
+      const malformed = {
+        route: 'delete',
+        conversationId: 'conv-1',
+        capability: 'anything',
+      } as unknown as ApiRequest;
+
+      const response = await handle(malformed);
+
+      expect(response).toEqual({
+        kind: 'rejected',
+        reason: 'unknown route "delete" — valid routes are "provision" and "enact"',
+      });
+      expect(reads).toBe(0);
+      expect(judgeCalls).toBe(0);
+    });
+
+    it('rejects a request whose route field is missing entirely, naming it as such', async () => {
+      let judgeCalls = 0;
+      const judge: Judge = () => {
+        judgeCalls += 1;
+        return Promise.resolve({ allow: true });
+      };
+      const gate = createPracticeGate(
+        's',
+        readerReturning({ kind: 'text', text: ONE_PRACTICE }),
+        AMPLE_BOUND,
+      );
+      const handle = createApiHandler(gate, judge);
+      const malformed = {
+        conversationId: 'conv-1',
+        capability: 'anything',
+      } as unknown as ApiRequest;
+
+      const response = await handle(malformed);
+
+      expect(response).toEqual({
+        kind: 'rejected',
+        reason: 'unknown route undefined — valid routes are "provision" and "enact"',
+      });
+      expect(judgeCalls).toBe(0);
+    });
+
+    it('rejects a route in the wrong case, rather than matching it case-insensitively', async () => {
+      let judgeCalls = 0;
+      const judge: Judge = () => {
+        judgeCalls += 1;
+        return Promise.resolve({ allow: true });
+      };
+      const gate = createPracticeGate(
+        's',
+        readerReturning({ kind: 'text', text: ONE_PRACTICE }),
+        AMPLE_BOUND,
+      );
+      const handle = createApiHandler(gate, judge);
+      const malformed = {
+        route: 'Enact',
+        conversationId: 'conv-1',
+        capability: 'no-anonymous-path',
+      } as unknown as ApiRequest;
+
+      const response = await handle(malformed);
+
+      expect(response).toEqual({
+        kind: 'rejected',
+        reason: 'unknown route "Enact" — valid routes are "provision" and "enact"',
+      });
+      expect(judgeCalls).toBe(0);
+    });
+  });
+
   describe('the three outcomes stay distinct through the API boundary', () => {
     it('an unreachable bar arrives as could-not-consult, never flattened to refused', async () => {
       // The judge would have refused if it were ever asked — it is not

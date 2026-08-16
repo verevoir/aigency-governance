@@ -62,6 +62,19 @@
 // carries its own source and reader). This file adds nothing to how that
 // binding happens; it only adds the shape a caller off-process sends and
 // receives.
+//
+// THE ROUTE IS CHECKED AT RUNTIME, DESPITE THE CLOSED UNION. The route is
+// checked at runtime even though its type is a closed union. The union
+// constrains callers that compile against it, and this handler exists to
+// serve callers that never did — a wire request is parsed JSON, not a typed
+// value, and the type system's guarantee stops at the boundary this file
+// IS. Falling through to `enact` on an unrecognised route would let
+// malformed input reach the verb that changes things, which is the wrong
+// direction to fail in: `enact` acts on the world, `provision` only reads
+// it. So the switch below has an explicit default that rejects by name,
+// naming both the route that was sent and the routes that exist — a wrong
+// route is usually a typo or a stale client, and both are cheap to fix if
+// the answer says so.
 
 import type { EnactOutcome, Judge, PracticeGate } from '../practices/enact.js';
 import type { ProvisionResult } from '../practices/provision.js';
@@ -122,17 +135,32 @@ export function createApiHandler(gate: PracticeGate, judge: Judge): ApiHandler {
       return rejected;
     }
 
-    if (request.route === 'provision') {
-      if (request.query.trim() === '') {
-        return { kind: 'rejected', reason: 'query is required' };
+    switch (request.route) {
+      case 'provision': {
+        if (request.query.trim() === '') {
+          return { kind: 'rejected', reason: 'query is required' };
+        }
+        return gate.provision(request.query);
       }
-      return gate.provision(request.query);
+      case 'enact': {
+        if (request.capability.trim() === '') {
+          return { kind: 'rejected', reason: 'capability is required' };
+        }
+        return gate.enact(request.capability, judge);
+      }
+      default: {
+        // Reached only by a wire caller whose parsed JSON never compiled
+        // against `ApiRequest` — `request` is narrowed to `never` here by
+        // every route the union declares, so the cast is what makes the
+        // actual, un-typechecked value visible again. See the file header.
+        const routeValue = (request as { readonly route?: unknown }).route;
+        return {
+          kind: 'rejected',
+          reason:
+            `unknown route ${JSON.stringify(routeValue)} — valid routes are ` +
+            '"provision" and "enact"',
+        };
+      }
     }
-
-    // request.route === 'enact'
-    if (request.capability.trim() === '') {
-      return { kind: 'rejected', reason: 'capability is required' };
-    }
-    return gate.enact(request.capability, judge);
   };
 }
