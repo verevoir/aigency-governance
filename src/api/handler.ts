@@ -27,8 +27,8 @@
 // because spend and enactment have to be attributable back to the work that
 // caused them (ADR 004, S23's own acceptance) — a governance call made on
 // somebody's behalf, with no id, is a hole in the accounting exactly where
-// the expensive work happens: a delegation nobody can charge to anything.
-// A request that omits it is REFUSED here — reported as `rejected` — never
+// the expensive work happens: a delegation nobody can charge to anything. A
+// request that omits it is REFUSED here — reported as `rejected` — never
 // silently defaulted to a placeholder. An invented id would be worse than a
 // refusal: it would attribute the call to a conversation that never made
 // it, a wrong answer wearing the shape of a right one. `rejected` is
@@ -69,12 +69,12 @@ import type { ProvisionResult } from '../practices/provision.js';
 /** Carried on every request. See the file header for why this is required
  * rather than defaulted. */
 interface RequestEnvelope {
- readonly conversationId: string;
+  readonly conversationId: string;
 }
 
 export type ApiRequest =
- | (RequestEnvelope & { readonly route: 'provision'; readonly query: string })
- | (RequestEnvelope & { readonly route: 'enact'; readonly capability: string });
+  | (RequestEnvelope & { readonly route: 'provision'; readonly query: string })
+  | (RequestEnvelope & { readonly route: 'enact'; readonly capability: string });
 
 /**
  * The request itself was refused before either `provision` or `enact` was
@@ -85,8 +85,8 @@ export type ApiRequest =
  * header.
  */
 export interface Rejected {
- readonly kind: 'rejected';
- readonly reason: string;
+  readonly kind: 'rejected';
+  readonly reason: string;
 }
 
 export type ProvisionResponse = Rejected | ProvisionResult;
@@ -96,15 +96,15 @@ export type ApiResponse = ProvisionResponse | EnactResponse;
 export type ApiHandler = (request: ApiRequest) => Promise<ApiResponse>;
 
 function requireConversationId(request: ApiRequest): Rejected | undefined {
- if (typeof request.conversationId !== 'string' || request.conversationId.trim() === '') {
- return {
- kind: 'rejected',
- reason:
- 'conversationId is required on every request — without it, spend and ' +
- 'enactment cannot be attributed back to the work that caused them',
- };
- }
- return undefined;
+  if (typeof request.conversationId !== 'string' || request.conversationId.trim() === '') {
+    return {
+      kind: 'rejected',
+      reason:
+        'conversationId is required on every request — without it, spend and ' +
+        'enactment cannot be attributed back to the work that caused them',
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -116,23 +116,23 @@ function requireConversationId(request: ApiRequest): Rejected | undefined {
  * varies per call (which route, what it asks, and who is asking).
  */
 export function createApiHandler(gate: PracticeGate, judge: Judge): ApiHandler {
- return async function handle(request: ApiRequest): Promise<ApiResponse> {
- const rejected = requireConversationId(request);
- if (rejected !== undefined) {
- return rejected;
- }
+  return async function handle(request: ApiRequest): Promise<ApiResponse> {
+    const rejected = requireConversationId(request);
+    if (rejected !== undefined) {
+      return rejected;
+    }
 
- if (request.route === 'provision') {
- if (request.query.trim() === '') {
- return { kind: 'rejected', reason: 'query is required' };
- }
- return gate.provision(request.query);
- }
+    if (request.route === 'provision') {
+      if (request.query.trim() === '') {
+        return { kind: 'rejected', reason: 'query is required' };
+      }
+      return gate.provision(request.query);
+    }
 
- // request.route === 'enact'
- if (request.capability.trim() === '') {
- return { kind: 'rejected', reason: 'capability is required' };
- }
- return gate.enact(request.capability, judge);
- };
+    // request.route === 'enact'
+    if (request.capability.trim() === '') {
+      return { kind: 'rejected', reason: 'capability is required' };
+    }
+    return gate.enact(request.capability, judge);
+  };
 }
