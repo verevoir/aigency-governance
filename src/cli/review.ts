@@ -12,6 +12,7 @@ import process from 'node:process';
 
 import { anthropicReviewer } from '../review/anthropic.js';
 import { keyFileReader, readerFor } from '../review/readers.js';
+import { withReportFile } from './reportFile.js';
 import { runReview } from './run.js';
 
 async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
@@ -62,8 +63,16 @@ async function main(): Promise<number> {
     keyFileReader(),
   );
 
+  // Unconditional, and first: CI reads this into the job summary, and
+  // AIGENCY_REVIEW_REPORT below must never be able to move it — in the
+  // success case or the failure case. See withReportFile.
   process.stdout.write(`${outcome.report}\n`);
-  return outcome.exitCode;
+
+  const written = await withReportFile(process.env['AIGENCY_REVIEW_REPORT'], outcome);
+  if (written.failureMessage !== undefined) {
+    process.stderr.write(`${written.failureMessage}\n`);
+  }
+  return written.exitCode;
 }
 
 main().then(
