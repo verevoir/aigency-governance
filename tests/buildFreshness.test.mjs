@@ -48,18 +48,24 @@ describe('newestMtimeMs', () => {
 });
 
 describe('buildFreshness', () => {
-  it('is stale when dist does not exist at all', async () => {
+  // Two tests, not one: a single test pinning one reason cannot show that an
+  // absent directory and an empty one are told apart from each other — only
+  // two tests, each pinning its own reason and ruling out the other's
+  // wording, can show that.
+  it('is stale, naming absence specifically, when dist does not exist at all', async () => {
     const src = join(dir, 'src');
+    const distDir = join(dir, 'dist');
     await mkdir(src);
     await touch(join(src, 'index.ts'), 1_000_000);
 
-    const result = await buildFreshness(src, join(dir, 'dist'));
+    const result = await buildFreshness(src, distDir);
 
     expect(result.stale).toBe(true);
-    expect(result.reason).toContain('does not exist');
+    expect(result.reason).toBe(`${distDir} does not exist`);
+    expect(result.reason).not.toContain('holds no files');
   });
 
-  it('is stale when dist exists but holds no files', async () => {
+  it('is stale, naming emptiness specifically, when dist exists but holds no files', async () => {
     const src = join(dir, 'src');
     const distDir = join(dir, 'dist');
     await mkdir(src);
@@ -69,6 +75,8 @@ describe('buildFreshness', () => {
     const result = await buildFreshness(src, distDir);
 
     expect(result.stale).toBe(true);
+    expect(result.reason).toBe(`${distDir} exists but holds no files`);
+    expect(result.reason).not.toContain('does not exist');
   });
 
   it('is stale when src was touched after the newest file in dist', async () => {

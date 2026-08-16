@@ -7,10 +7,21 @@
 import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath, URL } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { ensureReportDir, REPORT_DIR, reportTargetPaths } from '../scripts/reportTarget.mjs';
+import {
+  describeReportOutcome,
+  ensureReportDir,
+  probeReportFile,
+  REPORT_DIR,
+  reportTargetPaths,
+} from '../scripts/reportTarget.mjs';
+
+const PACKAGE_JSON = fileURLToPath(new URL('../package.json', import.meta.url));
+const NOT_THERE = fileURLToPath(new URL('../no-such-report-file.md', import.meta.url));
+const THROUGH_A_FILE = fileURLToPath(new URL('../package.json/report.md', import.meta.url));
 
 describe('reportTargetPaths', () => {
   it('names a markdown file and a JSON sibling under the given directory', () => {
@@ -54,5 +65,70 @@ describe('ensureReportDir', () => {
 
     const entries = await readdir(root);
     expect(entries).toEqual(['already-there']);
+  });
+});
+
+describe('probeReportFile', () => {
+  it('reports present for a file that is there', async () => {
+    expect(await probeReportFile(PACKAGE_JSON)).toEqual({ kind: 'present' });
+  });
+
+  it('reports absent for a path that does not exist, distinct from a lookup failure', async () => {
+    expect(await probeReportFile(NOT_THERE)).toEqual({ kind: 'absent' });
+  });
+
+  // A path that runs through a file is not ENOENT — it is a genuine lookup
+  // failure (ENOTDIR), and must not be reported the same way as "not
+  // there". This is exactly the case the bare `catch {}` this replaces could
+  // not tell apart.
+  it('reports unreadable, not absent, when the lookup itself fails', async () => {
+    const result = await probeReportFile(THROUGH_A_FILE);
+    expect(result.kind).toBe('unreadable');
+    if (result.kind !== 'unreadable') throw new Error('unreachable');
+    expect(result.reason).toContain('ENOTDIR');
+  });
+});
+
+describe('describeReportOutcome', () => {
+  const paths = reportTargetPaths('some-dir');
+
+  it('reports both files written, as two separate facts, when both are present', () => {
+    const text = describeReportOutcome(paths, { kind: 'present' }, { kind: 'present' });
+    expect(text).toContain(`${paths.markdown} — written.`);
+    expect(text).toContain(`${paths.json} — written.`);
+  });
+
+  // The exact case the honesty lens found: a message that asserted both
+  // files existed after checking only one. This pins that the two are told
+  // apart — the markdown written and the JSON absent must read as different
+  // facts, not be folded into one claim built from a single check.
+  it('says which file is missing when only one of the two was written', () => {
+    const text = describeReportOutcome(paths, { kind: 'present' }, { kind: 'absent' });
+    expect(text).toContain(`${paths.markdown} — written.`);
+    expect(text).toContain(`${paths.json} — not written.`);
+  });
+
+  it('says which file is missing the other way round', () => {
+    const text = describeReportOutcome(paths, { kind: 'absent' }, { kind: 'present' });
+    expect(text).toContain(`${paths.markdown} — not written.`);
+    expect(text).toContain(`${paths.json} — written.`);
+  });
+
+  it('reports neither as written when both are absent', () => {
+    const text = describeReportOutcome(paths, { kind: 'absent' }, { kind: 'absent' });
+    expect(text).toContain(`${paths.markdown} — not written.`);
+    expect(text).toContain(`${paths.json} — not written.`);
+  });
+
+  it('reports a lookup failure distinctly from absence, naming the reason', () => {
+    const text = describeReportOutcome(
+      paths,
+      { kind: 'unreadable', reason: 'EACCES: permission denied' },
+      { kind: 'present' },
+    );
+    expect(text).toContain(
+      `the report: ${paths.markdown} — could not confirm whether it was written: EACCES: permission denied`,
+    );
+    expect(text).not.toContain(`${paths.markdown} — not written.`);
   });
 });

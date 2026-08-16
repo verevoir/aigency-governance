@@ -54,21 +54,50 @@ export async function newestMtimeMs(root) {
 }
 
 /**
+ * Whether `root` itself exists, told apart from whether it holds no files —
+ * a distinction `newestMtimeMs` cannot make on its own, since `collectFiles`
+ * catches ENOENT/ENOTDIR and returns an empty file list either way, without
+ * ever recording which case applied. That is not a computed distinction
+ * being discarded — nothing upstream tells the two apart in the first place.
+ * This is where the distinction is created.
+ */
+async function exists(root) {
+  try {
+    await stat(root);
+    return true;
+  } catch (cause) {
+    if (cause && cause.code === 'ENOENT') {
+      return false;
+    }
+    throw cause;
+  }
+}
+
+/**
  * Whether `distRoot` is safe to spawn as a stand-in for `srcRoot`.
  *
- * `distRoot` absent, or holding no files, is stale — there is nothing built
- * at all. `distRoot` with a newest file strictly older than `srcRoot`'s
- * newest file is stale — something under `srcRoot` changed since the last
- * build. Equal or newer is current: a build that ran after every source
- * edit is a build of what is there now, however long ago it ran.
+ * `distRoot` not existing at all, and `distRoot` existing but holding no
+ * files, are both stale for the same underlying reason — there is nothing
+ * built — but are reported as two different sentences, because they are two
+ * different facts to whoever reads the message: one names a directory that
+ * was never created, the other a build that ran and produced nothing.
+ * `distRoot` with a newest file strictly older than `srcRoot`'s newest file
+ * is stale for a third, distinct reason — something under `srcRoot` changed
+ * since the last build. Equal or newer is current: a build that ran after
+ * every source edit is a build of what is there now, however long ago it
+ * ran.
  */
 export async function buildFreshness(srcRoot, distRoot) {
-  const [srcNewest, distNewest] = await Promise.all([
+  const [srcNewest, distNewest, distExists] = await Promise.all([
     newestMtimeMs(srcRoot),
     newestMtimeMs(distRoot),
+    exists(distRoot),
   ]);
+  if (!distExists) {
+    return { stale: true, reason: `${distRoot} does not exist` };
+  }
   if (distNewest === undefined) {
-    return { stale: true, reason: `${distRoot} does not exist, or holds no files` };
+    return { stale: true, reason: `${distRoot} exists but holds no files` };
   }
   if (srcNewest !== undefined && srcNewest > distNewest) {
     return {

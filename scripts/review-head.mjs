@@ -12,10 +12,14 @@
 
 import { spawn } from 'node:child_process';
 import console from 'node:console';
-import { access } from 'node:fs/promises';
 import process from 'node:process';
 
-import { ensureReportDir, reportTargetPaths } from './reportTarget.mjs';
+import {
+  describeReportOutcome,
+  ensureReportDir,
+  probeReportFile,
+  reportTargetPaths,
+} from './reportTarget.mjs';
 
 function capture(command, args, input, extraEnv = {}) {
   return new Promise((resolve) => {
@@ -87,14 +91,14 @@ if (review.err.trim() !== '') {
 
 // Told, not assumed: the directory was created above, but the write itself
 // happens inside the spawned process and can still fail (judgement 2 in
-// reportFile.ts) — checked here rather than claimed unconditionally.
-try {
-  await access(report.markdown);
-  console.log(`Report: ${report.markdown} (structured findings alongside as ${report.json})`);
-} catch {
-  console.log(
-    `AIGENCY_REVIEW_REPORT was set to ${report.markdown}, but no file was written there — see the failure above.`,
-  );
-}
+// reportFile.ts) — checked here rather than claimed unconditionally. And
+// checked separately for each file: the markdown and the JSON are two
+// distinct writes in writeReportFiles, so one succeeding says nothing about
+// the other. Checking only the markdown and then claiming both existed is
+// exactly what the review panel's own honesty lens found against an earlier
+// version of this block.
+const markdownProbe = await probeReportFile(report.markdown);
+const jsonProbe = await probeReportFile(report.json);
+console.log(describeReportOutcome(report, markdownProbe, jsonProbe));
 
 process.exit(review.code ?? 1);
