@@ -107,4 +107,37 @@ describe('aggregate', () => {
       aggregate(DECLARED, [approved('correctness'), rejected('correctness', 'x')]),
     ).toThrow(PanelMismatchError);
   });
+
+  // aggregate() does not build Finding values, it only carries them — but
+  // nothing above proves that, since every finding used so far has no
+  // evidence to lose. Whole-value comparison so a future reshaping that
+  // dropped the field would fail here rather than pass on a summary-only
+  // check.
+  it("carries a finding's evidence through unchanged", () => {
+    const withEvidence: LensResult = {
+      lens: 'honesty',
+      outcome: 'rejected',
+      findings: [
+        {
+          lens: 'honesty',
+          summary: 'claims a search that was not run',
+          evidence: { kind: 'quote', text: 'grep -r X src/' },
+        },
+      ],
+    };
+
+    const verdict = aggregate(DECLARED, [
+      approved('correctness'),
+      withEvidence,
+      approved('blast-radius'),
+    ]);
+
+    expect(verdict.findings).toEqual([
+      {
+        lens: 'honesty',
+        summary: 'claims a search that was not run',
+        evidence: { kind: 'quote', text: 'grep -r X src/' },
+      },
+    ]);
+  });
 });

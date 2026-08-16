@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { parseReply } from '../src/review/parseReply.js';
 import {
+  ABSENT_MARKER,
   APPROVED_WORD,
   CANNOT_RUN_WORD,
+  EVIDENCE_MARKER,
   FINDING_MARKER,
   REASON_MARKER,
   REJECTED_WORD,
@@ -53,6 +55,125 @@ describe('parseReply — the three answers it can give', () => {
   it('falls back when the REASON: line is present but empty', () => {
     const result = parse(`${VERDICT_MARKER} ${CANNOT_RUN_WORD}`, REASON_MARKER);
     expect(result.reason).toBe('reviewer gave no reason');
+  });
+});
+
+describe('parseReply — evidence and absence markers', () => {
+  it('attaches a quote finding to the EVIDENCE: line right after it', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} the retry loop has no ceiling`,
+      `${EVIDENCE_MARKER} while (true) {`,
+    );
+    expect(result).toEqual({
+      lens: LENS,
+      outcome: 'rejected',
+      findings: [
+        {
+          lens: LENS,
+          summary: 'the retry loop has no ceiling',
+          evidence: { kind: 'quote', text: 'while (true) {' },
+        },
+      ],
+    });
+  });
+
+  it('attaches an absence finding to the ABSENT: line right after it', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} no test covers the retry ceiling`,
+      `${ABSENT_MARKER} describe('retry ceiling'`,
+    );
+    expect(result).toEqual({
+      lens: LENS,
+      outcome: 'rejected',
+      findings: [
+        {
+          lens: LENS,
+          summary: 'no test covers the retry ceiling',
+          evidence: { kind: 'absence', text: "describe('retry ceiling'" },
+        },
+      ],
+    });
+  });
+
+  it('skips blank lines between a finding and its evidence line', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} the retry loop has no ceiling`,
+      '',
+      '  ',
+      `${EVIDENCE_MARKER} while (true) {`,
+    );
+    expect(result.findings).toEqual([
+      {
+        lens: LENS,
+        summary: 'the retry loop has no ceiling',
+        evidence: { kind: 'quote', text: 'while (true) {' },
+      },
+    ]);
+  });
+
+  // Strict about content: the first non-blank line decides, so prose between
+  // a finding and a later EVIDENCE: line leaves the finding with no evidence
+  // at all — evidence is never scavenged from elsewhere in the reply.
+  it('does not scavenge an evidence line separated from its finding by prose', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} the retry loop has no ceiling`,
+      'This matters because it can spin forever.',
+      `${EVIDENCE_MARKER} while (true) {`,
+    );
+    expect(result.findings).toEqual([{ lens: LENS, summary: 'the retry loop has no ceiling' }]);
+  });
+
+  it('gives each finding its own evidence, not the first one repeated', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} the retry loop has no ceiling`,
+      `${EVIDENCE_MARKER} while (true) {`,
+      `${FINDING_MARKER} no test covers it`,
+      `${ABSENT_MARKER} describe('retry ceiling'`,
+    );
+    expect(result.findings).toEqual([
+      {
+        lens: LENS,
+        summary: 'the retry loop has no ceiling',
+        evidence: { kind: 'quote', text: 'while (true) {' },
+      },
+      {
+        lens: LENS,
+        summary: 'no test covers it',
+        evidence: { kind: 'absence', text: "describe('retry ceiling'" },
+      },
+    ]);
+  });
+
+  it('treats a blank EVIDENCE: line as no evidence at all, not blank evidence', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} the retry loop has no ceiling`,
+      EVIDENCE_MARKER,
+    );
+    expect(result.findings).toEqual([{ lens: LENS, summary: 'the retry loop has no ceiling' }]);
+  });
+
+  it('treats a blank ABSENT: line as no evidence at all', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} no test covers the retry ceiling`,
+      ABSENT_MARKER,
+    );
+    expect(result.findings).toEqual([{ lens: LENS, summary: 'no test covers the retry ceiling' }]);
+  });
+
+  it('trims surrounding whitespace from evidence text', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} the retry loop has no ceiling`,
+      `   ${EVIDENCE_MARKER}   while (true) {   `,
+    );
+    expect(result.findings[0]?.evidence).toEqual({ kind: 'quote', text: 'while (true) {' });
   });
 });
 

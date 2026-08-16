@@ -25,6 +25,7 @@ import type { Reviewer } from '../src/review/panel.js';
 import { NO_PRACTICES_NOTICE, type Subject } from '../src/review/prompt.js';
 import {
   APPROVED_WORD,
+  EVIDENCE_MARKER,
   FINDING_MARKER,
   REJECTED_WORD,
   VERDICT_MARKER,
@@ -53,7 +54,11 @@ const TWO_LENSES = JSON.stringify({
 });
 
 const APPROVE = `${VERDICT_MARKER} ${APPROVED_WORD}`;
-const REJECT = `${VERDICT_MARKER} ${REJECTED_WORD}\n${FINDING_MARKER} a real finding`;
+// Carries evidence genuinely present in SUBJECT.diff, so the rejection this
+// builds is one verifyFindings.ts actually lets stand — the two tests that use
+// this are about what happens to a SOUND rejection (it survives; it survives
+// a sibling lens throwing), not about verification failing.
+const REJECT = `${VERDICT_MARKER} ${REJECTED_WORD}\n${FINDING_MARKER} a real finding\n${EVIDENCE_MARKER} const x = 1;`;
 
 /**
  * A complete environment. Tests that care about one variable override that
