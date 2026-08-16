@@ -38,7 +38,35 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 
+import { buildFreshness } from './buildFreshness.mjs';
+
 const BIN = 'dist/cli/review.js';
+const SRC = 'src';
+const DIST = 'dist';
+
+// Three outcomes, not two: the artifact ran and met the bar, the artifact
+// ran and did not, and the artifact could not be judged because it is not
+// current. The third is not a variant of the second — reporting it as one is
+// exactly how this gate passed for the wrong reason the night this check was
+// added. run_gates runs the declared gates, not the bootstrap chain that
+// produces dist/ — aigency.json's `commands` is a flat array with no way to
+// say "this gate requires that bootstrap to have run first" — so a dist/
+// built from a previous commit was spawned as current, and this gate, the
+// only one that runs the artifact rather than the source, judged code that
+// no longer existed. This check is a guard against that symptom, not a fix
+// for the underlying gap: the declaration still cannot express the
+// dependency, and nothing here changes that.
+const freshness = await buildFreshness(SRC, DIST);
+if (freshness.stale) {
+  console.error(
+    `${DIST}/ is stale, not broken — this gate cannot judge it.\n\n` +
+      `${freshness.reason}.\n\n` +
+      'This is not a verdict about the emitted binary: it was never asked to ' +
+      'prove anything about the source that is here now. Run `npm run build` ' +
+      '(prepare_repository runs it as part of bootstrap) and re-run this gate.',
+  );
+  process.exit(1);
+}
 
 try {
   await access(BIN);

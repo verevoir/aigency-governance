@@ -2,3 +2,8 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+
+# The review release step's own report (scripts/reportTarget.mjs) — kept out
+# of dist/, because dist/ is wiped by every build and the report should
+# outlive one.
+.review-report/

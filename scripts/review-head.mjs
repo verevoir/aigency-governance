@@ -12,9 +12,12 @@
 
 import { spawn } from 'node:child_process';
 import console from 'node:console';
+import { access } from 'node:fs/promises';
 import process from 'node:process';
 
-function capture(command, args, input) {
+import { ensureReportDir, reportTargetPaths } from './reportTarget.mjs';
+
+function capture(command, args, input, extraEnv = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       env: {
@@ -28,6 +31,7 @@ function capture(command, args, input) {
         // like. If that was the cause the error now says so, and the evidence
         // rather than the guess should decide the default.
         AIGENCY_REVIEW_MAX_TOKENS: '16384',
+        ...extraEnv,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -63,14 +67,34 @@ if (diff.out.trim() === '') {
 console.log(`Reviewing HEAD: ${subject.out.trim()}`);
 console.log(`Diff is ${String(diff.out.split('\n').length)} lines.\n`);
 
+// Ignored by git and outliving a build, unlike dist/ — see reportTarget.mjs.
+// The report is the paid-for output a run of this step used to produce and
+// then discard entirely; this is where it lands now.
+const report = reportTargetPaths();
+await ensureReportDir(report.dir);
+
 const review = await capture(
   process.execPath,
   ['dist/cli/review.js', subject.out.trim()],
   diff.out,
+  { AIGENCY_REVIEW_REPORT: report.markdown },
 );
 
 console.log(review.out);
 if (review.err.trim() !== '') {
   console.error(review.err);
 }
+
+// Told, not assumed: the directory was created above, but the write itself
+// happens inside the spawned process and can still fail (judgement 2 in
+// reportFile.ts) — checked here rather than claimed unconditionally.
+try {
+  await access(report.markdown);
+  console.log(`Report: ${report.markdown} (structured findings alongside as ${report.json})`);
+} catch {
+  console.log(
+    `AIGENCY_REVIEW_REPORT was set to ${report.markdown}, but no file was written there — see the failure above.`,
+  );
+}
+
 process.exit(review.code ?? 1);
