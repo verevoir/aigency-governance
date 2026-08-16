@@ -101,8 +101,25 @@ export type SettingsResult =
       /** Broken settings found along the way — never dropped just because
        * something else was also absent. See the file header. */
       readonly problems: readonly string[];
+      /**
+       * The lens source and token, resolved regardless of what else is
+       * incomplete. Both are computed below before `missing` is even
+       * inspected, and loadLensSet has no real dependency on whatever else
+       * turned out to be missing — see `runReview` in cli/run.ts, which is
+       * the caller these two fields exist for.
+       */
+      readonly lensSource: string;
+      readonly lensToken?: string;
     }
-  | { readonly kind: 'invalid'; readonly problems: readonly string[] };
+  | {
+      readonly kind: 'invalid';
+      readonly problems: readonly string[];
+      /** See the matching fields on `incomplete` above — the reasoning is
+       * the same whether the run is missing something or has something
+       * present and wrong. */
+      readonly lensSource: string;
+      readonly lensToken?: string;
+    };
 
 /**
  * What reading one candidate key file found. Three answers, for the same
@@ -301,10 +318,21 @@ export async function resolveSettings(
   // That does not mean a problem found alongside it is noise — it rides
   // along in `problems` either way, and `renderMissing` shows both.
   if (missing.length > 0) {
-    return { kind: 'incomplete', missing, problems };
+    return {
+      kind: 'incomplete',
+      missing,
+      problems,
+      lensSource,
+      ...(lensToken !== undefined ? { lensToken } : {}),
+    };
   }
   if (problems.length > 0) {
-    return { kind: 'invalid', problems };
+    return {
+      kind: 'invalid',
+      problems,
+      lensSource,
+      ...(lensToken !== undefined ? { lensToken } : {}),
+    };
   }
   return {
     kind: 'ready',

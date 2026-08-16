@@ -34,22 +34,27 @@ async function main(): Promise<number> {
     process.env,
     { title, description: '', diff },
     (settings) => ({
-      read: readerFor(settings.lensSource, (url) =>
-        fetch(url, {
-          headers:
-            settings.lensToken === undefined
-              ? {}
-              : {
-                  authorization: `Bearer ${settings.lensToken}`,
-                  accept: 'application/vnd.github.raw',
-                },
-        }),
-      ),
       review: anthropicReviewer(
         { apiKey: settings.apiKey, model: settings.model, maxTokens: settings.maxTokens },
         (url, init) => fetch(url, init),
       ),
     }),
+    // Takes only the lens source and token — loadLensSet, and so this
+    // reader, has no real dependency on the API key, and can be built and
+    // used even when the key is missing or wrong. See the header comment on
+    // `runReview`.
+    (access) =>
+      readerFor(access.lensSource, (url) =>
+        fetch(url, {
+          headers:
+            access.lensToken === undefined
+              ? {}
+              : {
+                  authorization: `Bearer ${access.lensToken}`,
+                  accept: 'application/vnd.github.raw',
+                },
+        }),
+      ),
     // The real key-file source. Constructed here, at the process boundary,
     // for the same reason `readerFor` and `anthropicReviewer` are: `run.ts`
     // is tested with fakes and touches no real filesystem unless this is the
