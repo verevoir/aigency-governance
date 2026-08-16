@@ -9,8 +9,17 @@
 //
 // It costs nothing to run. An empty diff makes `runReview` return before the
 // deps factory is called, so no client is built and no request is made; the
-// key below is deliberately not a real one, and if this ever starts needing
+// keys below are deliberately not real ones, and if this ever starts needing
 // one, something has moved that should not have.
+//
+// Two scenarios, not one. The panel's first real review found that nothing
+// in this repository actually proves `review.ts` WIRES `keyFileReader()`
+// into `runReview` — every unit test drives `resolveSettings` or `runReview`
+// directly with an injected fake, and none of them touch the process
+// boundary where that wiring either happens or doesn't. `review.ts` is
+// deliberately kept free of anything a unit test could exercise (see its own
+// header), so the only honest place to prove the wiring is here, running the
+// real compiled binary against a real file on disk.
 
 import { spawn } from 'node:child_process';
 // Imported, not assumed. The flat config declares no environment globals, and
@@ -18,7 +27,9 @@ import { spawn } from 'node:child_process';
 // plain .mjs `console` is genuinely undeclared. Same reason `process` is
 // imported below rather than reached for as a global.
 import console from 'node:console';
-import { access } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import process from 'node:process';
 
 const BIN = 'dist/cli/review.js';
@@ -46,38 +57,84 @@ try {
 // Not covered here, and worth knowing: this runs `node <path>`, not the
 // installed `aigency-review`. tsc does not set the execute bit; npm sets it
 // when it links `bin`. The path everyone will actually use is unproven.
-const child = spawn(process.execPath, [BIN, 'the cli smoke test'], {
-  env: {
-    PATH: process.env.PATH,
-    ANTHROPIC_API_KEY: 'not-a-real-key-and-must-never-need-to-be',
-    AIGENCY_REVIEW_LENSES: './review/lenses.json',
-  },
-  stdio: ['pipe', 'pipe', 'pipe'],
-});
-
-let out = '';
-child.stdout.on('data', (chunk) => (out += String(chunk)));
-child.stderr.on('data', (chunk) => (out += String(chunk)));
-child.stdin.end('');
-
-const code = await new Promise((resolve) => child.on('close', resolve));
+function runEmptyDiff(extraEnv) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [BIN, 'the cli smoke test'], {
+      env: {
+        PATH: process.env.PATH,
+        AIGENCY_REVIEW_LENSES: './review/lenses.json',
+        ...extraEnv,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (chunk) => (out += String(chunk)));
+    child.stderr.on('data', (chunk) => (out += String(chunk)));
+    child.stdin.end('');
+    child.on('close', (code) => resolve({ code, out }));
+  });
+}
 
 const problems = [];
-if (code !== 1) {
-  problems.push(`expected exit 1 for an empty diff, got ${code}`);
+
+function checkRefused(label, { code, out }) {
+  if (code !== 1) {
+    problems.push(`[${label}] expected exit 1 for an empty diff, got ${code}`);
+  }
+  if (!out.includes('The diff was empty')) {
+    problems.push(`[${label}] expected the report to say the diff was empty`);
+  }
+  if (!out.includes('not a passing one')) {
+    problems.push(`[${label}] expected the report to say the result is red`);
+  }
+  return out;
 }
-if (!out.includes('The diff was empty')) {
-  problems.push('expected the report to say the diff was empty');
-}
-if (!out.includes('not a passing one')) {
-  problems.push('expected the report to say the result is red');
+
+// Scenario 1: the key arrives the way CI supplies it today — ANTHROPIC_API_KEY
+// set directly in the environment. This is the path every existing workflow
+// relies on and the whole reason the environment variable stays first in the
+// precedence.
+const direct = await runEmptyDiff({
+  ANTHROPIC_API_KEY: 'not-a-real-key-and-must-never-need-to-be',
+});
+checkRefused('ANTHROPIC_API_KEY', direct);
+
+// Scenario 2: no ANTHROPIC_API_KEY at all — only a file, via
+// ANTHROPIC_API_KEY_FILE, the way a laptop is meant to supply it now. This is
+// the seam the panel found untested: if `review.ts` merely imported
+// `keyFileReader` without actually passing it to `runReview`, or passed
+// something that never reaches disk, this run would fall back to reporting
+// ANTHROPIC_API_KEY as unconfigured instead of reaching the empty-diff guard
+// — exactly what the assertions below distinguish.
+const keyDir = await mkdtemp(join(tmpdir(), 'aigency-review-cli-check-'));
+const keyPath = join(keyDir, 'anthropic.key');
+try {
+  // The trailing newline is deliberate: it is what `echo … > file` produces,
+  // and this is also incidental coverage that the real `keyFileReader()`
+  // wired in by `review.ts` reads all the way through a real disk read, not
+  // a stand-in for one.
+  await writeFile(keyPath, 'not-a-real-key-and-must-never-need-to-be\n', 'utf8');
+
+  const viaFile = await runEmptyDiff({ ANTHROPIC_API_KEY_FILE: keyPath });
+  const out = checkRefused('ANTHROPIC_API_KEY_FILE', viaFile);
+  if (out.includes('ANTHROPIC_API_KEY')) {
+    problems.push(
+      '[ANTHROPIC_API_KEY_FILE] the report mentions ANTHROPIC_API_KEY as unconfigured — ' +
+        'the key on disk was not found, so review.ts is not actually wiring ' +
+        'keyFileReader() into runReview',
+    );
+  }
+} finally {
+  await rm(keyDir, { recursive: true, force: true });
 }
 
 if (problems.length > 0) {
   console.error(
-    `The binary ran and did the wrong thing:\n${problems.map((p) => `  - ${p}`).join('\n')}\n\nIt said:\n${out}`,
+    `The binary ran and did the wrong thing:\n${problems.map((p) => `  - ${p}`).join('\n')}`,
   );
   process.exit(1);
 }
 
-console.log(`${BIN} started, read an empty diff, refused it, and exited 1.`);
+console.log(
+  `${BIN} started, resolved the key from both an env var and a file on disk, and refused an empty diff both times.`,
+);

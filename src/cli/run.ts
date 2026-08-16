@@ -93,7 +93,7 @@ export async function runReview(
   const resolved = await resolveSettings(env, readKeyFile);
 
   if (resolved.kind === 'incomplete') {
-    return { report: renderMissing(resolved.missing), exitCode: 1 };
+    return { report: renderMissing(resolved.missing, resolved.problems), exitCode: 1 };
   }
   if (resolved.kind === 'invalid') {
     return {

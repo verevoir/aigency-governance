@@ -55,6 +55,24 @@
 // is wrong with what you set up". And whatever goes wrong, the key's value
 // never appears in an error, a reason, or a log — a failure to read names the
 // path it tried, never the bytes it found or failed to find there.
+//
+// A PRESENT-AND-BROKEN SOURCE MUST SURVIVE EVEN WHEN SOMETHING ELSE IS ALSO
+// ABSENT. `kind` — `incomplete` vs `invalid` — is decided by whether anything
+// is missing, not by whether anything is broken, because a person who has
+// configured nothing needs the list of what to set before anything else, and
+// that stays the primary message. But absence and brokenness are not
+// mutually exclusive facts about a single run, and choosing one of them to
+// name the `kind` must never mean discarding the other: an unreadable key
+// file is real information whether or not some other setting also happens to
+// be unset. The first version of this file got that wrong — `incomplete` and
+// `invalid` were built as if only one problem could ever be true at once, so
+// whenever a broken key file coincided with any other missing setting, the
+// broken-file message vanished entirely and the person was told only "you
+// haven't set X", with no trace that the file they DID set was the actual
+// problem. So `incomplete` carries `problems` alongside `missing`: nothing
+// collected on the way through `resolveSettings` is ever silently dropped,
+// whichever `kind` ends up describing the run, and `renderMissing` renders
+// both when both are true.
 
 /** A setting the run needs and does not have. */
 export interface MissingSetting {
@@ -77,7 +95,13 @@ export interface ReviewSettings {
 
 export type SettingsResult =
   | { readonly kind: 'ready'; readonly settings: ReviewSettings }
-  | { readonly kind: 'incomplete'; readonly missing: readonly MissingSetting[] }
+  | {
+      readonly kind: 'incomplete';
+      readonly missing: readonly MissingSetting[];
+      /** Broken settings found along the way — never dropped just because
+       * something else was also absent. See the file header. */
+      readonly problems: readonly string[];
+    }
   | { readonly kind: 'invalid'; readonly problems: readonly string[] };
 
 /**
@@ -197,11 +221,15 @@ async function resolveApiKey(
  *
  * Three outcomes, kept apart because they are three different jobs: `ready`,
  * `incomplete` (something is absent — a person must supply it) and `invalid`
- * (something is present and wrong — a person must correct it). Collapsing the
- * last two would tell someone who typed `4o96` that they had forgotten to set
- * a value they can see in front of them. A key file that exists but could not
- * be read is `invalid`, not `incomplete`, for the same reason: it is present
- * and broken, not absent.
+ * (something is present and wrong, and nothing is also absent — a person must
+ * correct it). Collapsing the last two would tell someone who typed `4o96`
+ * that they had forgotten to set a value they can see in front of them.
+ *
+ * `incomplete` wins the `kind` whenever anything is missing — absence stays
+ * the primary message — but it carries `problems` too, so a broken key file
+ * or a bad `AIGENCY_REVIEW_MAX_TOKENS` found along the way is never silently
+ * dropped just because something else also happened to be unset. See the
+ * file header for why this matters.
  */
 export async function resolveSettings(
   env: Record<string, string | undefined>,
@@ -268,11 +296,12 @@ export async function resolveSettings(
     }
   }
 
-  // Absence is reported before invalidity, because someone who has set nothing
-  // needs the list of what to set, and a complaint about a value they never
-  // supplied would be noise.
+  // Absence decides the `kind` before invalidity does, because someone who
+  // has set nothing needs the list of what to set as the primary message.
+  // That does not mean a problem found alongside it is noise — it rides
+  // along in `problems` either way, and `renderMissing` shows both.
   if (missing.length > 0) {
-    return { kind: 'incomplete', missing };
+    return { kind: 'incomplete', missing, problems };
   }
   if (problems.length > 0) {
     return { kind: 'invalid', problems };
@@ -289,8 +318,17 @@ export async function resolveSettings(
   };
 }
 
-/** The missing settings, rendered for someone reading a CI log. */
-export function renderMissing(missing: readonly MissingSetting[]): string {
+/**
+ * The missing settings — and any problems found alongside them — rendered
+ * for someone reading a CI log. `problems` is a required parameter rather
+ * than an optional one defaulting to empty: a call site that has a
+ * `SettingsResult` in hand should be looking at it, not assuming there is
+ * nothing else to pass.
+ */
+export function renderMissing(
+  missing: readonly MissingSetting[],
+  problems: readonly string[],
+): string {
   const lines = [
     `The review could not run: ${String(missing.length)} setting(s) are not configured.`,
     '',
@@ -302,6 +340,12 @@ export function renderMissing(missing: readonly MissingSetting[]): string {
       `    where:    ${setting.where}`,
       '',
     );
+  }
+  if (problems.length > 0) {
+    lines.push('Also present and wrong:', '');
+    for (const problem of problems) {
+      lines.push(`  ${problem}`, '');
+    }
   }
   lines.push('This is a red result, not a passing one. Nothing was reviewed.');
   return lines.join('\n');

@@ -181,6 +181,36 @@ describe('runReview, given a configuration it cannot use', () => {
 // The guard that stops this system failing silently. Every other red result
 // here is something going wrong loudly; this is the one where everything
 // works perfectly and reviews nothing.
+// Not a `resolveSettings` test wearing a `runReview` hat: `resolveSettings`
+// is always driven here with an INJECTED reader, real or fake, and that
+// leaves the one thing only `runReview` itself can answer untested — what
+// happens when a caller supplies no fourth argument at all. `noKeyFile` in
+// run.ts claims to behave as "every path absent"; this is what actually
+// drives that default rather than a stand-in for it.
+describe('runReview, given no key-file reader at all', () => {
+  it('treats ANTHROPIC_API_KEY_FILE as unreachable when no reader is supplied', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(
+      env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+      SUBJECT,
+      fakes.deps,
+      // No fourth argument — this is the default parameter under test.
+    );
+
+    // If the default silently supplied a real filesystem, or resolved the
+    // path some other way, this would either find nothing (same result,
+    // wrong reason) or crash reading a path that does not exist on this
+    // machine. Asserting the report names the key as unconfigured, rather
+    // than erroring or reaching the panel, is what pins it to "every path
+    // absent" specifically.
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.report).toContain('ANTHROPIC_API_KEY');
+    expect(outcome.report).toContain('Nothing was reviewed');
+    expect(fakes.calls.factory).toBe(0);
+  });
+});
+
 describe('runReview, given a diff with nothing in it', () => {
   const nothing: readonly { readonly what: string; readonly diff: string }[] = [
     { what: 'empty', diff: '' },

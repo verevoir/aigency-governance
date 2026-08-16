@@ -76,11 +76,13 @@ function missingOf(result: SettingsResult): readonly MissingSetting[] {
   return result.missing;
 }
 
+// `problems` can ride on either `invalid` or `incomplete` — see the file
+// header in settings.ts — so this accepts both rather than pinning one.
 function problemsOf(result: SettingsResult): readonly string[] {
-  if (result.kind !== 'invalid') {
-    throw new Error(`expected invalid, got ${JSON.stringify(result)}`);
+  if (result.kind === 'invalid' || result.kind === 'incomplete') {
+    return result.problems;
   }
-  return result.problems;
+  throw new Error(`expected incomplete or invalid, got ${JSON.stringify(result)}`);
 }
 
 function named(missing: readonly MissingSetting[], name: string): MissingSetting {
@@ -319,24 +321,27 @@ describe('resolveSettings, resolving the API key from a file', () => {
     expect(absent.kind).toBe('incomplete');
   });
 
-  // The value itself must never appear anywhere resolveSettings writes text,
-  // including a problem raised about a file that failed. There is nothing to
-  // leak on a read failure — the point asserted here is that the reader's
-  // own `reason` is trusted verbatim and nothing is appended that could ever
-  // carry a key.
-  it('never puts the key file path together with a key value in a problem', async () => {
-    const unreadable = filesystem({
-      '/keys/anthropic': { kind: 'unreadable', reason: 'EACCES: permission denied' },
-    });
-
-    const result = await resolveSettings(
-      env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
-      unreadable.read,
-    );
-
-    const problems = problemsOf(result).join('\n');
-    expect(problems).not.toContain('sk-');
-  });
+  // There WAS a test here asserting the joined problems string did not
+  // contain 'sk-', driven by a mock whose `reason` was the hardcoded string
+  // 'EACCES: permission denied'. That string can never contain 'sk-'
+  // regardless of what resolveSettings does with it, so the assertion could
+  // not fail — it held vacuously, and would not have caught an actual
+  // key-leaking implementation. That is the same shape of defect this very
+  // change fixed elsewhere, caught here by the panel's first real review.
+  //
+  // The honest state of the property "a key's value never reaches a
+  // problem" is that it CANNOT be violated at this layer, and that is worth
+  // stating rather than faking a test for. On the unreadable-file path,
+  // `resolveSettings` never has a key value in scope to leak: `apiKey` is
+  // assigned only in the `found` branch (see `resolveSettings` above), and
+  // `KeyFileResult`'s `unreadable` variant carries only `reason` — there is
+  // no `text` field for a reader to have put a key into even by mistake. The
+  // type system is what enforces this, not a runtime check, so no test
+  // belongs here. What CAN leak a key is a reader or a provider client that
+  // reads it successfully and then fails to redact it before it reaches an
+  // error or a log — a different bug, in a different place, and it is
+  // covered where it is real: `redact()` in tests/anthropic.test.ts, tested
+  // against a value that actually is the key.
 
   it('treats empty file contents as blank, falling through to the next source', async () => {
     const fs = filesystem({
@@ -405,6 +410,64 @@ describe('resolveSettings, resolving the API key from a file', () => {
     // broken pipeline that should fail loudly against the provider rather
     // than be quietly repaired here.
     expect(settings.apiKey).toBe('sk-from-env\n');
+  });
+});
+
+describe('resolveSettings, when a problem and a missing setting are both true', () => {
+  // The exact shape the panel's first real review caught: an unreadable key
+  // file (a problem) coinciding with an unset lens token (a missing
+  // setting). Before this fix, `missing.length > 0` alone decided `kind`
+  // and the broken-file problem vanished from the result entirely — a
+  // person would see only "you haven't set AIGENCY_REVIEW_LENSES_TOKEN",
+  // with no trace that the key file they DID set could not be opened.
+  it('keeps the problem even though something is also missing — nothing is dropped', async () => {
+    const unreadable = filesystem({
+      '/keys/anthropic': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        AIGENCY_REVIEW_LENSES_TOKEN: undefined,
+      },
+      unreadable.read,
+    );
+
+    // `kind` stays 'incomplete': the lens token is genuinely absent, and
+    // absence remains the primary message.
+    expect(result.kind).toBe('incomplete');
+    expect(missingOf(result).map((setting) => setting.name)).toEqual([
+      'AIGENCY_REVIEW_LENSES_TOKEN',
+    ]);
+
+    // But the broken key file is not thereby lost.
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('EACCES'))).toBe(true);
+  });
+
+  it('renders both in the message a person actually reads', async () => {
+    const unreadable = filesystem({
+      '/keys/anthropic': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        AIGENCY_REVIEW_LENSES_TOKEN: undefined,
+      },
+      unreadable.read,
+    );
+
+    const missing = missingOf(result);
+    const problems = problemsOf(result);
+    const rendered = renderMissing(missing, problems);
+
+    expect(rendered).toContain('AIGENCY_REVIEW_LENSES_TOKEN');
+    expect(rendered).toContain('/keys/anthropic');
+    expect(rendered).toContain('EACCES');
   });
 });
 
@@ -546,10 +609,13 @@ describe('resolveSettings, given a maxTokens it cannot use', () => {
     });
   }
 
-  // Someone who has set nothing needs the list of what to set. Complaining
-  // about a token count they never supplied, while saying nothing about the
-  // key, would send them to fix the one thing that is not their problem.
-  it('reports what is missing first, when something is both missing and invalid', async () => {
+  // Someone who has set nothing needs the list of what to set as the
+  // PRIMARY message — that is what decides `kind` here. But the value they
+  // did type, and typed wrong, is not thereby lost: it rides along in
+  // `problems` regardless of which `kind` won, because dropping it there is
+  // exactly the shape of the bug the panel's first review caught in the
+  // key-file case (see the `carries both` describe block below).
+  it('reports what is missing first, but keeps what is also invalid, when both are true', async () => {
     const result = await resolveSettings({ AIGENCY_REVIEW_MAX_TOKENS: 'abc' }, NO_FILES);
 
     expect(result.kind).toBe('incomplete');
@@ -558,15 +624,18 @@ describe('resolveSettings, given a maxTokens it cannot use', () => {
         .map((setting) => setting.name)
         .sort(),
     ).toEqual(['AIGENCY_REVIEW_LENSES_TOKEN', 'ANTHROPIC_API_KEY']);
+    expect(
+      problemsOf(result).some((problem) => problem.includes('AIGENCY_REVIEW_MAX_TOKENS')),
+    ).toBe(true);
   });
 });
 
 describe('renderMissing', () => {
   it('names every missing setting, with what it is for and where it goes', async () => {
-    const missing = missingOf(await resolveSettings({}, NO_FILES));
-    const rendered = renderMissing(missing);
+    const result = await resolveSettings({}, NO_FILES);
+    const rendered = renderMissing(missingOf(result), problemsOf(result));
 
-    for (const setting of missing) {
+    for (const setting of missingOf(result)) {
       expect(rendered).toContain(setting.name);
       expect(rendered).toContain(setting.why);
       expect(rendered).toContain(setting.where);
@@ -574,18 +643,53 @@ describe('renderMissing', () => {
   });
 
   it('says how many settings are unconfigured', async () => {
-    const missing = missingOf(await resolveSettings({}, NO_FILES));
+    const result = await resolveSettings({}, NO_FILES);
 
-    expect(renderMissing(missing)).toContain('2 setting(s)');
+    expect(renderMissing(missingOf(result), problemsOf(result))).toContain('2 setting(s)');
   });
 
   // A run that reviewed nothing is not a run that found nothing wrong. Without
   // this line the log reads like a clean result to anyone skimming it.
   it('says the result is red and that nothing was reviewed', async () => {
-    const missing = missingOf(await resolveSettings({}, NO_FILES));
+    const result = await resolveSettings({}, NO_FILES);
 
-    const rendered = renderMissing(missing);
+    const rendered = renderMissing(missingOf(result), problemsOf(result));
     expect(rendered).toContain('red result, not a passing one');
     expect(rendered).toContain('Nothing was reviewed');
+  });
+
+  it('says nothing about problems when there are none', async () => {
+    const result = await resolveSettings({}, NO_FILES);
+
+    // The empty case matters as its own assertion: a rendering that always
+    // printed the 'Also present and wrong' heading, empty or not, would pass
+    // every test above while cluttering the common case — nothing missing
+    // AND nothing broken — with a heading over nothing.
+    expect(renderMissing(missingOf(result), problemsOf(result))).not.toContain(
+      'Also present and wrong',
+    );
+  });
+
+  // The rendering half of the fix: a problem that survives resolution must
+  // actually reach the text a person reads, under a heading of its own so it
+  // is not mistaken for one of the missing settings above it.
+  it('names a problem found alongside a missing setting, under its own heading', async () => {
+    const unreadable = filesystem({
+      '/keys/anthropic': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+    const result = await resolveSettings(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        AIGENCY_REVIEW_LENSES_TOKEN: undefined,
+      },
+      unreadable.read,
+    );
+
+    const rendered = renderMissing(missingOf(result), problemsOf(result));
+
+    expect(rendered).toContain('Also present and wrong');
+    expect(rendered).toContain('/keys/anthropic');
+    expect(rendered).toContain('EACCES');
   });
 });
