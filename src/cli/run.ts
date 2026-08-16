@@ -18,7 +18,12 @@ import type { Reviewer } from '../review/panel.js';
 import type { Subject } from '../review/prompt.js';
 import { exitCodeFor, renderReport } from '../review/report.js';
 import type { SourceReader } from '../review/load.js';
-import { renderMissing, resolveSettings, type ReviewSettings } from '../review/settings.js';
+import {
+  renderMissing,
+  resolveSettings,
+  type KeyFileReader,
+  type ReviewSettings,
+} from '../review/settings.js';
 
 export interface ReviewDeps {
   /** How the lens set is fetched. */
@@ -34,6 +39,16 @@ export interface ReviewOutcome {
   /** 0 only for an approval. Everything else, including "could not run", is red. */
   readonly exitCode: number;
 }
+
+/**
+ * The default when no reader is supplied: every path is absent, so
+ * `resolveSettings` behaves exactly as it did before the file source
+ * existed, and this module never touches a real filesystem unless the process
+ * boundary explicitly hands it one. The real implementation, `keyFileReader`
+ * in readers.ts, is what review.ts actually wires — matching how `wired.read`
+ * for the lens set is constructed there rather than here.
+ */
+const noKeyFile: KeyFileReader = () => Promise.resolve({ kind: 'absent' });
 
 function couldNotRun(subject: string, source: string, reason: string): ReviewOutcome {
   return {
@@ -73,8 +88,9 @@ export async function runReview(
   env: Record<string, string | undefined>,
   subject: Subject,
   deps: (settings: ReviewSettings) => ReviewDeps,
+  readKeyFile: KeyFileReader = noKeyFile,
 ): Promise<ReviewOutcome> {
-  const resolved = resolveSettings(env);
+  const resolved = await resolveSettings(env, readKeyFile);
 
   if (resolved.kind === 'incomplete') {
     return { report: renderMissing(resolved.missing), exitCode: 1 };

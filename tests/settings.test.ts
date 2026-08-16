@@ -1,5 +1,7 @@
-// The environment is passed in, so none of this touches `process.env` and no
-// test can leak configuration into another.
+// The environment is passed in, so none of this touches `process.env`, and
+// the key file reader is passed in too, so none of this touches a real
+// filesystem — no test can leak configuration, or a real key file on the
+// machine running the suite, into another.
 //
 // What is asserted here is mostly the CONTENT of the answer rather than its
 // shape. A configuration failure is read by someone who does not yet know what
@@ -14,6 +16,8 @@ import {
   DEFAULT_MODEL,
   renderMissing,
   resolveSettings,
+  type KeyFileReader,
+  type KeyFileResult,
   type MissingSetting,
   type ReviewSettings,
   type SettingsResult,
@@ -32,6 +36,26 @@ function env(
     ANTHROPIC_API_KEY: 'sk-ant-test',
     AIGENCY_REVIEW_LENSES_TOKEN: 'lens-token',
     ...overrides,
+  };
+}
+
+/** No file exists anywhere. The default for tests that are not about the
+ * file source at all, so they stay tests of one thing. */
+const NO_FILES: KeyFileReader = () => Promise.resolve({ kind: 'absent' });
+
+/** A reader backed by a plain map, so a test names the paths it cares about
+ * and nothing else, and asserts which paths were actually asked for. */
+function filesystem(files: Record<string, KeyFileResult>): {
+  readonly read: KeyFileReader;
+  readonly asked: string[];
+} {
+  const asked: string[] = [];
+  return {
+    asked,
+    read: (path: string) => {
+      asked.push(path);
+      return Promise.resolve(files[path] ?? { kind: 'absent' });
+    },
   };
 }
 
@@ -68,15 +92,18 @@ function named(missing: readonly MissingSetting[], name: string): MissingSetting
 }
 
 describe('resolveSettings, given everything it needs', () => {
-  it('returns ready with every field taken from the environment', () => {
+  it('returns ready with every field taken from the environment', async () => {
     const settings = readyOf(
-      resolveSettings({
-        ANTHROPIC_API_KEY: 'sk-ant-complete',
-        AIGENCY_REVIEW_MODEL: 'claude-opus-9',
-        AIGENCY_REVIEW_MAX_TOKENS: '8192',
-        AIGENCY_REVIEW_LENSES: 'https://lenses.test/set.json',
-        AIGENCY_REVIEW_LENSES_TOKEN: 'lens-token',
-      }),
+      await resolveSettings(
+        {
+          ANTHROPIC_API_KEY: 'sk-ant-complete',
+          AIGENCY_REVIEW_MODEL: 'claude-opus-9',
+          AIGENCY_REVIEW_MAX_TOKENS: '8192',
+          AIGENCY_REVIEW_LENSES: 'https://lenses.test/set.json',
+          AIGENCY_REVIEW_LENSES_TOKEN: 'lens-token',
+        },
+        NO_FILES,
+      ),
     );
 
     // Compared whole, so a field silently dropped or added fails here.
@@ -91,8 +118,10 @@ describe('resolveSettings, given everything it needs', () => {
 });
 
 describe('resolveSettings, given no API key', () => {
-  it('reports it as incomplete, naming the variable and what it is for', () => {
-    const missing = missingOf(resolveSettings(env({ ANTHROPIC_API_KEY: undefined })));
+  it('reports it as incomplete, naming the variable and what it is for', async () => {
+    const missing = missingOf(
+      await resolveSettings(env({ ANTHROPIC_API_KEY: undefined }), NO_FILES),
+    );
     const entry = named(missing, 'ANTHROPIC_API_KEY');
 
     expect(entry.why).toContain('key');
@@ -106,33 +135,39 @@ describe('resolveSettings, given no API key', () => {
   // Two audiences, two answers. A log that gives only the GitHub route leaves
   // someone reproducing the failure locally with nothing to type, and one that
   // gives only the export leaves the CI failure unfixed.
-  it('names both the GitHub place and the local place to put it', () => {
-    const missing = missingOf(resolveSettings(env({ ANTHROPIC_API_KEY: undefined })));
+  it('names the GitHub place and both local places to put it', async () => {
+    const missing = missingOf(
+      await resolveSettings(env({ ANTHROPIC_API_KEY: undefined }), NO_FILES),
+    );
     const entry = named(missing, 'ANTHROPIC_API_KEY');
 
     expect(entry.where).toContain('Secrets and variables');
     expect(entry.where).toContain('export ANTHROPIC_API_KEY=');
+    // The two file sources, so a reader who cannot set a repository secret,
+    // or is not the one exporting the CI variable, still has a way to fix it.
+    expect(entry.where).toContain('ANTHROPIC_API_KEY_FILE');
+    expect(entry.where).toContain('.config/verevoir/anthropic.key');
   });
 
   // This is the real GitHub Actions failure, not a hypothetical one: an unset
   // secret interpolates to '' rather than disappearing, so the empty case is
   // the case that actually reaches production. Asserted as its own test, and
   // then compared against the absent case so the two cannot drift apart.
-  it('treats an empty-string key exactly as an absent one', () => {
-    const result = resolveSettings(env({ ANTHROPIC_API_KEY: '' }));
+  it('treats an empty-string key exactly as an absent one', async () => {
+    const result = await resolveSettings(env({ ANTHROPIC_API_KEY: '' }), NO_FILES);
 
     expect(result.kind).toBe('incomplete');
     expect(missingOf(result)).toEqual(
-      missingOf(resolveSettings(env({ ANTHROPIC_API_KEY: undefined }))),
+      missingOf(await resolveSettings(env({ ANTHROPIC_API_KEY: undefined }), NO_FILES)),
     );
   });
 
-  it('treats a whitespace-only key as absent', () => {
-    const result = resolveSettings(env({ ANTHROPIC_API_KEY: '  \t\n ' }));
+  it('treats a whitespace-only key as absent', async () => {
+    const result = await resolveSettings(env({ ANTHROPIC_API_KEY: '  \t\n ' }), NO_FILES);
 
     expect(result.kind).toBe('incomplete');
     expect(missingOf(result)).toEqual(
-      missingOf(resolveSettings(env({ ANTHROPIC_API_KEY: undefined }))),
+      missingOf(await resolveSettings(env({ ANTHROPIC_API_KEY: undefined }), NO_FILES)),
     );
   });
 });
@@ -142,8 +177,8 @@ describe('resolveSettings, given an empty environment', () => {
   // discovered by the person least able to guess what the next one will be.
   // Asserting the length as well as the names is what makes "reports the first
   // and stops" a failure here rather than a passing subset.
-  it('reports both missing settings together rather than one at a time', () => {
-    const missing = missingOf(resolveSettings({}));
+  it('reports both missing settings together rather than one at a time', async () => {
+    const missing = missingOf(await resolveSettings({}, NO_FILES));
 
     expect(missing).toHaveLength(2);
     expect(missing.map((setting) => setting.name).sort()).toEqual([
@@ -152,8 +187,11 @@ describe('resolveSettings, given an empty environment', () => {
     ]);
   });
 
-  it('says where the lens token comes from in Actions and on a laptop', () => {
-    const entry = named(missingOf(resolveSettings({})), 'AIGENCY_REVIEW_LENSES_TOKEN');
+  it('says where the lens token comes from in Actions and on a laptop', async () => {
+    const entry = named(
+      missingOf(await resolveSettings({}, NO_FILES)),
+      'AIGENCY_REVIEW_LENSES_TOKEN',
+    );
 
     expect(entry.where).toContain('secrets.GITHUB_TOKEN');
     expect(entry.where).toContain('AIGENCY_REVIEW_LENSES');
@@ -161,11 +199,221 @@ describe('resolveSettings, given an empty environment', () => {
   });
 });
 
-describe('resolveSettings, resolving the lens token', () => {
-  it('accepts GITHUB_TOKEN when no dedicated token is set', () => {
+describe('resolveSettings, resolving the API key from a file', () => {
+  it('prefers the environment variable over ANTHROPIC_API_KEY_FILE, even when both are set', async () => {
+    const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: 'sk-from-file' } });
+
     const settings = readyOf(
-      resolveSettings(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: 'sk-from-env', ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+        fs.read,
+      ),
+    );
+
+    expect(settings.apiKey).toBe('sk-from-env');
+    // The whole point of the precedence: a file present on disk is never even
+    // opened when the environment already answered.
+    expect(fs.asked).toEqual([]);
+  });
+
+  it('reads ANTHROPIC_API_KEY_FILE when the environment variable is unset', async () => {
+    const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: 'sk-from-file' } });
+
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+        fs.read,
+      ),
+    );
+
+    expect(settings.apiKey).toBe('sk-from-file');
+  });
+
+  it('prefers ANTHROPIC_API_KEY_FILE over the default path, when both would supply a key', async () => {
+    const fs = filesystem({
+      '/keys/anthropic': { kind: 'text', text: 'sk-from-explicit-file' },
+      '/home/it/.config/verevoir/anthropic.key': { kind: 'text', text: 'sk-from-default-path' },
+    });
+
+    const settings = readyOf(
+      await resolveSettings(
+        env({
+          ANTHROPIC_API_KEY: undefined,
+          ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+          HOME: '/home/it',
+        }),
+        fs.read,
+      ),
+    );
+
+    expect(settings.apiKey).toBe('sk-from-explicit-file');
+  });
+
+  it('falls back to the default path when neither the environment nor ANTHROPIC_API_KEY_FILE supply a key', async () => {
+    const fs = filesystem({
+      '/home/it/.config/verevoir/anthropic.key': { kind: 'text', text: 'sk-from-default-path' },
+    });
+
+    const settings = readyOf(
+      await resolveSettings(env({ ANTHROPIC_API_KEY: undefined, HOME: '/home/it' }), fs.read),
+    );
+
+    expect(settings.apiKey).toBe('sk-from-default-path');
+  });
+
+  it('reads the default path under XDG_CONFIG_HOME, when it is set', async () => {
+    const fs = filesystem({
+      '/xdg/verevoir/anthropic.key': { kind: 'text', text: 'sk-from-xdg' },
+    });
+
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: undefined, XDG_CONFIG_HOME: '/xdg', HOME: '/home/it' }),
+        fs.read,
+      ),
+    );
+
+    expect(settings.apiKey).toBe('sk-from-xdg');
+  });
+
+  // A missing default path is not an error — it is simply that source
+  // contributing nothing, same as any other absent file. This is the case
+  // that actually matters most: most environments have not set any of this
+  // up, and the review must still resolve to a clear "incomplete" rather than
+  // a thrown exception.
+  it('resolves to incomplete, not an error, when the default path does not exist', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, HOME: '/home/it' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(named(missingOf(result), 'ANTHROPIC_API_KEY')).toBeDefined();
+  });
+
+  // A file that exists and cannot be read is a different problem from a file
+  // that was never created, and must be reported differently: `invalid`
+  // rather than `incomplete`, because it is present and broken rather than
+  // absent.
+  it('reports a file that cannot be read differently from one that is absent', async () => {
+    const unreadable = filesystem({
+      '/keys/anthropic': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+      unreadable.read,
+    );
+
+    expect(result.kind).toBe('invalid');
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('EACCES'))).toBe(true);
+
+    // Compared against the genuinely-absent case, so the two cannot collapse
+    // into the same outcome by accident.
+    const absent = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+      NO_FILES,
+    );
+    expect(absent.kind).toBe('incomplete');
+  });
+
+  // The value itself must never appear anywhere resolveSettings writes text,
+  // including a problem raised about a file that failed. There is nothing to
+  // leak on a read failure — the point asserted here is that the reader's
+  // own `reason` is trusted verbatim and nothing is appended that could ever
+  // carry a key.
+  it('never puts the key file path together with a key value in a problem', async () => {
+    const unreadable = filesystem({
+      '/keys/anthropic': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+      unreadable.read,
+    );
+
+    const problems = problemsOf(result).join('\n');
+    expect(problems).not.toContain('sk-');
+  });
+
+  it('treats empty file contents as blank, falling through to the next source', async () => {
+    const fs = filesystem({
+      '/keys/anthropic': { kind: 'text', text: '' },
+      '/home/it/.config/verevoir/anthropic.key': { kind: 'text', text: 'sk-from-default-path' },
+    });
+
+    const settings = readyOf(
+      await resolveSettings(
+        env({
+          ANTHROPIC_API_KEY: undefined,
+          ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+          HOME: '/home/it',
+        }),
+        fs.read,
+      ),
+    );
+
+    expect(settings.apiKey).toBe('sk-from-default-path');
+  });
+
+  it('treats whitespace-only file contents as blank, falling through to the next source', async () => {
+    const fs = filesystem({
+      '/keys/anthropic': { kind: 'text', text: '  \n\t  \n' },
+      '/home/it/.config/verevoir/anthropic.key': { kind: 'text', text: 'sk-from-default-path' },
+    });
+
+    const settings = readyOf(
+      await resolveSettings(
+        env({
+          ANTHROPIC_API_KEY: undefined,
+          ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+          HOME: '/home/it',
+        }),
+        fs.read,
+      ),
+    );
+
+    expect(settings.apiKey).toBe('sk-from-default-path');
+  });
+
+  // The asymmetry that matters most in this feature: a file is trimmed, the
+  // environment is not. Both asserted here, together, so a future edit that
+  // "fixes" one to match the other fails immediately rather than passing a
+  // suite that only ever checked one direction.
+  it('trims a trailing newline from a key read from a file', async () => {
+    const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: 'sk-from-file\n' } });
+
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+        fs.read,
+      ),
+    );
+
+    expect(settings.apiKey).toBe('sk-from-file');
+  });
+
+  it('does not trim whitespace from a key read from the environment', async () => {
+    const settings = readyOf(
+      await resolveSettings(env({ ANTHROPIC_API_KEY: 'sk-from-env\n' }), NO_FILES),
+    );
+
+    // Not "absent" and not "trimmed" — the value the environment handed over,
+    // byte for byte, because whitespace arriving through an env var is a
+    // broken pipeline that should fail loudly against the provider rather
+    // than be quietly repaired here.
+    expect(settings.apiKey).toBe('sk-from-env\n');
+  });
+});
+
+describe('resolveSettings, resolving the lens token', () => {
+  it('accepts GITHUB_TOKEN when no dedicated token is set', async () => {
+    const settings = readyOf(
+      await resolveSettings(
         env({ AIGENCY_REVIEW_LENSES_TOKEN: undefined, GITHUB_TOKEN: 'gh-actions-token' }),
+        NO_FILES,
       ),
     );
 
@@ -175,19 +423,21 @@ describe('resolveSettings, resolving the lens token', () => {
   // The dedicated variable exists precisely so a token with wider access can
   // override the one Actions injects. If GITHUB_TOKEN won, setting it would do
   // nothing and nothing would say so.
-  it('prefers AIGENCY_REVIEW_LENSES_TOKEN over GITHUB_TOKEN when both are set', () => {
+  it('prefers AIGENCY_REVIEW_LENSES_TOKEN over GITHUB_TOKEN when both are set', async () => {
     const settings = readyOf(
-      resolveSettings(
+      await resolveSettings(
         env({ AIGENCY_REVIEW_LENSES_TOKEN: 'dedicated', GITHUB_TOKEN: 'gh-actions-token' }),
+        NO_FILES,
       ),
     );
 
     expect(settings.lensToken).toBe('dedicated');
   });
 
-  it('treats an empty GITHUB_TOKEN as no token at all', () => {
-    const result = resolveSettings(
+  it('treats an empty GITHUB_TOKEN as no token at all', async () => {
+    const result = await resolveSettings(
       env({ AIGENCY_REVIEW_LENSES_TOKEN: undefined, GITHUB_TOKEN: '' }),
+      NO_FILES,
     );
 
     expect(missingOf(result).map((setting) => setting.name)).toEqual([
@@ -197,13 +447,14 @@ describe('resolveSettings, resolving the lens token', () => {
 
   // The laptop run. Demanding a token to read a file off disk would make
   // reviewing against a checked-out copy impossible for no reason.
-  it('needs no token when the lens source is a file path', () => {
+  it('needs no token when the lens source is a file path', async () => {
     const settings = readyOf(
-      resolveSettings(
+      await resolveSettings(
         env({
           AIGENCY_REVIEW_LENSES: './review/lenses.json',
           AIGENCY_REVIEW_LENSES_TOKEN: undefined,
         }),
+        NO_FILES,
       ),
     );
 
@@ -215,8 +466,8 @@ describe('resolveSettings, resolving the lens token', () => {
 });
 
 describe('resolveSettings, falling back to defaults', () => {
-  it('uses the exported defaults for model, maxTokens and lens source', () => {
-    const settings = readyOf(resolveSettings(env()));
+  it('uses the exported defaults for model, maxTokens and lens source', async () => {
+    const settings = readyOf(await resolveSettings(env(), NO_FILES));
 
     expect(settings.model).toBe(DEFAULT_MODEL);
     expect(settings.maxTokens).toBe(DEFAULT_MAX_TOKENS);
@@ -238,21 +489,28 @@ describe('resolveSettings, falling back to defaults', () => {
     );
   });
 
-  it('takes an override for the model', () => {
-    const settings = readyOf(resolveSettings(env({ AIGENCY_REVIEW_MODEL: 'claude-haiku-3' })));
+  it('takes an override for the model', async () => {
+    const settings = readyOf(
+      await resolveSettings(env({ AIGENCY_REVIEW_MODEL: 'claude-haiku-3' }), NO_FILES),
+    );
 
     expect(settings.model).toBe('claude-haiku-3');
   });
 
-  it('takes an override for maxTokens, as a number', () => {
-    const settings = readyOf(resolveSettings(env({ AIGENCY_REVIEW_MAX_TOKENS: '12000' })));
+  it('takes an override for maxTokens, as a number', async () => {
+    const settings = readyOf(
+      await resolveSettings(env({ AIGENCY_REVIEW_MAX_TOKENS: '12000' }), NO_FILES),
+    );
 
     expect(settings.maxTokens).toBe(12000);
   });
 
-  it('takes an override for the lens source', () => {
+  it('takes an override for the lens source', async () => {
     const settings = readyOf(
-      resolveSettings(env({ AIGENCY_REVIEW_LENSES: 'https://lenses.test/other.json' })),
+      await resolveSettings(
+        env({ AIGENCY_REVIEW_LENSES: 'https://lenses.test/other.json' }),
+        NO_FILES,
+      ),
     );
 
     expect(settings.lensSource).toBe('https://lenses.test/other.json');
@@ -264,8 +522,8 @@ describe('resolveSettings, given a maxTokens it cannot use', () => {
   // default would run the review against a configuration its own environment
   // contradicts, and report nothing.
   for (const raw of ['abc', '0', '-1', '1.5', '1e400']) {
-    it(`refuses ${raw} rather than quietly defaulting`, () => {
-      const result = resolveSettings(env({ AIGENCY_REVIEW_MAX_TOKENS: raw }));
+    it(`refuses ${raw} rather than quietly defaulting`, async () => {
+      const result = await resolveSettings(env({ AIGENCY_REVIEW_MAX_TOKENS: raw }), NO_FILES);
 
       // `invalid` carries no settings at all, so this is also the assertion
       // that DEFAULT_MAX_TOKENS was not substituted behind the caller's back.
@@ -281,18 +539,18 @@ describe('resolveSettings, given a maxTokens it cannot use', () => {
   // parse branch that had been deleted in favour of the default would fail
   // each of them rather than passing one by coincidence.
   for (const raw of ['1', '8192', '200000']) {
-    it(`accepts ${raw}`, () => {
-      expect(readyOf(resolveSettings(env({ AIGENCY_REVIEW_MAX_TOKENS: raw }))).maxTokens).toBe(
-        Number(raw),
-      );
+    it(`accepts ${raw}`, async () => {
+      expect(
+        readyOf(await resolveSettings(env({ AIGENCY_REVIEW_MAX_TOKENS: raw }), NO_FILES)).maxTokens,
+      ).toBe(Number(raw));
     });
   }
 
   // Someone who has set nothing needs the list of what to set. Complaining
   // about a token count they never supplied, while saying nothing about the
   // key, would send them to fix the one thing that is not their problem.
-  it('reports what is missing first, when something is both missing and invalid', () => {
-    const result = resolveSettings({ AIGENCY_REVIEW_MAX_TOKENS: 'abc' });
+  it('reports what is missing first, when something is both missing and invalid', async () => {
+    const result = await resolveSettings({ AIGENCY_REVIEW_MAX_TOKENS: 'abc' }, NO_FILES);
 
     expect(result.kind).toBe('incomplete');
     expect(
@@ -304,10 +562,10 @@ describe('resolveSettings, given a maxTokens it cannot use', () => {
 });
 
 describe('renderMissing', () => {
-  const missing = missingOf(resolveSettings({}));
-  const rendered = renderMissing(missing);
+  it('names every missing setting, with what it is for and where it goes', async () => {
+    const missing = missingOf(await resolveSettings({}, NO_FILES));
+    const rendered = renderMissing(missing);
 
-  it('names every missing setting, with what it is for and where it goes', () => {
     for (const setting of missing) {
       expect(rendered).toContain(setting.name);
       expect(rendered).toContain(setting.why);
@@ -315,13 +573,18 @@ describe('renderMissing', () => {
     }
   });
 
-  it('says how many settings are unconfigured', () => {
-    expect(rendered).toContain('2 setting(s)');
+  it('says how many settings are unconfigured', async () => {
+    const missing = missingOf(await resolveSettings({}, NO_FILES));
+
+    expect(renderMissing(missing)).toContain('2 setting(s)');
   });
 
   // A run that reviewed nothing is not a run that found nothing wrong. Without
   // this line the log reads like a clean result to anyone skimming it.
-  it('says the result is red and that nothing was reviewed', () => {
+  it('says the result is red and that nothing was reviewed', async () => {
+    const missing = missingOf(await resolveSettings({}, NO_FILES));
+
+    const rendered = renderMissing(missing);
     expect(rendered).toContain('red result, not a passing one');
     expect(rendered).toContain('Nothing was reviewed');
   });

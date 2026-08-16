@@ -13,6 +13,7 @@
 import { readFile } from 'node:fs/promises';
 
 import type { ReadResult, SourceReader } from './load.js';
+import type { KeyFileReader, KeyFileResult } from './settings.js';
 
 /** Anything that behaves like `fetch` for our purposes. */
 export type FetchLike = (url: string) => Promise<{
@@ -86,4 +87,34 @@ export function readerFor(source: string, fetchImpl: FetchLike): SourceReader {
   return source.startsWith('http://') || source.startsWith('https://')
     ? httpReader(fetchImpl)
     : fileReader();
+}
+
+/**
+ * Reads a candidate API key file from disk. `ENOENT` and `ENOTDIR` are
+ * `absent` — a file nobody wrote is the ordinary shape of a source with
+ * nothing to offer, and `resolveSettings` moves on to the next one.
+ * Everything else — `EACCES`, `EISDIR`, any other I/O error — is
+ * `unreadable`, because a file that IS there and could not be opened is a
+ * problem someone already tried to solve, and calling it absent sends them
+ * looking for a file that exists.
+ *
+ * A failed read has no content to have leaked: the reason names the failure
+ * code and the message Node produced opening the path, never bytes read from
+ * it, because there are none to name.
+ */
+export function keyFileReader(): KeyFileReader {
+  return async (path: string): Promise<KeyFileResult> => {
+    try {
+      return { kind: 'text', text: await readFile(path, 'utf8') };
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return { kind: 'absent' };
+      }
+      return {
+        kind: 'unreadable',
+        reason: `${code ?? 'unknown'}: ${(cause as Error).message}`,
+      };
+    }
+  };
 }

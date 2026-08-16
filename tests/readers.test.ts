@@ -11,7 +11,13 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { fileReader, httpReader, readerFor, type FetchLike } from '../src/review/readers.js';
+import {
+  fileReader,
+  httpReader,
+  keyFileReader,
+  readerFor,
+  type FetchLike,
+} from '../src/review/readers.js';
 
 type FetchResponse = Awaited<ReturnType<FetchLike>>;
 
@@ -168,6 +174,42 @@ describe('fileReader', () => {
     const result = await fileReader()(REPO_ROOT);
     expect(result.kind).toBe('unreachable');
     if (result.kind === 'text') throw new Error('unreachable');
+    expect(result.reason).toContain('EISDIR');
+  });
+});
+
+// The port `resolveSettings` is injected with. Different vocabulary from
+// `fileReader` on purpose — `absent`/`unreadable`, not `missing`/`unreachable`
+// — but the same real distinction underneath: a file nobody wrote is a
+// different problem from one nobody can open.
+describe('keyFileReader', () => {
+  it('reads a file that is there, verbatim — untrimmed', async () => {
+    const result = await keyFileReader()(PACKAGE_JSON);
+    expect(result.kind).toBe('text');
+    if (result.kind !== 'text') throw new Error('unreachable');
+    expect(result.text).toContain('@verevoir/aigency-governance');
+  });
+
+  it('reports a path that does not exist as absent, not as an error', async () => {
+    const result = await keyFileReader()(NOT_THERE);
+    expect(result).toEqual({ kind: 'absent' });
+  });
+
+  // A path that runs through a file is a wrong path, which is the same class
+  // of mistake as a name that is not there.
+  it('reports a path that runs through a file as absent', async () => {
+    const result = await keyFileReader()(THROUGH_A_FILE);
+    expect(result).toEqual({ kind: 'absent' });
+  });
+
+  // The directory exists. Reporting it as absent would say the opposite of
+  // what is true, and send someone looking for a file that is right there —
+  // and the reason names the failure, never any bytes, because a failed open
+  // never read any.
+  it("reports a directory as unreadable, naming the failure and not the path's contents", async () => {
+    const result = await keyFileReader()(REPO_ROOT);
+    expect(result.kind).toBe('unreadable');
+    if (result.kind !== 'unreadable') throw new Error('unreachable');
     expect(result.reason).toContain('EISDIR');
   });
 });

@@ -15,6 +15,46 @@
 // faithfully report as "the review could not run: HTTP 401" — true, useless,
 // and pointing at the wrong thing entirely. The person needed to be told they
 // had not added a secret.
+//
+// THE API KEY, SPECIFICALLY, HAS THREE SOURCES, TRIED IN A FIXED ORDER:
+//
+//   1. `ANTHROPIC_API_KEY` in the environment, if set and non-blank. This
+//      wins, unconditionally, because it is how GitHub Actions supplies a
+//      secret and CI must keep working exactly as it does today.
+//   2. Otherwise `ANTHROPIC_API_KEY_FILE`, if set — a path to read the key
+//      from.
+//   3. Otherwise a conventional default path: `$XDG_CONFIG_HOME/verevoir/
+//      anthropic.key`, or `~/.config/verevoir/anthropic.key` when
+//      `XDG_CONFIG_HOME` is unset.
+//
+// A file is not only a fallback for when the environment fails to arrive — it
+// is the better mechanism, and the environment variable stays first for
+// compatibility rather than because it is preferred. A key in the process
+// environment is inherited by every child process the runtime spawns: every
+// declared command in every repository, including `npm install` running a
+// postinstall script fetched off the network a moment earlier. A file read at
+// the point of use is touched only by the code that needs it and nothing
+// else.
+//
+// A key read from a file is trimmed of surrounding whitespace, including a
+// trailing newline; a key read from the environment is not. That asymmetry is
+// deliberate and not an oversight: `echo "key" > file` is how almost every
+// key file gets written, and it always ends in a newline, so trimming a file
+// is trimming what every ordinary tool produces. Whitespace arriving through
+// an environment variable is a broken pipeline upstream of this process, and
+// should fail loudly against the provider rather than be quietly repaired
+// here.
+//
+// Reading a file gets the same three-way care external input gets elsewhere
+// in this codebase (compare `ReadResult` in load.ts): a path that does not
+// exist is not an error, it is simply that source contributing nothing, and
+// resolution moves on to the next one. A file that exists and cannot be
+// opened — permissions, a directory, anything else — IS distinguishable from
+// one that is absent, because those are different problems for a person: one
+// is "you have not set this up yet", the other is "you tried, and something
+// is wrong with what you set up". And whatever goes wrong, the key's value
+// never appears in an error, a reason, or a log — a failure to read names the
+// path it tried, never the bytes it found or failed to find there.
 
 /** A setting the run needs and does not have. */
 export interface MissingSetting {
@@ -41,6 +81,28 @@ export type SettingsResult =
   | { readonly kind: 'invalid'; readonly problems: readonly string[] };
 
 /**
+ * What reading one candidate key file found. Three answers, for the same
+ * reason `ReadResult` in load.ts has three: a file that is not there is the
+ * ordinary shape of "this source has nothing to offer", and resolution moves
+ * on to try the next one. A file that IS there and could not be opened is a
+ * different problem for a different moment — someone already tried to set
+ * this up, and `absent` would send them looking for a file that exists.
+ */
+export type KeyFileResult =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unreadable'; readonly reason: string };
+
+/**
+ * Reads one candidate path for the API key. Injected so this module never
+ * touches `node:fs` itself — the same separation `loadLensSet` keeps from its
+ * `SourceReader`, for the same reason: the whole precedence chain below is
+ * driven by a test with no disk at all, and the one real implementation lives
+ * beside the other real readers, in readers.ts.
+ */
+export type KeyFileReader = (path: string) => Promise<KeyFileResult>;
+
+/**
  * Pinned, not discovered. The same commit judged by two different models is
  * two different verdicts, and a judge that changes because someone's shell
  * differs is a bar that moved without anyone deciding to move it.
@@ -60,27 +122,112 @@ function present(value: string | undefined): string | undefined {
   return value === undefined || value.trim() === '' ? undefined : value;
 }
 
+/** Where the conventional key file lives, given what the environment says
+ * about a config home — or `undefined` when neither it nor `HOME` is set,
+ * which just means this source has nowhere to look. */
+function defaultKeyFilePath(env: Record<string, string | undefined>): string | undefined {
+  const xdgConfigHome = present(env['XDG_CONFIG_HOME']);
+  if (xdgConfigHome !== undefined) {
+    return `${xdgConfigHome}/verevoir/anthropic.key`;
+  }
+  const home = present(env['HOME']);
+  return home === undefined ? undefined : `${home}/.config/verevoir/anthropic.key`;
+}
+
+type ApiKeyResolution =
+  | { readonly kind: 'found'; readonly value: string }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string };
+
+/** Reads and classifies one candidate file: found, contributing nothing
+ * (absent, or present but blank — the same collapse `present()` already
+ * makes for the environment variable, and for the same reason), or a real
+ * problem the reader could not get past. */
+async function keyFromPath(path: string, readKeyFile: KeyFileReader): Promise<ApiKeyResolution> {
+  const found = await readKeyFile(path);
+  if (found.kind === 'absent') {
+    return { kind: 'absent' };
+  }
+  if (found.kind === 'unreadable') {
+    return { kind: 'unreadable', path, reason: found.reason };
+  }
+  // Trimmed here, not by the reader: a reader that trims would silently
+  // repair a value handed to it some other way tomorrow. This is the one
+  // place a file's content is treated differently from the environment's, and
+  // the difference is deliberate — see the file header.
+  const trimmed = found.text.trim();
+  return trimmed === '' ? { kind: 'absent' } : { kind: 'found', value: trimmed };
+}
+
+/** The three sources, tried in order, stopping at the first that supplies a
+ * value or hits a real problem. `absent` — from any source — is what lets
+ * resolution try the next one; `unreadable` is not, because it is a problem
+ * with a source someone already configured. */
+async function resolveApiKey(
+  env: Record<string, string | undefined>,
+  readKeyFile: KeyFileReader,
+): Promise<ApiKeyResolution> {
+  const fromEnv = present(env['ANTHROPIC_API_KEY']);
+  if (fromEnv !== undefined) {
+    return { kind: 'found', value: fromEnv };
+  }
+
+  const explicitPath = present(env['ANTHROPIC_API_KEY_FILE']);
+  if (explicitPath !== undefined) {
+    const result = await keyFromPath(explicitPath, readKeyFile);
+    if (result.kind !== 'absent') {
+      return result;
+    }
+  }
+
+  const defaultPath = defaultKeyFilePath(env);
+  if (defaultPath !== undefined) {
+    const result = await keyFromPath(defaultPath, readKeyFile);
+    if (result.kind !== 'absent') {
+      return result;
+    }
+  }
+
+  return { kind: 'absent' };
+}
+
 /**
- * Read the settings out of an environment.
+ * Read the settings out of an environment, plus wherever the API key file
+ * source points.
  *
  * Three outcomes, kept apart because they are three different jobs: `ready`,
  * `incomplete` (something is absent — a person must supply it) and `invalid`
  * (something is present and wrong — a person must correct it). Collapsing the
  * last two would tell someone who typed `4o96` that they had forgotten to set
- * a value they can see in front of them.
+ * a value they can see in front of them. A key file that exists but could not
+ * be read is `invalid`, not `incomplete`, for the same reason: it is present
+ * and broken, not absent.
  */
-export function resolveSettings(env: Record<string, string | undefined>): SettingsResult {
+export async function resolveSettings(
+  env: Record<string, string | undefined>,
+  readKeyFile: KeyFileReader,
+): Promise<SettingsResult> {
   const missing: MissingSetting[] = [];
   const problems: string[] = [];
 
-  const apiKey = present(env['ANTHROPIC_API_KEY']);
-  if (apiKey === undefined) {
+  const apiKeyResolution = await resolveApiKey(env, readKeyFile);
+  let apiKey: string | undefined;
+  if (apiKeyResolution.kind === 'found') {
+    apiKey = apiKeyResolution.value;
+  } else if (apiKeyResolution.kind === 'unreadable') {
+    problems.push(
+      `the API key file at ${apiKeyResolution.path} could not be read: ` + apiKeyResolution.reason,
+    );
+  } else {
     missing.push({
       name: 'ANTHROPIC_API_KEY',
       why: 'the review calls a model once per lens, and cannot run without a key',
       where:
         'GitHub: Settings → Secrets and variables → Actions → New repository secret, ' +
-        'named ANTHROPIC_API_KEY. Locally: export ANTHROPIC_API_KEY=sk-...',
+        'named ANTHROPIC_API_KEY. Locally: export ANTHROPIC_API_KEY=sk-..., or set ' +
+        'ANTHROPIC_API_KEY_FILE to a path holding the key, or place the key at ' +
+        '$XDG_CONFIG_HOME/verevoir/anthropic.key (~/.config/verevoir/anthropic.key ' +
+        'when XDG_CONFIG_HOME is unset).',
     });
   }
 

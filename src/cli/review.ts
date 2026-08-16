@@ -11,7 +11,7 @@ import { stdin } from 'node:process';
 import process from 'node:process';
 
 import { anthropicReviewer } from '../review/anthropic.js';
-import { readerFor } from '../review/readers.js';
+import { keyFileReader, readerFor } from '../review/readers.js';
 import { runReview } from './run.js';
 
 async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
@@ -30,23 +30,32 @@ async function main(): Promise<number> {
   const title = process.argv[2] ?? 'this change';
   const diff = await readAll(stdin);
 
-  const outcome = await runReview(process.env, { title, description: '', diff }, (settings) => ({
-    read: readerFor(settings.lensSource, (url) =>
-      fetch(url, {
-        headers:
-          settings.lensToken === undefined
-            ? {}
-            : {
-                authorization: `Bearer ${settings.lensToken}`,
-                accept: 'application/vnd.github.raw',
-              },
-      }),
-    ),
-    review: anthropicReviewer(
-      { apiKey: settings.apiKey, model: settings.model, maxTokens: settings.maxTokens },
-      (url, init) => fetch(url, init),
-    ),
-  }));
+  const outcome = await runReview(
+    process.env,
+    { title, description: '', diff },
+    (settings) => ({
+      read: readerFor(settings.lensSource, (url) =>
+        fetch(url, {
+          headers:
+            settings.lensToken === undefined
+              ? {}
+              : {
+                  authorization: `Bearer ${settings.lensToken}`,
+                  accept: 'application/vnd.github.raw',
+                },
+        }),
+      ),
+      review: anthropicReviewer(
+        { apiKey: settings.apiKey, model: settings.model, maxTokens: settings.maxTokens },
+        (url, init) => fetch(url, init),
+      ),
+    }),
+    // The real key-file source. Constructed here, at the process boundary,
+    // for the same reason `readerFor` and `anthropicReviewer` are: `run.ts`
+    // is tested with fakes and touches no real filesystem unless this is the
+    // one place that hands it one.
+    keyFileReader(),
+  );
 
   process.stdout.write(`${outcome.report}\n`);
   return outcome.exitCode;
