@@ -92,6 +92,20 @@ describe('loadLensSet', () => {
     expect(outcome.why).toBe('unreachable');
   });
 
+  // A reader that rejects with something other than an Error — a string, a
+  // plain object — must not have its reason collapsed to "undefined". Casting
+  // an unknown value straight to Error before reading `.message` does exactly
+  // that: the actual thrown value is discarded and the reason reads like a
+  // reason while carrying nothing.
+  it('does not lose a rejection that was not an Error', async () => {
+    const outcome = await loadLensSet('s', () => Promise.reject('socket hang up'));
+    expect(outcome.kind).toBe('unavailable');
+    if (outcome.kind !== 'unavailable') throw new Error('unreachable');
+    expect(outcome.why).toBe('unreachable');
+    expect(outcome.reason).toContain('socket hang up');
+    expect(outcome.reason).not.toContain('undefined');
+  });
+
   it('never throws for any input the reader can produce', async () => {
     const cases: ReadResult[] = [
       { kind: 'text', text: 'not json at all' },

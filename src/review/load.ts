@@ -45,7 +45,7 @@ export async function loadLensSet(source: string, read: SourceReader): Promise<L
       kind: 'unavailable',
       source,
       why: 'unreachable',
-      reason: `reader threw: ${(cause as Error).message}`,
+      reason: `reader threw: ${cause instanceof Error ? cause.message : String(cause)}`,
     };
   }
 

@@ -147,7 +147,12 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
         body,
       });
     } catch (cause) {
-      throw new Error(redact(`request failed: ${(cause as Error).message}`, secrets));
+      throw new Error(
+        redact(
+          `request failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          secrets,
+        ),
+      );
     }
 
     // Three outcomes, not two, and the panel reviewing this file on its first
@@ -165,7 +170,7 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
     try {
       raw = await response.text();
     } catch (cause) {
-      bodyError = (cause as Error).message;
+      bodyError = cause instanceof Error ? cause.message : String(cause);
     }
 
     if (!response.ok) {
@@ -188,7 +193,7 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
     try {
       return textFrom(raw);
     } catch (cause) {
-      throw new Error(redact((cause as Error).message, secrets));
+      throw new Error(redact(cause instanceof Error ? cause.message : String(cause), secrets));
     }
   };
 }

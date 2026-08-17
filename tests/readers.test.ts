@@ -15,6 +15,7 @@ import {
   fileReader,
   httpReader,
   keyFileReader,
+  lensFetchHeaders,
   readerFor,
   type FetchLike,
 } from '../src/review/readers.js';
@@ -263,5 +264,58 @@ describe('readerFor', () => {
     expect(result.kind).toBe('missing');
     if (result.kind === 'text') throw new Error('unreachable');
     expect(result.reason).toContain(source);
+  });
+});
+
+// The security property the README documents: the lens-set bearer token
+// never leaves the one host it exists for, no matter what
+// AIGENCY_REVIEW_LENSES was set to. A caller who points that variable at a
+// third party must get an anonymous fetch, not their token forwarded to a
+// stranger.
+describe('lensFetchHeaders', () => {
+  const TOKEN = 'gh-token-for-the-private-lens-repo';
+
+  it('attaches the token and the github accept header on the expected host', () => {
+    const headers = lensFetchHeaders(
+      'https://raw.githubusercontent.com/verevoir/aigency-governance/main/review/lenses.json',
+      TOKEN,
+    );
+    expect(headers).toEqual({
+      authorization: `Bearer ${TOKEN}`,
+      accept: 'application/vnd.github.raw',
+    });
+  });
+
+  // The discriminating case: a source on any other host gets no
+  // authorization header at all — asserted as absence, not as something else
+  // being present, because a redacted or substituted value sent to the wrong
+  // host is still a defect this must rule out.
+  it('sends no authorization header at all to a different host', () => {
+    const headers = lensFetchHeaders('https://evil.example/lenses.json', TOKEN);
+    expect('authorization' in headers).toBe(false);
+    expect(headers).toEqual({});
+  });
+
+  // A host that merely contains the expected one, rather than being it, must
+  // not pass — a startsWith or includes check would be fooled by exactly this.
+  it('sends no authorization header to a look-alike host', () => {
+    const headers = lensFetchHeaders('https://raw.githubusercontent.com.evil.example/x', TOKEN);
+    expect('authorization' in headers).toBe(false);
+  });
+
+  it('sends no authorization header when there is no token to send', () => {
+    const headers = lensFetchHeaders(
+      'https://raw.githubusercontent.com/verevoir/aigency-governance/main/review/lenses.json',
+      undefined,
+    );
+    expect(headers).toEqual({});
+  });
+
+  // A URL that cannot even be parsed is not one this can prove is safe to
+  // send a credential to, so it is treated the same as a mismatched host
+  // rather than throwing.
+  it('sends no authorization header for a URL that does not parse', () => {
+    const headers = lensFetchHeaders('not a url at all', TOKEN);
+    expect(headers).toEqual({});
   });
 });

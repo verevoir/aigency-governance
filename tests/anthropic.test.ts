@@ -393,6 +393,30 @@ describe('failures', () => {
     expect(error.message).toContain('429');
     expect(error.message).toContain('aborted mid-body');
   });
+
+  // A rejection that is not an Error must not collapse to "undefined" — two
+  // sites, both reached by a value this module does not control (`post`'s
+  // rejection, and the response's own `text()` rejection).
+  it('does not lose a rejection that was not an Error, when the request itself fails', async () => {
+    const post = fakePost(() => Promise.reject('ECONNRESET'));
+    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
+    expect(error.message).toContain('request failed');
+    expect(error.message).toContain('ECONNRESET');
+    expect(error.message).not.toContain('undefined');
+  });
+
+  it('does not lose a rejection that was not an Error, when the body fails to read', async () => {
+    const post = fakePost(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.reject('aborted mid-body'),
+      }),
+    );
+    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
+    expect(error.message).toBe('response body could not be read: aborted mid-body');
+    expect(error.message).not.toContain('undefined');
+  });
 });
 
 describe('redact', () => {

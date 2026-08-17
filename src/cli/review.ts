@@ -11,7 +11,7 @@ import { stdin } from 'node:process';
 import process from 'node:process';
 
 import { anthropicReviewer } from '../review/anthropic.js';
-import { keyFileReader, readerFor } from '../review/readers.js';
+import { keyFileReader, lensFetchHeaders, readerFor } from '../review/readers.js';
 import { withReportFile } from './reportFile.js';
 import { runReview } from './run.js';
 
@@ -44,17 +44,13 @@ async function main(): Promise<number> {
     // reader, has no real dependency on the API key, and can be built and
     // used even when the key is missing or wrong. See the header comment on
     // `runReview`.
+    // The bearer token is restricted to the host it exists for by
+    // `lensFetchHeaders` (readers.ts), not here — a branch that decides
+    // whether a credential is safe to send belongs in a module a test can
+    // drive, not in the process boundary this file is meant to stay free of.
     (access) =>
       readerFor(access.lensSource, (url) =>
-        fetch(url, {
-          headers:
-            access.lensToken === undefined
-              ? {}
-              : {
-                  authorization: `Bearer ${access.lensToken}`,
-                  accept: 'application/vnd.github.raw',
-                },
-        }),
+        fetch(url, { headers: lensFetchHeaders(url, access.lensToken) }),
       ),
     // The real key-file source. Constructed here, at the process boundary,
     // for the same reason `readerFor` and `anthropicReviewer` are: `run.ts`

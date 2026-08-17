@@ -120,7 +120,7 @@ export function parseCorpus(text: string): Corpus {
   try {
     document = JSON.parse(text);
   } catch (cause) {
-    fail(`corpus is not valid JSON: ${(cause as Error).message}`);
+    fail(`corpus is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
 
   if (typeof document !== 'object' || document === null || Array.isArray(document)) {
@@ -286,7 +286,7 @@ export async function provision(
       kind: 'unavailable',
       source,
       why: 'unreachable',
-      reason: `reader threw: ${(cause as Error).message}`,
+      reason: `reader threw: ${cause instanceof Error ? cause.message : String(cause)}`,
     };
   }
 

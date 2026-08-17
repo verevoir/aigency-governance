@@ -140,6 +140,18 @@ describe('provision', () => {
     });
   });
 
+  // A reader that rejects with something other than an Error must not have
+  // its reason collapsed to "undefined" — the same defect, and the same fix,
+  // as loadLensSet's identical catch block.
+  it('does not lose a rejection that was not an Error', async () => {
+    const outcome = await provision('q', 's', () => Promise.reject('ECONNRESET'), AMPLE_BOUND);
+    expect(outcome.kind).toBe('unavailable');
+    if (outcome.kind !== 'unavailable') throw new Error('unreachable');
+    expect(outcome.why).toBe('unreachable');
+    expect(outcome.reason).toContain('ECONNRESET');
+    expect(outcome.reason).not.toContain('undefined');
+  });
+
   it('reports a corpus that will not parse as malformed, carrying the parser reason', async () => {
     const outcome = await provision(
       'q',

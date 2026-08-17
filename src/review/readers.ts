@@ -90,6 +90,44 @@ export function readerFor(source: string, fetchImpl: FetchLike): SourceReader {
 }
 
 /**
+ * The only host the lens-set bearer token is ever sent to. It is the host
+ * `DEFAULT_LENS_SOURCE` (settings.ts) points at, and the README documents the
+ * property this constant enforces: "Any other `https://` source is fetched
+ * anonymously and no token is sent."
+ */
+export const LENS_TOKEN_HOST = 'raw.githubusercontent.com';
+
+/**
+ * Headers for one lens-set fetch.
+ *
+ * `AIGENCY_REVIEW_LENSES` is caller-controlled — a repository sets it to
+ * point at wherever it keeps its lens set. The bearer token is read access to
+ * a private repository, and attaching it unconditionally to whatever host
+ * that variable resolves to would hand it to any third party a caller (or an
+ * attacker with write access to that variable) pointed the source at. So the
+ * token — and the GitHub-specific `accept` header that only means anything to
+ * that one host — is attached only when `url`'s host is exactly
+ * `LENS_TOKEN_HOST`. Every other host, including a URL that fails to parse at
+ * all, is fetched with no headers whatsoever: not a redacted token, not a
+ * different one, nothing that identifies the caller.
+ */
+export function lensFetchHeaders(url: string, token: string | undefined): Record<string, string> {
+  if (token === undefined) {
+    return {};
+  }
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return {};
+  }
+  if (host !== LENS_TOKEN_HOST) {
+    return {};
+  }
+  return { authorization: `Bearer ${token}`, accept: 'application/vnd.github.raw' };
+}
+
+/**
  * Reads a candidate API key file from disk. `ENOENT` and `ENOTDIR` are
  * `absent` — a file nobody wrote is the ordinary shape of a source with
  * nothing to offer, and `resolveSettings` moves on to the next one.
