@@ -25,7 +25,7 @@
       "name": "verify",
       "kind": "gate",
       "command": ["npm", "run", "verify"],
-      "description": "The bar: typecheck, test, lint. One script, so the gate the belt runs and the gate CI runs cannot drift apart (S1).",
+      "description": "The bar: typecheck, test, lint. One script, so the gate the belt runs and the gate CI runs cannot drift apart (S1). A `pretest` hook runs `npm run build` first, automatically, via npm's own pre-script convention — added because two of the tests here spawn the real compiled dist/cli/review.js, and dist/ is gitignored; CI runs `npm ci` && `npm run verify` and never a separate build step, so a fresh checkout had no binary for those tests to reach, while every local run had one already, left over from prepare_repository's own bootstrap chain (install, format, build, then gates). This does not reopen ADR 017 (`build` and `format` are bootstrap steps, not gates, because a gate whose verdict describes a tree it changed is not a verdict): `format` rewrites the tracked source the gate itself then judges, so a gate that formats is judging its own edit; `build` produces dist/, which is gitignored, disposable, and never the thing `verify` is a verdict about — typecheck, test and lint still run against the source exactly as committed. Building first makes the artifact current before it is spawned; it does not change what is being judged.",
       "blocking": true,
       "timeoutMs": 900000
     },
