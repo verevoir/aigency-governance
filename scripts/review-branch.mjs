@@ -21,6 +21,31 @@
 // parked on, which is not necessarily the branch — or the pull request —
 // anyone actually wants reviewed.
 //
+// AND BOTH ARE ALSO POSITIONAL ARGUMENTS: `node review-branch.mjs [base]
+// [head]`. PRECEDENCE IS POSITIONAL, THEN ENVIRONMENT, THEN DEFAULT, in that
+// order, for each of the two independently. Positional wins because it is
+// the only channel a declared command in aigency.json can actually carry: a
+// declared command's argv is fixed at the moment it is written into the
+// declaration, but its environment is whatever the runtime that invokes it
+// happens to hand it — nothing available to run a declared step can set an
+// environment variable for it. So AIGENCY_REVIEW_BRANCH_BASE/_HEAD are real
+// and they work, but only for a human invoking this script directly from a
+// shell; a step declared in aigency.json can only name its subject through
+// argv, which is why it comes first. Environment remains beneath it rather
+// than being removed, because it is still the more convenient route for
+// that human, and removing it would break nothing this change is about.
+//
+// AN EMPTY OR WHITESPACE-ONLY POSITIONAL ARGUMENT IS TREATED AS ABSENT, the
+// same way an empty environment variable already is (see `present`, used
+// for both) — it falls through to the next precedence level rather than
+// pinning the ref to the empty string, which `git rev-parse` would refuse
+// anyway.
+//
+// MORE THAN TWO POSITIONAL ARGUMENTS IS REFUSED, by count alone, before
+// either ref is looked at: a third position has nothing declared to mean,
+// and silently ignoring it would hide a caller's mistake rather than name
+// it.
+//
 // THE DIFF IS `${base}...${head}` — three dots, not two. Two dots would diff
 // the base's tip against the head's tip directly, which includes everything
 // the base has done since the two diverged, and is not the head's own work.
@@ -179,9 +204,23 @@ if (rawCap !== undefined) {
   maxChars = parsed;
 }
 
-const baseRefRaw = present(process.env['AIGENCY_REVIEW_BRANCH_BASE']);
+// Positional argv, if present, wins over environment — see the file
+// header for why positional comes first and what an empty or extra
+// argument means.
+const positionalArgs = process.argv.slice(2);
+if (positionalArgs.length > 2) {
+  console.error(
+    `at most two positional arguments are accepted (base, head); got ${String(positionalArgs.length)}: ` +
+      positionalArgs.map((arg) => JSON.stringify(arg)).join(', '),
+  );
+  process.exit(1);
+}
+const baseArg = present(positionalArgs[0]);
+const headArg = present(positionalArgs[1]);
+
+const baseRefRaw = baseArg ?? present(process.env['AIGENCY_REVIEW_BRANCH_BASE']);
 const baseRef = baseRefRaw ?? 'main';
-const headRefRaw = present(process.env['AIGENCY_REVIEW_BRANCH_HEAD']);
+const headRefRaw = headArg ?? present(process.env['AIGENCY_REVIEW_BRANCH_HEAD']);
 const headRef = headRefRaw ?? 'HEAD';
 
 // Both checked, and both named if both are wrong — see the file header.

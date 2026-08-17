@@ -51,9 +51,9 @@ function git(cwd, args) {
   });
 }
 
-function run(cwd, extraEnv = {}) {
+function run(cwd, extraEnv = {}, args = []) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [REVIEW_BRANCH], {
+    const child = spawn(process.execPath, [REVIEW_BRANCH, ...args], {
       cwd,
       env: { PATH: process.env.PATH, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -271,5 +271,67 @@ describe('review-branch.mjs', () => {
     expect(aMd).not.toBe(bMd);
     expect(aMd).toContain('topic-a vs main');
     expect(bMd).toContain('topic-b vs main');
+  });
+
+  // Precedence: positional, then environment, then default — see the file
+  // header. This first case is the discriminating one: an implementation
+  // that reads the environment first and ignores argv would pass every
+  // other precedence test here and fail only this.
+  it('a positional base argument overrides an environment variable naming a different base', async () => {
+    const dir = await makeRepo({ withChange: true });
+    dirsToClean.push(dir);
+
+    // Env says the base is main, which genuinely differs from feature — if
+    // that were honoured the diff would be non-empty. The positional
+    // argument says the base is feature itself, which is also what is
+    // checked out as HEAD — a self-diff, empty by construction, and
+    // detectable only if the positional argument actually won.
+    const result = await run(dir, { AIGENCY_REVIEW_BRANCH_BASE: 'main' }, ['feature']);
+
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('feature vs feature');
+    expect(result.out).toContain('nothing to review');
+  });
+
+  it('an environment variable sets the base when no positional argument is given', async () => {
+    const dir = await makeRepo({ withChange: true });
+    dirsToClean.push(dir);
+
+    const result = await run(dir, { AIGENCY_REVIEW_BRANCH_BASE: 'feature' });
+
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('feature vs feature');
+    expect(result.out).toContain('nothing to review');
+  });
+
+  it('falls back to the default base and head when neither positional nor environment name them', async () => {
+    const dir = await makeRepo({ withChange: true });
+    dirsToClean.push(dir);
+
+    const result = await run(dir);
+
+    expect(result.out).toContain('Reviewing feature vs main.');
+  });
+
+  it('treats an empty-string positional argument as absent, falling through to environment', async () => {
+    const dir = await makeRepo({ withChange: true });
+    dirsToClean.push(dir);
+
+    const result = await run(dir, { AIGENCY_REVIEW_BRANCH_BASE: 'feature' }, ['']);
+
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('feature vs feature');
+    expect(result.out).toContain('nothing to review');
+  });
+
+  it('refuses more than two positional arguments, naming the count', async () => {
+    const dir = await makeRepo({ withChange: true });
+    dirsToClean.push(dir);
+
+    const result = await run(dir, {}, ['main', 'feature', 'extra']);
+
+    expect(result.code).not.toBe(0);
+    expect(result.out).toContain('at most two positional arguments are accepted');
+    expect(result.out).toContain('3');
   });
 });
