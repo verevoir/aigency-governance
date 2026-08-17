@@ -64,14 +64,34 @@ export function reportJson(outcome: ReviewOutcome): ReportJson {
  * genuinely boundary-shaped piece here, and its failures are deterministic
  * enough — ENOENT for a missing directory, EISDIR for a path that is one —
  * to test directly against a real temporary directory rather than a fake.
+ *
+ * The two writes are independent and sequential — markdown, then json — so
+ * a failure on the second happens after the first has already landed. Each
+ * write is wrapped so its own failure is tagged with the path THAT write
+ * was attempting before being rethrown: a review found that the caller
+ * previously reported every failure against the markdown path regardless of
+ * which write actually failed, so a json-only failure read as a total one
+ * and named the wrong file as having failed.
  */
 export async function writeReportFiles(
   markdownPath: string,
   outcome: ReviewOutcome,
 ): Promise<void> {
   const paths = reportPaths(markdownPath);
-  await writeFile(paths.markdown, `${outcome.report}\n`, 'utf8');
-  await writeFile(paths.json, `${JSON.stringify(reportJson(outcome), null, 2)}\n`, 'utf8');
+  await writeOneReportFile(paths.markdown, `${outcome.report}\n`);
+  await writeOneReportFile(paths.json, `${JSON.stringify(reportJson(outcome), null, 2)}\n`);
+}
+
+/** Writes one file; on failure, rethrows an error naming THIS path — never
+ * the sibling path a caller might also be tracking — so a partial failure
+ * (one write landed, the other did not) names the file that actually
+ * failed. */
+async function writeOneReportFile(path: string, contents: string): Promise<void> {
+  try {
+    await writeFile(path, contents, 'utf8');
+  } catch (cause) {
+    throw new Error(`${path}: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
 }
 
 export interface ReportFileOutcome {
@@ -113,11 +133,14 @@ export async function withReportFile(
     await writeReportFiles(reportPath, outcome);
     return { exitCode: outcome.exitCode };
   } catch (cause) {
+    // `cause.message` already names the specific path that failed — see
+    // writeOneReportFile — not necessarily `reportPath` (the markdown path):
+    // a json-only failure names the json path here, not the markdown path
+    // that wrote successfully.
     return {
       exitCode: 1,
       failureMessage:
-        `Could not write the report to ${reportPath}: ` +
-        `${cause instanceof Error ? cause.message : String(cause)}\n\n` +
+        `Could not write the report: ${cause instanceof Error ? cause.message : String(cause)}\n\n` +
         'This is a defect in the runner, not a verdict about the change.',
     };
   }

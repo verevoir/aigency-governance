@@ -188,11 +188,26 @@ function sanitizeRef(ref) {
   return ref.replace(/[^A-Za-z0-9._-]+/g, '-');
 }
 
-/** Whether `ref` names something in this repository. Used only to decide
- * whether to refuse — never to learn anything else about the ref. */
-async function refExists(ref) {
+/** Whether `ref` names something in this repository, and — when it does
+ * not — whether that is because it genuinely does not exist or because git
+ * failed for some other reason. Used only to decide whether to refuse and
+ * what to say; never to learn anything else about the ref.
+ *
+ * `git rev-parse --verify --quiet` suppresses its own error message for the
+ * ordinary "this does not resolve" case, so an empty stderr on a non-zero
+ * exit really does mean absent. Anything else on stderr — a corrupt
+ * repository, a permission error, whatever git actually said — is a
+ * different problem, and is carried through as `detail` rather than
+ * discarded, so it does not get reported identically to a plain absent ref
+ * (a review found exactly that collapse in an earlier version of this
+ * function). */
+async function checkRef(ref) {
   const result = await capture('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
-  return result.code === 0;
+  if (result.code === 0) {
+    return { exists: true };
+  }
+  const stderr = result.err.trim();
+  return { exists: false, detail: stderr === '' ? undefined : stderr };
 }
 
 const DEFAULT_MAX_CHARS = 200_000;
@@ -240,12 +255,23 @@ const headRef = headRefRaw ?? 'HEAD';
 // This is the only git this script runs before knowing the two refs are
 // real; everything that follows (the diff itself, the reviewer) is real
 // spend or real measurement, and neither happens until this passes.
-const refProblems = [];
-if (!(await refExists(baseRef))) {
-  refProblems.push(`the base ref, ${JSON.stringify(baseRef)}, does not exist in this repository`);
+function refProblem(kind, ref, check) {
+  if (check.exists) {
+    return undefined;
+  }
+  return check.detail === undefined
+    ? `the ${kind} ref, ${JSON.stringify(ref)}, does not exist in this repository`
+    : `the ${kind} ref, ${JSON.stringify(ref)}, could not be resolved: ${check.detail}`;
 }
-if (!(await refExists(headRef))) {
-  refProblems.push(`the head ref, ${JSON.stringify(headRef)}, does not exist in this repository`);
+
+const refProblems = [];
+const baseProblem = refProblem('base', baseRef, await checkRef(baseRef));
+if (baseProblem !== undefined) {
+  refProblems.push(baseProblem);
+}
+const headProblem = refProblem('head', headRef, await checkRef(headRef));
+if (headProblem !== undefined) {
+  refProblems.push(headProblem);
 }
 if (refProblems.length > 0) {
   console.error(
@@ -321,7 +347,33 @@ const review = await capture(process.execPath, [BIN, title], diff.out, {
   // review-head.mjs: no token needed, and the runner and the lens set are
   // then the same revision.
   AIGENCY_REVIEW_LENSES: './review/lenses.json',
-  AIGENCY_REVIEW_MAX_TOKENS: '16384',
+  // Raised from 16384 after two separate real runs hit the identical
+  // failure — a reply that was one thinking block, no text at all,
+  // stop_reason max_tokens — on two different lenses (honesty, then
+  // correctness), on two differently-sized diffs (303,719 characters, then
+  // ~155,000). A reply that spends its whole budget thinking and returns
+  // nothing is indistinguishable from one that had nothing to say, and that
+  // is exactly the failure this number exists to prevent.
+  //
+  // Both failures exhausted the budget completely rather than running out
+  // near the end of a reply, so neither one carries evidence of how close
+  // it came — a truncated-mid-output failure would say "nearly enough";
+  // this says nothing about the size of the gap. Doubling assumes a small
+  // gap and there is no evidence here that it is small, so this raises
+  // further: 65536, four times the original 16384. The basis for that
+  // specific number is the diff itself — the largest diff this script will
+  // ever hand a lens, under its own default 200,000-character cap, is
+  // roughly 50,000 tokens of raw content, and a thorough lens plausibly
+  // reasons in a similar order of magnitude before writing anything down.
+  // 65536 gives real headroom above that, not just a small margin past two
+  // exhausted runs.
+  //
+  // If this still exhausts at this size, that stops looking like a budget
+  // problem and starts looking like something else — a model that thinks
+  // in proportion to prompt complexity regardless of the ceiling offered,
+  // which a bigger ceiling cannot fix and only an explicit thinking-budget
+  // parameter would.
+  AIGENCY_REVIEW_MAX_TOKENS: '65536',
   AIGENCY_REVIEW_REPORT: report.markdown,
 });
 
