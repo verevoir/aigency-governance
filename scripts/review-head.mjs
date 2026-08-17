@@ -13,6 +13,7 @@
 import { spawn } from 'node:child_process';
 import console from 'node:console';
 import process from 'node:process';
+import { fileURLToPath, URL } from 'node:url';
 
 import {
   describeReportOutcome,
@@ -20,6 +21,20 @@ import {
   probeReportFile,
   reportTargetPaths,
 } from './reportTarget.mjs';
+
+// Resolved relative to this file, not to the process's cwd — the same
+// choice review-branch.mjs makes for the identical reason (see its own
+// header): the compiled binary is a fixed build artifact of THIS
+// repository, not of whatever tree happens to be current when this script
+// runs, and for real usage (cwd = this repository's root) the two resolve
+// to the same absolute path either way. What this buys is testability: a
+// fixture repository built elsewhere on disk, with its own HEAD this
+// script's git calls operate against, can still find the real compiled
+// reviewer without needing dist/ reproduced inside the fixture. A bare
+// relative path here was the gap a test found: spawning that path against a
+// fixture's cwd crashed with MODULE_NOT_FOUND rather than reaching the
+// reviewer at all.
+const BIN = fileURLToPath(new URL('../dist/cli/review.js', import.meta.url));
 
 function capture(command, args, input, extraEnv = {}) {
   return new Promise((resolve) => {
@@ -77,12 +92,9 @@ console.log(`Diff is ${String(diff.out.split('\n').length)} lines.\n`);
 const report = reportTargetPaths();
 await ensureReportDir(report.dir);
 
-const review = await capture(
-  process.execPath,
-  ['dist/cli/review.js', subject.out.trim()],
-  diff.out,
-  { AIGENCY_REVIEW_REPORT: report.markdown },
-);
+const review = await capture(process.execPath, [BIN, subject.out.trim()], diff.out, {
+  AIGENCY_REVIEW_REPORT: report.markdown,
+});
 
 console.log(review.out);
 if (review.err.trim() !== '') {
