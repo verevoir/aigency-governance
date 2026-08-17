@@ -51,6 +51,13 @@
       "command": ["node", "scripts/review-head.mjs"],
       "description": "Run the review panel against the HEAD commit. A release step rather than a gate because it costs money — one model call per lens — and a gate that bills on every verification is a gate someone turns off. Requires ANTHROPIC_API_KEY in the environment; without it the run reports which setting is missing and where to put it, and exits red without calling anything.",
       "timeoutMs": 900000
+    },
+    {
+      "name": "review-branch",
+      "kind": "release",
+      "command": ["node", "scripts/review-branch.mjs"],
+      "description": "Run the review panel against the current branch's own diff against main (`git diff main...HEAD`), the same subject CI's check reviews — unlike `review`, which reviews only the HEAD commit. A release step for the same reason `review` is: it costs money, one model call per lens, and a gate that bills on every verification is a gate someone turns off. Refuses rather than reviews when the diff exceeds AIGENCY_REVIEW_BRANCH_MAX_CHARS (default 200000 characters), naming the measured size, the cap, and the gap — that refusal is not a judgement about the change. An empty diff against main exits 0: nothing is wrong, there is nothing to review. Writes its report to .review-report/branch.md and .review-report/branch.json, distinct from review's head.md/head.json. Requires ANTHROPIC_API_KEY the same way review does.",
+      "timeoutMs": 900000
     }
   ]
 }

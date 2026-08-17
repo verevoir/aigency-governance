@@ -22,11 +22,22 @@ import { join } from 'node:path';
  */
 export const REPORT_DIR = '.review-report';
 
-export function reportTargetPaths(dir = REPORT_DIR) {
+/**
+ * `base` names what was reviewed, not just where the report lives. Two
+ * scripts write into this same directory — review-head.mjs reviews one
+ * commit, review-branch.mjs reviews a branch's whole diff against main —
+ * and those are different subjects. If both wrote `head.md`, the second run
+ * would silently overwrite the first, and a reader would have no way to
+ * tell a commit's report from a branch's; that indistinguishability is
+ * exactly the failure review-branch.mjs exists to avoid one level up, in
+ * what gets reviewed. Defaults to `'head'` so review-head.mjs's own call,
+ * `reportTargetPaths()`, is unchanged.
+ */
+export function reportTargetPaths(dir = REPORT_DIR, base = 'head') {
   return {
     dir,
-    markdown: join(dir, 'head.md'),
-    json: join(dir, 'head.json'),
+    markdown: join(dir, `${base}.md`),
+    json: join(dir, `${base}.json`),
   };
 }
 

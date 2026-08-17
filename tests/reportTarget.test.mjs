@@ -35,6 +35,30 @@ describe('reportTargetPaths', () => {
   it('defaults to REPORT_DIR when no directory is given', () => {
     expect(reportTargetPaths().dir).toBe(REPORT_DIR);
   });
+
+  it("defaults the base to 'head', so review-head.mjs's own call is unchanged", () => {
+    expect(reportTargetPaths('some-dir')).toEqual({
+      dir: 'some-dir',
+      markdown: join('some-dir', 'head.md'),
+      json: join('some-dir', 'head.json'),
+    });
+  });
+
+  // The discriminating case: two subjects reviewed into the same directory
+  // must not collide on the same filename, or a branch review would
+  // silently overwrite a commit review's report and neither could be told
+  // apart afterward.
+  it('accepts a different base, so a branch report and a commit report cannot collide on the same filename', () => {
+    const head = reportTargetPaths('some-dir', 'head');
+    const branch = reportTargetPaths('some-dir', 'branch');
+    expect(branch).toEqual({
+      dir: 'some-dir',
+      markdown: join('some-dir', 'branch.md'),
+      json: join('some-dir', 'branch.json'),
+    });
+    expect(branch.markdown).not.toBe(head.markdown);
+    expect(branch.json).not.toBe(head.json);
+  });
 });
 
 describe('ensureReportDir', () => {
