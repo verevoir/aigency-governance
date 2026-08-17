@@ -19,14 +19,25 @@
 // holding one file and no src/ at all, so the modification-time comparison
 // in buildFreshness is never reached — it is guarded there by
 // `srcNewest !== undefined` — rather than won by racing a clock to prove it
-// wasn't reached. What check-cli.mjs does next in the fresh fixture — fail
-// because dist/cli/review.js genuinely is not there — is expected, and is
-// how we know the guard was reached and passed rather than never run: a
-// guard hard-wired to always refuse would print the staleness message here
-// too, and it does not. The mtime-comparison branch of buildFreshness itself
-// is already covered, with gaps of 1000 real seconds, by
-// tests/buildFreshness.test.mjs; this script does not re-prove it, only that
-// check-cli.mjs's own wiring around the result is correct.
+// wasn't reached.
+//
+// An earlier version of this file claimed the fresh fixture proved the
+// guard "was reached and passed rather than never run", on the strength of
+// check-cli.mjs going on to fail at its next check — dist/cli/review.js
+// genuinely is not there in this fixture. That claim was wrong, and the
+// review panel's honesty lens found it: a guard that is silent when it
+// passes cannot be told apart from a guard that was never invoked at all,
+// because a deleted guard falls straight through to that exact same next
+// failure. The control could rule out a false positive — the guard did not
+// wrongly refuse a fresh tree — but it could not rule out the guard simply
+// not existing. So the guard was changed to say, on the passing branch and
+// only there, what it compared. That line is a statement only a guard that
+// actually ran can make; the fresh fixture below asserts it directly,
+// rather than inferring the guard ran from what happens after it. The
+// mtime-comparison branch of buildFreshness itself is already covered, with
+// gaps of 1000 real seconds, by tests/buildFreshness.test.mjs; this script
+// does not re-prove it, only that check-cli.mjs's own wiring around the
+// result is correct.
 //
 // A standalone script and its own gate, not a vitest test living inside
 // `npm run test`, for the same reason check-cli.mjs is one: `verify` is
@@ -98,17 +109,29 @@ try {
         `hard-wired to always refuse would pass every other assertion here, got: ${fresh.out}`,
     );
   }
+  // The discriminating assertion. Everything else in this fixture — the
+  // exit code, the later "is not there" failure below — would look
+  // identical if the guard had been deleted entirely, since execution would
+  // fall straight through to that same next check. Only this line is
+  // printed exclusively from inside the guard's own passing branch in
+  // check-cli.mjs, so only a guard that actually ran and compared the two
+  // directories can have produced it.
+  if (!fresh.out.includes('dist/ is current')) {
+    problems.push(
+      '[fresh dist] expected the guard to say the build is current, naming what it compared ' +
+        `— a silent pass here is indistinguishable from a guard that never ran — got: ${fresh.out}`,
+    );
+  }
   if (fresh.code === 0) {
     problems.push(
       '[fresh dist] expected a non-zero exit — dist/cli/review.js genuinely is not there in ' +
-        'this fixture, which is how we know the guard was passed rather than never reached — ' +
-        'got 0, meaning the fixture is no longer constructed as intended',
+        'this fixture — got 0, meaning the fixture is no longer constructed as intended',
     );
   }
   if (!fresh.out.includes('is not there')) {
     problems.push(
       '[fresh dist] expected the run to fail at the next check instead (dist/cli/review.js is ' +
-        `not there), which is what proves the guard was reached and passed, got: ${fresh.out}`,
+        `not there), got: ${fresh.out}`,
     );
   }
 } finally {

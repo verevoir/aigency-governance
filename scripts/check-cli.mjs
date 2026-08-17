@@ -67,6 +67,17 @@ if (freshness.stale) {
   );
   process.exit(1);
 }
+// Said, not just satisfied: a guard that only speaks to refuse is
+// indistinguishable, from outside, from a guard that is not there at all —
+// deleting this whole check would change nothing an onlooker could see on
+// the passing path. One line, printed only here, naming the two
+// directories actually compared, so a caller — and the test that spawns
+// this script — has something to point at that only a guard which ran can
+// have produced. The review panel's honesty lens found this gap; see
+// check-staleness-guard.mjs.
+console.log(
+  `${DIST}/ is current: no file under ${SRC}/ is newer than the newest file under ${DIST}/.`,
+);
 
 try {
   await access(BIN);
