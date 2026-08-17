@@ -137,13 +137,13 @@ export function createApiHandler(gate: PracticeGate, judge: Judge): ApiHandler {
 
     switch (request.route) {
       case 'provision': {
-        if (request.query.trim() === '') {
+        if (typeof request.query !== 'string' || request.query.trim() === '') {
           return { kind: 'rejected', reason: 'query is required' };
         }
         return gate.provision(request.query);
       }
       case 'enact': {
-        if (request.capability.trim() === '') {
+        if (typeof request.capability !== 'string' || request.capability.trim() === '') {
           return { kind: 'rejected', reason: 'capability is required' };
         }
         return gate.enact(request.capability, judge);

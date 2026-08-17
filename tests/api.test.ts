@@ -160,6 +160,58 @@ describe('createApiHandler', () => {
   // response shape AND that neither the reader nor the judge was ever
   // reached — "rejected" and "rejected without doing anything" are
   // different claims, and only the second is safe.
+  describe('a field missing entirely, not merely blank', () => {
+    // The regression this guards: `request.query.trim()` and
+    // `request.capability.trim()` threw an uncaught TypeError when the
+    // field was `undefined`, because only conversationId was guarded with
+    // a `typeof ... !== 'string'` check before being trimmed. A test that
+    // passes an empty string would still pass on that broken code — the
+    // field has to be OMITTED, not blank, to exercise the gap.
+    it('provision: a request omitting query entirely is rejected, not thrown', async () => {
+      let reads = 0;
+      const counting: SourceReader = () => {
+        reads += 1;
+        return Promise.resolve({ kind: 'text', text: ONE_PRACTICE });
+      };
+      const gate = createPracticeGate('s', counting, AMPLE_BOUND);
+      const handle = createApiHandler(gate, allow());
+      const malformed = {
+        route: 'provision',
+        conversationId: 'conv-1',
+      } as unknown as ApiRequest;
+
+      const response = await handle(malformed);
+
+      expect(response).toEqual({ kind: 'rejected', reason: 'query is required' });
+      expect(reads).toBe(0);
+    });
+
+    it('enact: a request omitting capability entirely is rejected, not thrown', async () => {
+      let reads = 0;
+      let judgeCalls = 0;
+      const counting: SourceReader = () => {
+        reads += 1;
+        return Promise.resolve({ kind: 'text', text: ONE_PRACTICE });
+      };
+      const judge: Judge = () => {
+        judgeCalls += 1;
+        return Promise.resolve({ allow: true });
+      };
+      const gate = createPracticeGate('s', counting, AMPLE_BOUND);
+      const handle = createApiHandler(gate, judge);
+      const malformed = {
+        route: 'enact',
+        conversationId: 'conv-1',
+      } as unknown as ApiRequest;
+
+      const response = await handle(malformed);
+
+      expect(response).toEqual({ kind: 'rejected', reason: 'capability is required' });
+      expect(reads).toBe(0);
+      expect(judgeCalls).toBe(0);
+    });
+  });
+
   describe('an unrecognised route', () => {
     it('rejects an unknown route by name, and never reaches the reader or the judge', async () => {
       let reads = 0;
