@@ -38,6 +38,14 @@
       "timeoutMs": 120000
     },
     {
+      "name": "staleness-guard",
+      "kind": "gate",
+      "command": ["node", "scripts/check-staleness-guard.mjs"],
+      "description": "Spawn the cli gate's own script against two constructed trees — one with no dist/ at all, one with a dist/ that holds a file but no dist/cli/review.js — and check it refuses the first, naming staleness specifically, and does not refuse the second for that reason. Exists because the freshness guard inside check-cli.mjs was itself unverified: the pure function beneath it (buildFreshness.mjs) is covered thoroughly by unit tests and the guard's own wiring was not, which is the same defect one level up that the guard exists to catch one level down. Neither fixture depends on a modification time.",
+      "blocking": true,
+      "timeoutMs": 60000
+    },
+    {
       "name": "review",
       "kind": "release",
       "command": ["node", "scripts/review-head.mjs"],
