@@ -128,6 +128,58 @@ export function lensFetchHeaders(url: string, token: string | undefined): Record
 }
 
 /**
+ * What building the lens-set reader needs — nothing else. Lives here, next
+ * to the reader that consumes it, rather than at the process boundary that
+ * merely holds one: see `lensReaderFor` below for why.
+ */
+export interface LensAccess {
+  readonly lensSource: string;
+  /** Absent, not present-and-undefined, when the source needs no token. */
+  readonly lensToken?: string;
+}
+
+/**
+ * The two-argument shape of the global `fetch` — what `lensReaderFor` needs
+ * in order to attach headers per request, since `FetchLike` above takes only
+ * a URL.
+ */
+export type RawFetch = (
+  url: string,
+  init: { readonly headers: Record<string, string> },
+) => Promise<{ readonly ok: boolean; readonly status: number; text(): Promise<string> }>;
+
+/**
+ * Builds the reader used to fetch a lens set, with the bearer-token
+ * restriction wired in as part of construction.
+ *
+ * This exists because an earlier version left the assembly to the caller:
+ * the CLI boundary (src/cli/review.ts) called `lensFetchHeaders(url,
+ * access.lensToken)` itself, inside a closure it wrote out by hand — naming
+ * `url` and `access.lensToken` together in the one file this codebase
+ * deliberately keeps untestable (see that file's own header: everything
+ * that decides anything lives elsewhere, and only the process boundary
+ * lives there). A review caught what that made possible: nothing proved the
+ * boundary passed the right values in the right order. `access.lensSource`
+ * where `url` belonged, or the two arguments swapped, would type-check and
+ * pass every test that existed, because every test drove `lensFetchHeaders`
+ * directly and none drove the call site that mattered.
+ *
+ * The fix is not a test for that call site — it is removing the call
+ * site's ability to make the mistake. The boundary now calls
+ * `lensReaderFor(access, fetch)`: it passes `access` through whole and
+ * never writes an expression naming a URL and a token together itself. The
+ * wiring this function does — calling `lensFetchHeaders` with the URL
+ * actually being fetched — is proven here, end to end, by driving
+ * `lensReaderFor` itself with a fake `rawFetch` and reading what arrived,
+ * rather than only exercising `lensFetchHeaders` in isolation.
+ */
+export function lensReaderFor(access: LensAccess, rawFetch: RawFetch): SourceReader {
+  return readerFor(access.lensSource, (url) =>
+    rawFetch(url, { headers: lensFetchHeaders(url, access.lensToken) }),
+  );
+}
+
+/**
  * Reads a candidate API key file from disk. `ENOENT` and `ENOTDIR` are
  * `absent` — a file nobody wrote is the ordinary shape of a source with
  * nothing to offer, and `resolveSettings` moves on to the next one.

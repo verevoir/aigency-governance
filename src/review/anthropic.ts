@@ -193,6 +193,12 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
     try {
       return textFrom(raw);
     } catch (cause) {
+      // `textFrom` only ever throws `new Error(...)` — every throw inside it
+      // is constructed locally in this file, never a caught value rethrown
+      // and never a call into anything external — so the `instanceof Error`
+      // branch below is defensive rather than reachable today. It would
+      // become reachable only if `textFrom` gained a throw path that did not
+      // wrap in `new Error(...)`, or came to propagate something unwrapped.
       throw new Error(redact(cause instanceof Error ? cause.message : String(cause), secrets));
     }
   };

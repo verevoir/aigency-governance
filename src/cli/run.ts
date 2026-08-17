@@ -43,6 +43,7 @@ import type { Subject } from '../review/prompt.js';
 import { exitCodeFor, renderReport } from '../review/report.js';
 import type { SourceReader } from '../review/load.js';
 import type { Verdict } from '../review/verdict.js';
+import type { LensAccess } from '../review/readers.js';
 import {
   renderMissing,
   resolveSettings,
@@ -58,12 +59,15 @@ export interface ReviewDeps {
   readonly practices?: string;
 }
 
-/** What building the lens-set reader actually needs — nothing else. */
-export interface LensAccess {
-  readonly lensSource: string;
-  /** Absent, not present-and-undefined, when the source needs no token. */
-  readonly lensToken?: string;
-}
+/**
+ * Moved to review/readers.ts, next to `lensReaderFor` which is the function
+ * that actually consumes it — a security decision belongs beside the code
+ * that makes it, not beside a factory type that only names its shape.
+ * Re-exported here, under its original name, so nothing that already
+ * imports `LensAccess` from this module needs to change; `src/index.ts`
+ * re-exports it from here in turn.
+ */
+export type { LensAccess };
 
 /**
  * Builds the reader used to fetch the lens set. Deliberately a function of

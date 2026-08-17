@@ -11,7 +11,7 @@ import { stdin } from 'node:process';
 import process from 'node:process';
 
 import { anthropicReviewer } from '../review/anthropic.js';
-import { keyFileReader, lensFetchHeaders, readerFor } from '../review/readers.js';
+import { keyFileReader, lensReaderFor } from '../review/readers.js';
 import { withReportFile } from './reportFile.js';
 import { runReview } from './run.js';
 
@@ -44,14 +44,18 @@ async function main(): Promise<number> {
     // reader, has no real dependency on the API key, and can be built and
     // used even when the key is missing or wrong. See the header comment on
     // `runReview`.
-    // The bearer token is restricted to the host it exists for by
-    // `lensFetchHeaders` (readers.ts), not here — a branch that decides
-    // whether a credential is safe to send belongs in a module a test can
-    // drive, not in the process boundary this file is meant to stay free of.
-    (access) =>
-      readerFor(access.lensSource, (url) =>
-        fetch(url, { headers: lensFetchHeaders(url, access.lensToken) }),
-      ),
+    //
+    // `access` is passed straight through to `lensReaderFor` (readers.ts)
+    // and nothing else: this file never itself writes an expression naming
+    // a URL and a token together, because a branch deciding whether a
+    // credential is safe to send belongs in a module a test can drive, not
+    // in the process boundary this file is meant to stay free of. A review
+    // found that the previous version — which built that expression here,
+    // by hand, out of `lensFetchHeaders` — was untested at exactly this
+    // seam: nothing proved the arguments arrived in the right order. Moving
+    // the assembly into `lensReaderFor` does not add a test for that call
+    // site; it removes this file's ability to make the mistake at all.
+    (access) => lensReaderFor(access, fetch),
     // The real key-file source. Constructed here, at the process boundary,
     // for the same reason `readerFor` and `anthropicReviewer` are: `run.ts`
     // is tested with fakes and touches no real filesystem unless this is the

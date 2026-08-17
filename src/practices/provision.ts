@@ -120,6 +120,14 @@ export function parseCorpus(text: string): Corpus {
   try {
     document = JSON.parse(text);
   } catch (cause) {
+    // `JSON.parse` is spec-guaranteed to throw a `SyntaxError` — an `Error`
+    // — on malformed input, never a string or a plain object, so the
+    // `instanceof Error` branch below is defensive rather than reachable
+    // today: nothing in this codebase can drive this catch with a non-Error
+    // cause. It would become reachable only if `JSON.parse` here were ever
+    // replaced by something else (a custom parser, a shimmed global) — at
+    // which point this stops being defensive and nobody will know from the
+    // test suite, because there is deliberately no test for it now.
     fail(`corpus is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
 
