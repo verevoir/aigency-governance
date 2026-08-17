@@ -61,6 +61,32 @@ jobs:
     # check, that is the next thing to try: change `ref:` on the second
     # checkout in review.yml to `refs/pull/${{ github.event.number }}/head`
     # (or pass it through as a second input) instead of a bare sha.
+    #
+    # THE TRADE THIS PIN MAKES, WRITTEN DOWN RATHER THAN LEFT IMPLICIT.
+    #
+    # What the exposure is: before this pin, the local `./` path above already
+    # let a pull request control the JOB DEFINITION, but `governance-ref`
+    # defaulting to `main` still meant the RUNNER BINARY — the code that
+    # actually holds and calls ANTHROPIC_API_KEY — was built only from code
+    # already on `main`. Pinning `governance-ref` to the PR's own head sha
+    # removes that boundary: the code handling the API key is now also
+    # whatever the pull request itself proposes.
+    #
+    # Why it is accepted: a repository that develops the reviewer cannot
+    # review a change to the reviewer without running that change — that is
+    # what self-review means, and it is the property this file exists to
+    # have (see the `./` comment above). There is no version of "review a
+    # change to the runner" that does not, at some point, run the runner as
+    # changed.
+    #
+    # What would make it unacceptable: this trade holds only as long as every
+    # pull request against this repository comes from someone who already
+    # holds ANTHROPIC_API_KEY — i.e. only from people already trusted with
+    # the credential the exposure concerns. The moment this repository
+    # accepts a pull request from outside that set, the trade inverts: an
+    # untrusted change would be handed a trusted secret to run itself with.
+    # That is the condition to watch for, because it is the one most likely
+    # to be crossed without anyone deciding to cross it.
     with:
       governance-ref: ${{ github.event.pull_request.head.sha }}
     secrets:
