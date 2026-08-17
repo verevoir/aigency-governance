@@ -159,10 +159,19 @@ import {
 // elsewhere on disk without needing to reproduce a full build inside it.
 const BIN = fileURLToPath(new URL('../dist/cli/review.js', import.meta.url));
 
-function capture(command, args, input, extraEnv = {}) {
+// A previous version of this function spread the ENTIRE parent environment
+// into every spawned child — the two `git` calls below and the reviewer
+// binary alike — which forwards a credential like ANTHROPIC_API_KEY to
+// subprocesses that never needed it (a review found this: `git rev-parse`
+// and `git diff` have no use for it). `env` is required here, not
+// defaulted, so every call site below has to say what it actually needs —
+// GIT_ENV for the git calls, reviewerEnv(...) for the one call that spawns
+// the reviewer — rather than one implicit default quietly covering all of
+// them.
+function capture(command, args, input, env) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
-      env: { ...process.env, ...extraEnv },
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let out = '';
@@ -176,6 +185,69 @@ function capture(command, args, input, extraEnv = {}) {
     }
     child.on('close', (code) => resolve({ code, out, err }));
   });
+}
+
+/** What every `git` call in this file needs, and nothing else — the same
+ * minimal shape sibling scripts in this codebase already use for spawning
+ * (check-staleness-guard.mjs, tests/reviewBranch.test.mjs): PATH, so the
+ * `git` binary itself can be found, and nothing else. These are read-only
+ * operations against an already-cloned local repository (rev-parse, diff)
+ * — no network, no credential, nothing else here has a reason to reach
+ * them. */
+const GIT_ENV = { PATH: process.env.PATH };
+
+/**
+ * The complete set of environment variables anything between here and a
+ * finished review actually reads — established by grepping every
+ * `process.env[...]` / `env[...]` access in src/cli and src/review, not
+ * guessed at. `resolveSettings` (settings.ts) is the only place that reads
+ * configuration out of an environment for a review to run, and this list is
+ * exactly its reads: the three ways an API key can arrive (ANTHROPIC_API_KEY
+ * directly, or ANTHROPIC_API_KEY_FILE, or the default path built from
+ * XDG_CONFIG_HOME/HOME — see settings.ts's own header for why there are
+ * three), the lens-fetch token and its GITHUB_TOKEN fallback, and a pinned
+ * model override.
+ *
+ * AIGENCY_REVIEW_LENSES, AIGENCY_REVIEW_MAX_TOKENS and AIGENCY_REVIEW_REPORT
+ * are deliberately NOT in this list: this file already sets all three
+ * explicitly at the one call site below, and forwarding them here too would
+ * let an ambient value from this process's own environment silently
+ * override what this script deliberately chose.
+ *
+ * No PATH here, deliberately: the reviewer is spawned by its absolute
+ * executable path (process.execPath) and spawns no subprocess of its own,
+ * so unlike the git calls above it has no need to locate anything by name.
+ *
+ * Not confirmed by reading, and said rather than assumed: whether Node's
+ * global `fetch` — used for both the Anthropic call and the lens fetch —
+ * itself consults proxying environment variables (HTTPS_PROXY, HTTP_PROXY,
+ * NO_PROXY) outside anything listed here. If it does, a network that needs
+ * a proxy to reach either endpoint would behave differently under this
+ * curated environment than it did under the old full spread, and that gap
+ * has not been tested either way.
+ */
+const REVIEWER_ENV_PASSTHROUGH = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_API_KEY_FILE',
+  'XDG_CONFIG_HOME',
+  'HOME',
+  'AIGENCY_REVIEW_LENSES_TOKEN',
+  'GITHUB_TOKEN',
+  'AIGENCY_REVIEW_MODEL',
+];
+
+/** The reviewer's env: the whitelist above, forwarded by name from this
+ * process's own environment when present, plus whatever this call site is
+ * setting explicitly — which wins, since it is named second. */
+function reviewerEnv(explicitEnv) {
+  const env = {};
+  for (const name of REVIEWER_ENV_PASSTHROUGH) {
+    const value = process.env[name];
+    if (value !== undefined) {
+      env[name] = value;
+    }
+  }
+  return { ...env, ...explicitEnv };
 }
 
 function present(value) {
@@ -202,7 +274,12 @@ function sanitizeRef(ref) {
  * (a review found exactly that collapse in an earlier version of this
  * function). */
 async function checkRef(ref) {
-  const result = await capture('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  const result = await capture(
+    'git',
+    ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
+    undefined,
+    GIT_ENV,
+  );
   if (result.code === 0) {
     return { exists: true };
   }
@@ -290,7 +367,7 @@ if (refProblems.length > 0) {
 // named head is already a real name and needs no resolving.
 let headDisplay = headRef;
 if (headRefRaw === undefined) {
-  const abbrev = await capture('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const abbrev = await capture('git', ['rev-parse', '--abbrev-ref', 'HEAD'], undefined, GIT_ENV);
   if (abbrev.code === 0) {
     const name = abbrev.out.trim();
     if (name !== '') {
@@ -303,7 +380,7 @@ const title = `${headDisplay} vs ${baseRef}`;
 
 // Three dots: the head's own work against the merge base, not the base's
 // tip against the head's tip. See the file header.
-const diff = await capture('git', ['diff', `${baseRef}...${headRef}`]);
+const diff = await capture('git', ['diff', `${baseRef}...${headRef}`], undefined, GIT_ENV);
 if (diff.code !== 0) {
   console.error(`git diff failed (${String(diff.code)}):\n${diff.err}`);
   process.exit(1);
@@ -342,40 +419,56 @@ const reportBase = `branch__${sanitizeRef(baseRef)}__${sanitizeRef(headDisplay)}
 const report = reportTargetPaths(REPORT_DIR, reportBase);
 await ensureReportDir(report.dir);
 
-const review = await capture(process.execPath, [BIN, title], diff.out, {
-  // The checked-out definition, not the published one — same reasoning as
-  // review-head.mjs: no token needed, and the runner and the lens set are
-  // then the same revision.
-  AIGENCY_REVIEW_LENSES: './review/lenses.json',
-  // Raised from 16384 after two separate real runs hit the identical
-  // failure — a reply that was one thinking block, no text at all,
-  // stop_reason max_tokens — on two different lenses (honesty, then
-  // correctness), on two differently-sized diffs (303,719 characters, then
-  // ~155,000). A reply that spends its whole budget thinking and returns
-  // nothing is indistinguishable from one that had nothing to say, and that
-  // is exactly the failure this number exists to prevent.
-  //
-  // Both failures exhausted the budget completely rather than running out
-  // near the end of a reply, so neither one carries evidence of how close
-  // it came — a truncated-mid-output failure would say "nearly enough";
-  // this says nothing about the size of the gap. Doubling assumes a small
-  // gap and there is no evidence here that it is small, so this raises
-  // further: 65536, four times the original 16384. The basis for that
-  // specific number is the diff itself — the largest diff this script will
-  // ever hand a lens, under its own default 200,000-character cap, is
-  // roughly 50,000 tokens of raw content, and a thorough lens plausibly
-  // reasons in a similar order of magnitude before writing anything down.
-  // 65536 gives real headroom above that, not just a small margin past two
-  // exhausted runs.
-  //
-  // If this still exhausts at this size, that stops looking like a budget
-  // problem and starts looking like something else — a model that thinks
-  // in proportion to prompt complexity regardless of the ceiling offered,
-  // which a bigger ceiling cannot fix and only an explicit thinking-budget
-  // parameter would.
-  AIGENCY_REVIEW_MAX_TOKENS: '65536',
-  AIGENCY_REVIEW_REPORT: report.markdown,
-});
+const review = await capture(
+  process.execPath,
+  [BIN, title],
+  diff.out,
+  reviewerEnv({
+    // The checked-out definition, not the published one — same reasoning as
+    // review-head.mjs: no token needed, and the runner and the lens set are
+    // then the same revision.
+    AIGENCY_REVIEW_LENSES: './review/lenses.json',
+    // Raised from 16384 after two separate real runs hit the identical
+    // failure — a reply that was one thinking block, no text at all,
+    // stop_reason max_tokens — on two different lenses (honesty, then
+    // correctness), on two differently-sized diffs (303,719 characters, then
+    // ~155,000). A reply that spends its whole budget thinking and returns
+    // nothing is indistinguishable from one that had nothing to say, and that
+    // is exactly the failure this number exists to prevent.
+    //
+    // Both failures exhausted the budget completely rather than running out
+    // near the end of a reply, so neither one carries evidence of how close
+    // it came — a truncated-mid-output failure would say "nearly enough";
+    // this says nothing about the size of the gap. Doubling assumes a small
+    // gap and there is no evidence here that it is small, so this raises
+    // further: 65536, four times the original 16384. The basis for that
+    // specific number is the diff itself — the largest diff this script will
+    // ever hand a lens, under its own default 200,000-character cap, is
+    // roughly 50,000 tokens of raw content, and a thorough lens plausibly
+    // reasons in a similar order of magnitude before writing anything down.
+    // 65536 gives real headroom above that, not just a small margin past two
+    // exhausted runs.
+    //
+    // If this still exhausts at this size, that stops looking like a budget
+    // problem and starts looking like something else — a model that thinks
+    // in proportion to prompt complexity regardless of the ceiling offered,
+    // which a bigger ceiling cannot fix and only an explicit thinking-budget
+    // parameter would.
+    //
+    // Update, after raising it: a subsequent run against a diff of similar
+    // size (159,488 characters, close to the 155,421 that hit max_tokens at
+    // 16384) completed all five lenses clean at 65536, with no lens
+    // exhausting the budget. That is evidence the raise helped, not a
+    // demonstration that it is enough — one clean run does not rule out that
+    // this particular diff's content simply did not provoke deep thinking
+    // this time, the same way two failures at 16384 did not prove the gap
+    // was small. The number rests on the reasoning above (roughly 50,000
+    // tokens of raw content at the cap, headroom above that) plus this one
+    // additional data point, not on the clean run alone.
+    AIGENCY_REVIEW_MAX_TOKENS: '65536',
+    AIGENCY_REVIEW_REPORT: report.markdown,
+  }),
+);
 
 console.log(review.out);
 if (review.err.trim() !== '') {

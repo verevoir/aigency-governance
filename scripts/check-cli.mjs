@@ -227,13 +227,33 @@ try {
     );
   }
 
-  let parsedJson;
+  // Read and parse kept as two separate failures, not one merged message —
+  // "the file was never written" and "the file exists but is corrupt" are
+  // different problems for a maintainer to act on, and this is the second
+  // time that exact collapse has been found in this codebase today: the
+  // first was writeReportFiles/withReportFile in src/cli/reportFile.ts,
+  // which now tags each of its two writes with the path that write was
+  // attempting rather than reporting every failure against one fixed path.
+  // Fixing it there did not fix it here — a defect class fixed in one file
+  // is not fixed in the codebase, and this is the third time that has been
+  // true today (the same shape also explained the dist/ staleness and
+  // .review-report/ residue findings earlier).
+  let jsonText;
   try {
-    parsedJson = JSON.parse(await readFile(jsonPath, 'utf8'));
+    jsonText = await readFile(jsonPath, 'utf8');
   } catch (cause) {
-    problems.push(
-      `[AIGENCY_REVIEW_REPORT] the JSON file was not written or did not parse: ${cause.message}`,
-    );
+    problems.push(`[AIGENCY_REVIEW_REPORT] the JSON file was not written: ${cause.message}`);
+  }
+
+  let parsedJson;
+  if (jsonText !== undefined) {
+    try {
+      parsedJson = JSON.parse(jsonText);
+    } catch (cause) {
+      problems.push(
+        `[AIGENCY_REVIEW_REPORT] the JSON file was written but did not parse: ${cause.message}`,
+      );
+    }
   }
   if (parsedJson !== undefined) {
     if (parsedJson.ran !== false || typeof parsedJson.report !== 'string') {
