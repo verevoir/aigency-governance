@@ -21,30 +21,33 @@
 // parked on, which is not necessarily the branch — or the pull request —
 // anyone actually wants reviewed.
 //
-// AND BOTH ARE ALSO POSITIONAL ARGUMENTS: `node review-branch.mjs [base]
-// [head]`. PRECEDENCE IS POSITIONAL, THEN ENVIRONMENT, THEN DEFAULT, in that
-// order, for each of the two independently. Positional wins because it is
-// the only channel a declared command in aigency.json can actually carry: a
-// declared command's argv is fixed at the moment it is written into the
-// declaration, but its environment is whatever the runtime that invokes it
-// happens to hand it — nothing available to run a declared step can set an
-// environment variable for it. So AIGENCY_REVIEW_BRANCH_BASE/_HEAD are real
-// and they work, but only for a human invoking this script directly from a
-// shell; a step declared in aigency.json can only name its subject through
-// argv, which is why it comes first. Environment remains beneath it rather
-// than being removed, because it is still the more convenient route for
-// that human, and removing it would break nothing this change is about.
+// AND ALL THREE ARE ALSO POSITIONAL ARGUMENTS: `node review-branch.mjs
+// [base] [head] [cap]`. PRECEDENCE IS POSITIONAL, THEN ENVIRONMENT, THEN
+// DEFAULT, in that order, for each of the three independently — the cap
+// follows the same rule as the two refs, for the same reason. Positional
+// wins because it is the one channel that can carry a VALUE into a declared
+// command in aigency.json: a declared command's argv is fixed at the moment
+// it is written into the declaration; a declared `env` block, if any, can
+// only forward a variable already sitting in the process that started the
+// belt, by name — it cannot set one (checked directly, the hard way, by
+// trying to declare one here first). So a base, head or cap a declared step
+// needs to name can only reach it through argv, which is why positional
+// comes first for all three. AIGENCY_REVIEW_BRANCH_BASE/_HEAD/_MAX_CHARS
+// remain real and still work for a human invoking this script directly
+// from a shell, which is why environment stays beneath positional rather
+// than being removed.
 //
 // AN EMPTY OR WHITESPACE-ONLY POSITIONAL ARGUMENT IS TREATED AS ABSENT, the
 // same way an empty environment variable already is (see `present`, used
-// for both) — it falls through to the next precedence level rather than
-// pinning the ref to the empty string, which `git rev-parse` would refuse
-// anyway.
+// for all three: base, head and cap) — it falls through to the next
+// precedence level rather than pinning a ref to the empty string, or the
+// cap to a value that would parse as zero, either of which the checks
+// below would otherwise have to refuse.
 //
-// MORE THAN TWO POSITIONAL ARGUMENTS IS REFUSED, by count alone, before
-// either ref is looked at: a third position has nothing declared to mean,
-// and silently ignoring it would hide a caller's mistake rather than name
-// it.
+// MORE THAN THREE POSITIONAL ARGUMENTS IS REFUSED, by count alone, before
+// any of base, head or cap is looked at: a fourth position has nothing
+// declared to mean, and silently ignoring it would hide a caller's mistake
+// rather than name it.
 //
 // THE DIFF IS `${base}...${head}` — three dots, not two. Two dots would diff
 // the base's tip against the head's tip directly, which includes everything
@@ -103,22 +106,28 @@
 // piped through another tool, attached to a message — what it is actually
 // looking at.
 //
-// THE CAP: AIGENCY_REVIEW_BRANCH_MAX_CHARS, optional, defaulting to 200,000
-// characters. A present-but-invalid value is refused rather than replaced —
-// the same shape AIGENCY_REVIEW_MAX_TOKENS already uses in settings.ts,
-// chosen over provision.ts's fully-required `maxChars` because this is an
-// environment string arriving from outside the process, not a function
-// parameter a caller already has in hand and has already had to think about.
-// The default is a starting estimate, not a measured one: roughly 50,000
-// tokens at ~4 characters per token, leaving the bulk of a 200,000-token
-// context window free for the system prompt, the lens definitions and the
-// completion budget even before margin. The first real subject run against
-// it — a four-story stack, 448,103 characters — refused at 2.24x the cap,
-// which confirmed the grain was wrong (a whole stack was never a reviewable
-// subject) rather than the cap being far off. That is the finding
-// AIGENCY_REVIEW_BRANCH_BASE/_HEAD exist to act on, by making a single pull
-// request's own pair of refs nameable instead of reviewing everything at
-// once.
+// THE CAP: AIGENCY_REVIEW_BRANCH_MAX_CHARS, or the third positional
+// argument, optional, defaulting to 200,000 characters — same precedence as
+// the two refs: positional wins, then environment, then default. A
+// present-but-invalid value, from whichever source supplied it, is refused
+// by name before anything is measured or spawned — the same shape
+// AIGENCY_REVIEW_MAX_TOKENS already uses in settings.ts, chosen over
+// provision.ts's fully-required `maxChars` because this arrives from
+// outside the process, not a function parameter a caller already has in
+// hand and has already had to think about. The default is a starting
+// estimate, not a measured one: roughly 50,000 tokens at ~4 characters per
+// token, leaving the bulk of a 200,000-token context window free for the
+// system prompt, the lens definitions and the completion budget even before
+// margin. The first real subject run against it — a four-story stack,
+// 448,103 characters — refused at 2.24x the cap, which confirmed the grain
+// was wrong (a whole stack was never a reviewable subject) rather than the
+// cap being far off. That is the finding AIGENCY_REVIEW_BRANCH_BASE/_HEAD
+// exist to act on, by making a single pull request's own pair of refs
+// nameable instead of reviewing everything at once. The positional cap
+// exists for the same reason the positional refs do: a declared step's
+// argv is the one channel that can carry a value at all, and a one-off
+// raise for one over-sized pull request belongs in that declaration,
+// visible, rather than in this default.
 //
 // Declared as a `release` step in aigency.json, not a `gate`, for the same
 // reason `review` is: this bills real money, one model call per lens, and a
@@ -188,35 +197,39 @@ async function refExists(ref) {
 
 const DEFAULT_MAX_CHARS = 200_000;
 
-// Parsed before anything else runs, including before git is touched — an
-// invalid cap is a configuration mistake, not a fact about this branch, and
-// should fail exactly as fast as a bad AIGENCY_REVIEW_MAX_TOKENS does.
-let maxChars = DEFAULT_MAX_CHARS;
-const rawCap = present(process.env['AIGENCY_REVIEW_BRANCH_MAX_CHARS']);
-if (rawCap !== undefined) {
-  const parsed = Number(rawCap);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    console.error(
-      `AIGENCY_REVIEW_BRANCH_MAX_CHARS must be a positive whole number, got ${JSON.stringify(rawCap)}`,
-    );
-    process.exit(1);
-  }
-  maxChars = parsed;
-}
-
-// Positional argv, if present, wins over environment — see the file
-// header for why positional comes first and what an empty or extra
-// argument means.
+// Positional argv, if present, wins over environment — see the file header
+// for why positional comes first, for all three positions, and what an
+// empty, missing or extra argument means.
 const positionalArgs = process.argv.slice(2);
-if (positionalArgs.length > 2) {
+if (positionalArgs.length > 3) {
   console.error(
-    `at most two positional arguments are accepted (base, head); got ${String(positionalArgs.length)}: ` +
+    `at most three positional arguments are accepted (base, head, cap); got ${String(positionalArgs.length)}: ` +
       positionalArgs.map((arg) => JSON.stringify(arg)).join(', '),
   );
   process.exit(1);
 }
 const baseArg = present(positionalArgs[0]);
 const headArg = present(positionalArgs[1]);
+const capArg = present(positionalArgs[2]);
+
+// Parsed before anything else runs, including before git is touched — an
+// invalid cap is a configuration mistake, not a fact about this branch, and
+// should fail exactly as fast as a bad AIGENCY_REVIEW_MAX_TOKENS does. Same
+// precedence as the two refs below: the positional argument, if present, is
+// validated in preference to the environment variable, and whichever one
+// supplied the raw value is named in the refusal.
+let maxChars = DEFAULT_MAX_CHARS;
+const rawCap = capArg ?? present(process.env['AIGENCY_REVIEW_BRANCH_MAX_CHARS']);
+const rawCapSource =
+  capArg !== undefined ? 'the third positional argument (cap)' : 'AIGENCY_REVIEW_BRANCH_MAX_CHARS';
+if (rawCap !== undefined) {
+  const parsed = Number(rawCap);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    console.error(`${rawCapSource} must be a positive whole number, got ${JSON.stringify(rawCap)}`);
+    process.exit(1);
+  }
+  maxChars = parsed;
+}
 
 const baseRefRaw = baseArg ?? present(process.env['AIGENCY_REVIEW_BRANCH_BASE']);
 const baseRef = baseRefRaw ?? 'main';

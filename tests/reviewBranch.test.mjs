@@ -324,14 +324,68 @@ describe('review-branch.mjs', () => {
     expect(result.out).toContain('nothing to review');
   });
 
-  it('refuses more than two positional arguments, naming the count', async () => {
+  // Precedence for the cap, same rule as the two refs above and the same
+  // reason it matters: this is the discriminating case. An implementation
+  // that read the environment cap first and ignored a positional one would
+  // pass every other cap test here and fail only this.
+  it('a positional cap overrides an environment variable naming a much smaller cap', async () => {
     const dir = await makeRepo({ withChange: true });
     dirsToClean.push(dir);
 
-    const result = await run(dir, {}, ['main', 'feature', 'extra']);
+    // Env says the cap is 1 character, which any non-empty diff exceeds —
+    // if that were honoured this would refuse before reaching the
+    // reviewer. The positional argument says the cap is 1,000,000,
+    // comfortably above this fixture's diff, and only reaching the
+    // reviewer at all (rather than a too-large refusal) proves the
+    // positional argument won.
+    const result = await run(
+      dir,
+      { AIGENCY_REVIEW_BRANCH_MAX_CHARS: '1', ANTHROPIC_API_KEY: FAKE_KEY },
+      ['main', 'feature', '1000000'],
+    );
 
     expect(result.code).not.toBe(0);
-    expect(result.out).toContain('at most two positional arguments are accepted');
-    expect(result.out).toContain('3');
+    expect(result.out).toContain('## Review: Could not run');
+    expect(result.out).not.toContain('This is a refusal to review');
+  });
+
+  it('refuses an invalid positional cap, naming it as the source rather than the environment variable', async () => {
+    const dir = await makeRepo({ withChange: true });
+    dirsToClean.push(dir);
+
+    const result = await run(dir, {}, ['main', 'feature', 'not-a-number']);
+
+    expect(result.code).not.toBe(0);
+    expect(result.out).toContain(
+      'the third positional argument (cap) must be a positive whole number',
+    );
+    expect(result.out).toContain('"not-a-number"');
+  });
+
+  it('falls back to the environment cap, then the default, when no positional cap is given', async () => {
+    const dir = await makeRepo({ withChange: true });
+    dirsToClean.push(dir);
+
+    // No positional cap: the low environment cap is still honoured.
+    const capped = await run(dir, { AIGENCY_REVIEW_BRANCH_MAX_CHARS: '1' });
+    expect(capped.code).not.toBe(0);
+    expect(capped.out).toMatch(/is \d+ characters, \d+ over the 1-character cap/);
+
+    // No positional cap and no environment cap: the default (200,000) is
+    // large enough that this small fixture's diff is reviewable.
+    const uncapped = await run(dir, { ANTHROPIC_API_KEY: FAKE_KEY });
+    expect(uncapped.code).not.toBe(0);
+    expect(uncapped.out).toContain('## Review: Could not run');
+  });
+
+  it('refuses more than three positional arguments, naming the count', async () => {
+    const dir = await makeRepo({ withChange: true });
+    dirsToClean.push(dir);
+
+    const result = await run(dir, {}, ['main', 'feature', '1000000', 'extra']);
+
+    expect(result.code).not.toBe(0);
+    expect(result.out).toContain('at most three positional arguments are accepted');
+    expect(result.out).toContain('4');
   });
 });
