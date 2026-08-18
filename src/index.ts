@@ -59,5 +59,11 @@ export {
   type SettingsResult,
 } from './review/settings.js';
 export { runReview, type ReviewDeps, type ReviewOutcome } from './cli/run.js';
-export { retrying, RetryPolicyError, type RetryPolicy, type Sleep } from './decorate/retrying.js';
-export { observing, type Clock, type Observation, type Recorder } from './decorate/observing.js';
+
+// retrying and observing (src/decorate/) are deliberately NOT re-exported
+// here. A review found them added to this public barrel with no caller
+// anywhere in this repository or any branch built on top of it - only their
+// own dedicated test file uses either one. A public export is a promise, and
+// this one was nobody's ask. The modules stay in the tree, tested and ready
+// to be wired to a real caller; they get re-exported the day one exists,
+// not before.
