@@ -322,6 +322,15 @@ if (rawCap !== undefined) {
   }
   maxChars = parsed;
 }
+// Named once, used everywhere the cap is reported to a reader — not just
+// where an invalid value is refused. A limit reported without its
+// provenance is indistinguishable from a limit nobody configured: this
+// project spent a whole turn chasing a refusal that cited `200000` with no
+// indication of whether that was chosen or merely the untouched default,
+// and the environment variable that should have overridden it never reached
+// the process for reasons outside this file. Every place below that names
+// `maxChars` now names where it came from in the same breath.
+const capSource = rawCap !== undefined ? rawCapSource : 'the built-in default';
 
 const baseRefRaw = baseArg ?? present(process.env['AIGENCY_REVIEW_BRANCH_BASE']);
 const baseRef = baseRefRaw ?? 'main';
@@ -399,7 +408,7 @@ if (assessment.kind === 'too-large') {
   const over = assessment.chars - assessment.maxChars;
   console.error(
     `${title}: the diff is ${String(assessment.chars)} characters, ${String(over)} over the ` +
-      `${String(assessment.maxChars)}-character cap.\n\n` +
+      `${String(assessment.maxChars)}-character cap (${capSource}).\n\n` +
       'This is a refusal to review, not a review that found a problem: nothing was judged, ' +
       'nothing was sent to a model, and this is not a rejection. Review a narrower range, ' +
       'review a single commit instead (see review-head.mjs), or raise ' +
@@ -410,7 +419,8 @@ if (assessment.kind === 'too-large') {
 
 console.log(`Reviewing ${title}.`);
 console.log(
-  `Diff is ${String(assessment.chars)} characters, under the ${String(maxChars)}-character cap.\n`,
+  `Diff is ${String(assessment.chars)} characters, under the ${String(maxChars)}-character cap ` +
+    `(${capSource}).\n`,
 );
 
 // A filename derived from both refs, so two different pairs reviewed from
