@@ -72,21 +72,58 @@ jobs:
     # removes that boundary: the code handling the API key is now also
     # whatever the pull request itself proposes.
     #
-    # Why it is accepted: a repository that develops the reviewer cannot
-    # review a change to the reviewer without running that change — that is
-    # what self-review means, and it is the property this file exists to
-    # have (see the `./` comment above). There is no version of "review a
-    # change to the runner" that does not, at some point, run the runner as
-    # changed.
+    # Why it is accepted, first argument: a repository that develops the
+    # reviewer cannot review a change to the reviewer without running that
+    # change — that is what self-review means, and it is the property this
+    # file exists to have (see the `./` comment above). There is no version
+    # of "review a change to the runner" that does not, at some point, run
+    # the runner as changed.
     #
-    # What would make it unacceptable: this trade holds only as long as every
-    # pull request against this repository comes from someone who already
-    # holds ANTHROPIC_API_KEY — i.e. only from people already trusted with
-    # the credential the exposure concerns. The moment this repository
-    # accepts a pull request from outside that set, the trade inverts: an
-    # untrusted change would be handed a trusted secret to run itself with.
-    # That is the condition to watch for, because it is the one most likely
-    # to be crossed without anyone deciding to cross it.
+    # Why it is accepted, second argument, and the stronger one: the actual
+    # size of the exposure, not just the necessity of accepting some
+    # exposure. This workflow triggers on plain `pull_request:` (see the
+    # `on:` block at the top of this file), not `pull_request_target` — the
+    # trigger GitHub does NOT withhold repository secrets from, and the one
+    # every guide to this problem warns against for exactly that reason.
+    # This repository is also PRIVATE (confirmed by reading the repository's
+    # own settings, not assumed): a private repository has no general
+    # public-fork pathway the way a public one does, so there is no route
+    # for an arbitrary outside contributor to open a pull request here at
+    # all. Combined, every pull request this workflow will ever see comes
+    # from someone who already has write access to this repository, or from
+    # a fork GitHub only permits for someone already inside that boundary —
+    # which is a materially smaller claim than "a contributor-authored diff
+    # can reach the key": it is "a diff from someone who could reach the key
+    # anyway, some other way, can reach the key". That is a bounded,
+    # structural fact about this repository's visibility, not a hope about
+    # who happens to send pull requests.
+    #
+    # THE RESIDUAL, NAMED HONESTLY AS AN OPEN ITEM AND NOT A MITIGATION:
+    # nothing above is enforced by anything in this tree. "Private" and
+    # "pull_request, not pull_request_target" are facts about how this
+    # repository and this file are currently configured, not a check any
+    # gate here runs or could run — a future change to either (making the
+    # repository public, or switching the trigger) would silently widen the
+    # exposure back to "any contributor-authored diff" with nothing here to
+    # object. The enforcement that would close this — branch protection
+    # requiring review on changes under .github/workflows/, or GitHub's own
+    # fork-pull-request-approval setting — is a repository or organisation
+    # SETTING, outside this tree entirely, and nobody has made it. That is
+    # not a reason to reject this trade; it is the boundary of what a commit
+    # to this repository can promise, stated rather than left for someone to
+    # discover the day one of those two facts quietly changes.
+    #
+    # What would make the trade unacceptable, independent of the residual
+    # above: this trade holds only as long as every pull request against
+    # this repository comes from someone who already holds
+    # ANTHROPIC_API_KEY — i.e. only from people already trusted with the
+    # credential the exposure concerns. The moment this repository accepts a
+    # pull request from outside that set — a public fork, an external
+    # collaborator without the key, a policy change to who may open pull
+    # requests here — the trade inverts: an untrusted change would be handed
+    # a trusted secret to run itself with. That is the condition to watch
+    # for, because it is the one most likely to be crossed without anyone
+    # deciding to cross it.
     with:
       governance-ref: ${{ github.event.pull_request.head.sha }}
     secrets:
