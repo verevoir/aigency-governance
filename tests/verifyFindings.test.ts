@@ -233,11 +233,30 @@ describe('checkEvidence — the three-way check, and what "truncated" actually t
   it('an absence claim has no truncated form — genuinely absent, or unverifiable, nothing between', () => {
     expect(checkEvidence({ kind: 'absence', text: 'console.log(' }, DIFF)).toBe('verified');
     expect(checkEvidence({ kind: 'absence', text: 'maxAttempts' }, DIFF)).toBe('unverifiable');
-    // Joined prose is deliberately not consulted for an absence claim — see
-    // checkEvidence's own comment on why.
+  });
+
+  // The previous version of this file's third absence assertion used
+  // 'overriding a genuine approval' as its evidence text, which IS present
+  // in CHECK_CLI_DIFF's raw content — no marker-stripping or line-joining
+  // needed to find it. A review found this: the assertion passed identically
+  // whether or not absence claims consulted joined prose, since raw
+  // `diff.includes` already found it either way. A test that would pass
+  // unchanged if the design decision it names were reversed proves nothing
+  // about that decision — it is a comment repeated as an assertion, not a
+  // guard on the behaviour.
+  //
+  // This fixture spans the exact source line-wrap CHECK_CLI_DIFF exists to
+  // exercise: genuinely absent from the raw diff (a newline and the next
+  // line's `//` sit where a single space would need to be), and present
+  // once the diff is read as joined prose. An absence claim about it
+  // correctly reads `verified` under the actual, raw-only design — and
+  // would read `unverifiable` if a future change wired joined prose into
+  // absence checking too, which is exactly the behaviour this test now
+  // guards rather than assumes.
+  it('an absence claim spanning a source line-wrap is verified, proving joined prose is not consulted rather than assuming it', () => {
     expect(
-      checkEvidence({ kind: 'absence', text: 'overriding a genuine approval' }, CHECK_CLI_DIFF),
-    ).toBe('unverifiable');
+      checkEvidence({ kind: 'absence', text: 'specifically is covered directly' }, CHECK_CLI_DIFF),
+    ).toBe('verified');
   });
 });
 

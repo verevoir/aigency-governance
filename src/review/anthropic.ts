@@ -16,6 +16,8 @@
 // apart, per provider call), and a half-implementation that recorded a total
 // would be worse than none — it would look like accounting exists.
 
+import process from 'node:process';
+
 import type { Prompt } from './prompt.js';
 import type { Reviewer } from './panel.js';
 
@@ -44,6 +46,19 @@ export interface AnthropicConfig {
 
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
+
+// One retry (two attempts total) for a TRANSPORT failure only -- post()
+// itself throwing, meaning the request never reached the provider. Not for
+// a non-ok response or an unreadable body, both of which already got an
+// answer from the provider and belong to a different decision this file
+// does not make here. Bounded, rather than unbounded or generous: this
+// project saw the identical 'request failed: fetch failed' hit three
+// different lenses on three unchanged diffs, which is the signature of an
+// ordinary transient failure and not something a lens's own content
+// provokes -- a bounded retry answers that signature without spending a
+// caller's patience hiding a real outage, which would instead fail after
+// one retry exactly as it does today without this constant.
+const TRANSPORT_RETRY_LIMIT = 1;
 
 /**
  * Remove anything secret from text that is about to be thrown, logged or
@@ -115,16 +130,19 @@ function textFrom(body: string): string {
 /**
  * A `Reviewer` backed by the Anthropic messages API.
  *
- * Every failure throws. `runPanel` turns a throw into `could_not_run` for that
- * lens and lets the others finish, which is exactly the handling this wants —
- * so there is nothing to gain here from catching, and something to lose: a
- * caught error that returned a string would be parsed as a reply.
+ * Every failure throws — still true after TRANSPORT_RETRY_LIMIT was added: a
+ * transport failure is retried internally, once, and only the final attempt's
+ * failure (if the retry also fails) ever reaches the caller as a throw.
+ * `runPanel` turns that throw into `could_not_run` for that lens and lets the
+ * others finish, which is exactly the handling this wants — so there is
+ * nothing to gain here from catching, and something to lose: a caught error
+ * that returned a string would be parsed as a reply.
  */
 export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Reviewer {
   const url = `${config.baseUrl ?? DEFAULT_BASE_URL}/v1/messages`;
   const secrets = [config.apiKey];
 
-  return async (_lensId: string, prompt: Prompt): Promise<string> => {
+  return async (lensId: string, prompt: Prompt): Promise<string> => {
     const body = JSON.stringify({
       model: config.model,
       max_tokens: config.maxTokens,
@@ -134,22 +152,44 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
       system: [{ type: 'text', text: prompt.shared, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: prompt.perLens }],
     });
+    const requestInit = {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'anthropic-version': ANTHROPIC_VERSION,
+        'x-api-key': config.apiKey,
+      },
+      body,
+    };
 
-    let response: Awaited<ReturnType<HttpPost>>;
-    try {
-      response = await post(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'anthropic-version': ANTHROPIC_VERSION,
-          'x-api-key': config.apiKey,
-        },
-        body,
-      });
-    } catch (cause) {
+    let response: Awaited<ReturnType<HttpPost>> | undefined;
+    let transportFailure: unknown;
+    for (let attempt = 0; attempt <= TRANSPORT_RETRY_LIMIT; attempt++) {
+      try {
+        response = await post(url, requestInit);
+        break;
+      } catch (cause) {
+        transportFailure = cause;
+        if (attempt < TRANSPORT_RETRY_LIMIT) {
+          // Never silent -- see TRANSPORT_RETRY_LIMIT's own comment for why.
+          // `lensId` names which lens's call is retrying, since a panel runs
+          // five of these concurrently and a bare "retrying" would not say
+          // which one just failed.
+          process.stderr.write(
+            redact(
+              `${lensId}: transport call failed (attempt ${String(attempt + 1)} of ` +
+                `${String(TRANSPORT_RETRY_LIMIT + 1)}), retrying: ` +
+                `${cause instanceof Error ? cause.message : String(cause)}\n`,
+              secrets,
+            ),
+          );
+        }
+      }
+    }
+    if (response === undefined) {
       throw new Error(
         redact(
-          `request failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          `request failed: ${transportFailure instanceof Error ? transportFailure.message : String(transportFailure)}`,
           secrets,
         ),
       );

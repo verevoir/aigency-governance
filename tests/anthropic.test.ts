@@ -7,7 +7,9 @@
 // per-lens half after it — that no type can enforce and that, until this
 // module existed, nothing in the repository could check. These tests are the
 // only guard that contract has.
-import { describe, expect, it } from 'vitest';
+import process from 'node:process';
+
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   anthropicReviewer,
@@ -416,6 +418,96 @@ describe('failures', () => {
     const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
     expect(error.message).toBe('response body could not be read: aborted mid-body');
     expect(error.message).not.toContain('undefined');
+  });
+});
+
+describe('the transport retry — bounded, and scoped to a call that never reached the provider', () => {
+  // Rejects once, then answers normally — the shape of the three real
+  // incidents tonight: 'request failed: fetch failed' once, then nothing
+  // wrong with the connection or the provider on the very next attempt.
+  function fakePostFailOnceThenReplying(...texts: string[]): FakePost {
+    let calls = 0;
+    return fakePost(() => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.reject(new Error(`connect failed for key ${API_KEY}`));
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({ content: texts.map((text) => ({ type: 'text', text })) }),
+          ),
+      });
+    });
+  }
+
+  it('retries once after a transport failure and returns the reply when the retry succeeds', async () => {
+    const post = fakePostFailOnceThenReplying('VERDICT: approved');
+    const reply = await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
+    expect(reply).toBe('VERDICT: approved');
+    expect(post.sent).toHaveLength(2);
+  });
+
+  it('gives up after exactly one retry (two attempts total) and still reports the transport failure', async () => {
+    const post = fakePost(() => Promise.reject(new Error('fetch failed')));
+    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
+    expect(error.message).toContain('request failed');
+    expect(error.message).toContain('fetch failed');
+    expect(post.sent).toHaveLength(2);
+  });
+
+  // The scoping this whole fix is about: a response that reached the
+  // provider — even a 529 — is a different failure from a connection that
+  // never opened, and must not share the transport retry. Exactly one
+  // request, matching the pre-existing 'throws with the status and the body'
+  // test's own behaviour.
+  it('does not retry a response that reached the provider, even an error one', async () => {
+    const post = serving(529, 'overloaded_error');
+    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
+    expect(error.message).toContain('529');
+    expect(post.sent).toHaveLength(1);
+  });
+
+  // Never silent — a retry that happens quietly is a failure nobody can
+  // count, and the count is itself the evidence a pattern exists (three
+  // identical incidents tonight, across three different lenses). Spied
+  // rather than left to the real stream, and restored in every case so a
+  // failing assertion above cannot leave process.stderr silently mocked for
+  // whatever test runs next.
+  it('writes one line to stderr when it retries, naming the lens and the attempt, with the key redacted', async () => {
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const post = fakePostFailOnceThenReplying('VERDICT: approved');
+      await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
+      const written = writeSpy.mock.calls.map((call) => String(call[0])).join('');
+      expect(written).toContain('honesty');
+      expect(written).toContain('retrying');
+      expect(written).toContain('attempt 1 of 2');
+      // The positive control, same shape as 'the api key' describe block
+      // above: the raw key was genuinely in the underlying failure (built
+      // into fakePostFailOnceThenReplying), so a written log that lacks it
+      // and carries the mask instead proves redaction ran, not that there
+      // was nothing to redact.
+      expect(written).not.toContain(API_KEY);
+      expect(written).toContain('***');
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+
+  // A successful call writes nothing to stderr about retrying — the whole
+  // point is that this is reported only when it actually happens.
+  it('writes nothing to stderr when the first attempt succeeds', async () => {
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const post = replying('VERDICT: approved');
+      await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
+      expect(writeSpy).not.toHaveBeenCalled();
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 });
 
