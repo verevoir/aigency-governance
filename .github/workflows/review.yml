@@ -244,5 +244,14 @@ jobs:
       - name: Take the verdict
         if: (success() || failure()) && steps.review.outcome == 'failure'
         run: |
-          echo "::error title=Review::The review did not approve. The report is in the job summary."
+          # The report's own heading already carries the distinction this
+          # annotation must not throw away (see report.ts: every report opens
+          # with "## Review: Approved", "## Review: Rejected" or
+          # "## Review: Could not run"). Grepped rather than re-derived, so
+          # this step can never say something the report itself does not.
+          if [ -f "${RUNNER_TEMP}/review.md" ] && grep -q '^## Review: Could not run' "${RUNNER_TEMP}/review.md"; then
+            echo "::error title=Review::The review could not run — nothing was reviewed. The report says why, in the job summary."
+          else
+            echo "::error title=Review::The review did not approve. The report is in the job summary."
+          fi
           exit 1
