@@ -70,6 +70,35 @@
 // of inventing anything, so it no longer sits in the same bucket as one that
 // was.
 //
+// TWO SUBTLER GAPS FOUND IN THIS FILE'S OWN FIRST VERSION, AND FIXED HERE.
+// First: `joinedProse` collapsed whitespace only on the diff side; the
+// quote text was compared raw. A genuine citation quoted with a double
+// space or a tab where the diff has a single space would fail to match and
+// read as `unverifiable` — the exact defect this file exists to prevent,
+// in a narrower form, found on a re-read rather than by a second incident.
+// Fixed by applying the same whitespace collapse to the quote before
+// comparing (`normalizeWhitespace`, applied to both sides). This cannot
+// manufacture a match that was not already there: collapsing runs of
+// whitespace to one space never changes which non-space characters are
+// present or their order, so a fabricated citation still fails to appear
+// in `prose` after normalisation, same as before it.
+//
+// Second: the original comparison required strictly more prose after the
+// match (`at + text.length < prose.length`) before calling it `truncated`
+// — a leftover from the disproven "cut short" theory, where "something
+// must follow" was a sensible check on a citation that stopped mid-
+// sentence. Under the reshape explanation that theory was replaced with,
+// the classification signal is "found in the joined prose but not in the
+// raw diff", which says nothing about what comes after the match. A
+// citation of a diff's FINAL sentence is exactly as genuine as one with
+// more text following it, and the strict inequality misclassified it as
+// `unverifiable` — fabricated — for a reason unconnected to the actual
+// question being asked. Dropped, not kept-with-a-reason: no reason for it
+// survived the reshape explanation. This does not loosen the fabrication
+// guard either — `prose` is built only from bytes the diff already
+// contains, reformatted, so text that was never in the diff still does not
+// appear in `prose` regardless of where in it a match is sought.
+//
 // FAILS LOUD, NOT SILENT, for the outcome that remains `unverifiable`. A
 // finding that cannot be verified is not dropped — dropping it would let
 // the rest of a rejection stand as if nothing in it needed a second look,
@@ -116,6 +145,16 @@ function stripLineCommentMarker(line: string): string {
 }
 
 /**
+ * Collapse runs of whitespace to one space and trim. Applied to BOTH sides
+ * of the truncated-quote comparison — the diff, joined into prose, and the
+ * quote itself — so neither side gets normalisation the other does not.
+ * See the file header for why applying it only to the diff was a gap.
+ */
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * The diff, read the way a citation quoting its prose would: each content
  * line's leading unified-diff marker and, if present, a single-line comment
  * leader stripped, then every line joined by one space rather than left
@@ -124,27 +163,20 @@ function stripLineCommentMarker(line: string): string {
  * strips and rejoins, it never invents.
  */
 function joinedProse(diff: string): string {
-  return diff
-    .split('\n')
-    .map(stripDiffMarker)
-    .map(stripLineCommentMarker)
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizeWhitespace(
+    diff.split('\n').map(stripDiffMarker).map(stripLineCommentMarker).join(' '),
+  );
 }
 
 function checkQuote(text: string, diff: string): EvidenceCheck {
   if (diff.includes(text)) {
     return 'verified';
   }
-  const prose = joinedProse(diff);
-  const at = prose.indexOf(text);
-  // Found once the diff is read as joined prose, with more of that prose
-  // left after it — the citation is real, in order, and stops before the
-  // source does. `at === -1` is the fabricated case: not there under either
-  // reading. A match with nothing left after it is not "cut short" by this
-  // file's definition, so it is left unverifiable rather than guessed at.
-  return at !== -1 && at + text.length < prose.length ? 'truncated' : 'unverifiable';
+  // Both sides read the same way — see the file header for why comparing
+  // raw quote text against collapsed prose was a gap, and why no
+  // requirement that anything follow the match survived the reshape
+  // explanation.
+  return joinedProse(diff).includes(normalizeWhitespace(text)) ? 'truncated' : 'unverifiable';
 }
 
 /**

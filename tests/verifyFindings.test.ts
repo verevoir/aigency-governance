@@ -190,6 +190,46 @@ describe('checkEvidence — the three-way check, and what "truncated" actually t
     );
   });
 
+  // Gap #1, found on a re-read of this file's own first version: `joinedProse`
+  // collapsed the diff's whitespace but the quote was compared raw. A
+  // citation quoted with a double space — exactly the formatting variance a
+  // reviewer's prose can introduce — failed to match before this fix, even
+  // though every word is real and in order. Fails on the code as it stood
+  // before this change: it asserted 'unverifiable'.
+  it('a citation with different internal whitespace from the diff still verifies as truncated, not unverifiable', () => {
+    const withDoubleSpace = REAL_OBSERVED_QUOTE.replace(
+      'specifically is covered',
+      'specifically is  covered',
+    );
+    expect(checkEvidence({ kind: 'quote', text: withDoubleSpace }, CHECK_CLI_DIFF)).toBe(
+      'truncated',
+    );
+    const withTab = REAL_OBSERVED_QUOTE.replace('0 specifically', '0\tspecifically');
+    expect(checkEvidence({ kind: 'quote', text: withTab }, CHECK_CLI_DIFF)).toBe('truncated');
+  });
+
+  // Gap #2: the original check required strictly more prose after the
+  // match, a leftover from the disproven "cut short" theory. A citation of
+  // the diff's FINAL sentence — nothing left over after it — is exactly as
+  // genuine as one with more text following it. Fails on the code as it
+  // stood before this change: it asserted 'unverifiable'.
+  it('a citation ending at the very end of the diff is truncated, not unverifiable for having nothing after it', () => {
+    const finalSentence = 'since forcing a real approval here would cost a real model call.';
+    expect(checkEvidence({ kind: 'quote', text: finalSentence }, CHECK_CLI_DIFF)).toBe('truncated');
+  });
+
+  // Proves the guard still holds after both fixes above: normalising
+  // whitespace and dropping the trailing-content requirement both WIDEN
+  // what can match, so each needs its own proof that a genuinely invented
+  // word still fails. Mirrors the existing FABRICATED_ACROSS_MARKERS case,
+  // for the whitespace/boundary changes specifically.
+  it('an inserted word still fails, even though the rest of the citation is real and whitespace differs too', () => {
+    const withInventedWord = REAL_OBSERVED_QUOTE.replace('specifically is', 'specifically is  not');
+    expect(checkEvidence({ kind: 'quote', text: withInventedWord }, CHECK_CLI_DIFF)).toBe(
+      'unverifiable',
+    );
+  });
+
   it('an absence claim has no truncated form — genuinely absent, or unverifiable, nothing between', () => {
     expect(checkEvidence({ kind: 'absence', text: 'console.log(' }, DIFF)).toBe('verified');
     expect(checkEvidence({ kind: 'absence', text: 'maxAttempts' }, DIFF)).toBe('unverifiable');
@@ -316,6 +356,27 @@ describe('verifyLensResult', () => {
       'the write-failure test only proves the pure function',
     );
     expect(verified.findings[0]?.evidence).toEqual({ kind: 'quote', text: REAL_OBSERVED_QUOTE });
+  });
+
+  // The boundary fix, at this level: a finding quoting exactly the diff's
+  // final sentence survives as truncated rather than being withheld for
+  // having nothing after it. Fails on the code as it stood before this
+  // change: outcome would have been 'could_not_run'.
+  it("a finding quoting the diff's final sentence survives, rather than being withheld for having nothing after it", () => {
+    const finalSentence = 'since forcing a real approval here would cost a real model call.';
+    const result: LensResult = {
+      lens: LENS,
+      outcome: 'rejected',
+      findings: [
+        quoteFinding('the fake-outcome justification is buried at the end', finalSentence),
+      ],
+    };
+
+    const verified = verifyLensResult(result, CHECK_CLI_DIFF);
+
+    expect(verified.outcome).toBe('rejected');
+    expect(verified.findings).toHaveLength(1);
+    expect(verified.findings[0]?.detail).toContain('reshaped by a source line wrap');
   });
 
   // The collateral rule, argued in the file header and pinned here: a
