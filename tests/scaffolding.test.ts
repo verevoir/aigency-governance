@@ -88,6 +88,7 @@ const PUBLISHED = [
   'FINDING_MARKER',
   'LensSetError',
   'NO_PRACTICES_NOTICE',
+  'NoRoomToAnswerError',
   'PanelMismatchError',
   'REASON_MARKER',
   'REJECTED_WORD',
@@ -126,5 +127,6 @@ describe('the published surface', () => {
     expect(surface.SUPPORTED_VERSION).toBe(1);
     expect(new surface.LensSetError('x')).toBeInstanceOf(Error);
     expect(new surface.PanelMismatchError('x')).toBeInstanceOf(Error);
+    expect(new surface.NoRoomToAnswerError('x')).toBeInstanceOf(Error);
   });
 });

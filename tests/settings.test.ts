@@ -614,7 +614,7 @@ describe('resolveSettings, falling back to defaults', () => {
   // it exists rather than an oversight.
   it('pins the defaults to specific values, not merely to itself', () => {
     expect(DEFAULT_MODEL).toBe('claude-sonnet-5');
-    expect(DEFAULT_MAX_TOKENS).toBe(4096);
+    expect(DEFAULT_MAX_TOKENS).toBe(65536);
     expect(DEFAULT_LENS_SOURCE).toBe(
       'https://raw.githubusercontent.com/verevoir/aigency-governance/main/review/lenses.json',
     );

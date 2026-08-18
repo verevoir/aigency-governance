@@ -22,12 +22,14 @@ function capture(command, args, input) {
         // The checked-out definition, not the published one: no token needed,
         // and the runner and the lens set are then the same revision.
         AIGENCY_REVIEW_LENSES: './review/lenses.json',
-        // Raised for this run only, and the default is deliberately not moved.
-        // The first attempt failed with a response carrying one block and no
-        // text, which is what a reply truncated during extended thinking looks
-        // like. If that was the cause the error now says so, and the evidence
-        // rather than the guess should decide the default.
-        AIGENCY_REVIEW_MAX_TOKENS: '16384',
+        // No override here any more. This used to raise the ceiling to 16384
+        // "for this run only", on the reasoning that the evidence rather than
+        // the guess should decide the default. The evidence came in: PR #1's
+        // own CI check, at the untouched default of 4096, produced exactly
+        // the truncated-thinking-block failure this comment predicted - and
+        // 16384 would not have been enough either. DEFAULT_MAX_TOKENS in
+        // settings.ts is now 65536, evidence-based rather than raised twice
+        // in two places that could quietly drift apart.
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });

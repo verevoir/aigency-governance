@@ -18,6 +18,20 @@ import { aggregate, type LensResult, type Verdict } from './verdict.js';
  */
 export type Reviewer = (lensId: string, prompt: Prompt) => Promise<string>;
 
+/**
+ * Thrown by a Reviewer when a reply arrived but its entire output budget
+ * was spent before any of it became an answer - the ceiling cut the model
+ * off, not the transport, and not the model choosing badly. Any Reviewer
+ * implementation may throw this instead of a bare Error to say so
+ * specifically; runPanel reports it with its own reason, distinguishable
+ * at a glance from an ordinary transport failure, because the two point at
+ * different fixes: raise the budget or shrink the subject, versus fix the
+ * connection.
+ */
+export class NoRoomToAnswerError extends Error {
+  override readonly name = 'NoRoomToAnswerError';
+}
+
 export interface PanelRun {
   readonly verdict: Verdict;
   /** The prompts as dispatched, so a caller can prove the prefix was shared. */
@@ -49,13 +63,22 @@ export async function runPanel(
     if (outcome.status === 'fulfilled') {
       return outcome.value;
     }
-    // The reviewer threw — a transport failure, not a judgement. It reads as
-    // could_not_run carrying the reason, exactly like an unreadable reply,
-    // because from the panel's side they are the same fact: this lens did not
-    // review.
+    // The reviewer threw — a transport failure, a truncated reply, or
+    // something neither of those. It reads as could_not_run carrying the
+    // reason, exactly like an unreadable reply, because from the panel's
+    // side they are all the same fact: this lens did not review. But the
+    // WORDING must not claim more agreement between those causes than
+    // exists — a NoRoomToAnswerError is not a transport failure, and saying
+    // "reviewer threw" about it reads as one, which is exactly what sent an
+    // earlier investigation looking for a flaky socket instead of a token
+    // ceiling.
     const cause = outcome.reason as unknown;
     const message = cause instanceof Error ? cause.message : String(cause);
-    return { lens, outcome: 'could_not_run', findings: [], reason: `reviewer threw: ${message}` };
+    const reason =
+      cause instanceof NoRoomToAnswerError
+        ? `no room to answer: ${message}`
+        : `reviewer threw: ${message}`;
+    return { lens, outcome: 'could_not_run', findings: [], reason };
   });
 
   return {

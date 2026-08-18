@@ -148,7 +148,25 @@ export type KeyFileReader = (path: string) => Promise<KeyFileResult>;
  * differs is a bar that moved without anyone deciding to move it.
  */
 export const DEFAULT_MODEL = 'claude-sonnet-5';
-export const DEFAULT_MAX_TOKENS = 4096;
+
+/**
+ * Raised from 4096 on direct evidence, not a guess: PR #1's own review
+ * check - this repository judging its own definition, in CI, with no
+ * override anywhere in that path - hit this ceiling on a 324,603-character
+ * diff, and four of five lenses returned a `thinking` block and no text at
+ * all, stop_reason max_tokens. The budget was spent entirely on reasoning
+ * before a single word of the verdict could be written. 65536 is the number
+ * already proven, elsewhere in this project, to complete cleanly on diffs
+ * of comparable size - not a doubling picked because doubling is the
+ * obvious move.
+ *
+ * If a lens still hits this ceiling at 65536, raising it again treats a
+ * symptom. The more honest question at that point is very likely the
+ * subject, not the budget: this repository's own review check, unlike
+ * review-branch.mjs's standalone size cap, has no limit at all on how large
+ * a diff it will attempt.
+ */
+export const DEFAULT_MAX_TOKENS = 65536;
 
 /**
  * One home, read live — the same shape the practices already have. A

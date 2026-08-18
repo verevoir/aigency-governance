@@ -15,6 +15,7 @@ import {
   type AnthropicConfig,
   type HttpPost,
 } from '../src/review/anthropic.js';
+import { NoRoomToAnswerError } from '../src/review/panel.js';
 import type { Prompt } from '../src/review/prompt.js';
 
 const API_KEY = 'sk-ant-api03-THE-SECRET-VALUE-DO-NOT-LOG';
@@ -309,6 +310,27 @@ describe('failures', () => {
     const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
     expect(error.message).toContain('thinking');
     expect(error.message).toContain('max_tokens');
+  });
+
+  // The distinguishing fix: this exact case - zero text, stop_reason
+  // max_tokens - is not a generic throw. It is precise enough to earn its
+  // own class, so runPanel can report it without borrowing the language of a
+  // transport fault.
+  it('throws NoRoomToAnswerError specifically when max_tokens cut off a reply with no text', async () => {
+    const post = serving(200, '{"content":[{"type":"thinking"}],"stop_reason":"max_tokens"}');
+    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
+    expect(error).toBeInstanceOf(NoRoomToAnswerError);
+  });
+
+  // The boundary, proven rather than assumed: a no-text reply that stopped
+  // for a different reason (or no stated reason at all) must NOT get this
+  // class - it is not what NoRoomToAnswerError is a claim about, and letting
+  // it through here would make the class mean "no text", not "cut off before
+  // answering".
+  it('does not classify a no-text tool_use reply as NoRoomToAnswerError', async () => {
+    const post = serving(200, '{"content":[{"type":"tool_use","id":"tu_1"}]}');
+    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
+    expect(error).not.toBeInstanceOf(NoRoomToAnswerError);
   });
 
   it('joins two text blocks into one reply', async () => {
