@@ -18,28 +18,73 @@
 // and C3 records that the layer catching a manufactured finding is
 // load-bearing and must be kept. This file is that layer for this panel.
 //
-// FAILS LOUD, NOT SILENT. A finding that cannot be verified is not dropped —
-// dropping it would let the rest of a rejection stand as if nothing in it
-// needed a second look, which is a quieter version of the exact defect C2
-// describes. Instead the whole lens result is downgraded to `could_not_run`,
-// the same channel an unreadable reply already uses (see `parseReply.ts`),
-// carrying a reason that names every finding that failed and what about it
-// did not check out. That is deliberately harsh: it also withholds any OTHER
-// finding the same reply made, sound or not, because a reply that
-// manufactured one claim has shown it will assert a search it did not run,
-// and there is no mechanical way to tell that the rest of the same reply was
-// any more careful. A manufactured finding costs more than a missed one — a
-// missed finding leaves the code as it was; a manufactured one causes a
-// change that was not needed and a reviewer who trusted it — so the
-// asymmetry here is deliberate: one bad finding is enough to withhold the
-// lens's whole say for this run, and `could_not_run` outranking `rejected`
-// in `aggregate` (verdict.ts) is what makes that withholding visible at the
-// level a reader actually looks at.
+// THREE OUTCOMES, NOT TWO — AND WHAT "TRUNCATED" ACTUALLY TURNED OUT TO MEAN.
+// The working theory going in was that a citation could be cut short by
+// generation stopping mid-quote, and that this would look like "a prefix of
+// a real diff line". It cannot: if `text` is a character-exact prefix of
+// content that is really in the diff, `text` is thereby already a substring
+// of the diff at that same position, so `diff.includes(text)` already
+// succeeds — a genuine same-line, same-bytes truncation was never something
+// the old check got wrong. Building that check and writing the test for it
+// first is what surfaced this: the test failed with `'verified'`, not
+// `'truncated'`, on a fixture designed to need the new branch, because the
+// new branch was unreachable by construction. That result is kept — see
+// `checkEvidence`'s tests — because a mechanism proven to do nothing is worth
+// more on the record than one quietly not shipped.
+//
+// What DOES make a genuine citation fail `diff.includes` is a BYTE
+// difference before the match, and the one this project actually hit, twice,
+// identically: a sentence a source comment wraps across two physical lines
+// (`// ...is\n// covered...`) is quoted by a reviewer the way a person reads
+// wrapped prose — joined into one sentence with a space. The diff contains a
+// real newline and the next line's `//` there instead of that space, so the
+// exact bytes never match, even though every word of the citation is real
+// and in order. That is `truncated` here: not shorter, but RESHAPED by a
+// source wrap the citation reasonably read through. Reconstructing that
+// requires recognising `//` and `#` as single-line comment continuations —
+// a narrow, explicit, documented pair, not general comment-syntax awareness
+// — and only ever WIDENS what counts as "genuinely there"; it can never let
+// truly invented content match, because it only reformats bytes the diff
+// already contains, never invents new ones. That keeps the fabrication
+// guard intact: a text that matches nothing in the diff, joined or not, is
+// unverifiable regardless of what markers surround it.
+//
+// THE COLLATERAL RULE IS UNCHANGED, ON PURPOSE, ARGUED RATHER THAN ASSUMED.
+// A single genuinely `unverifiable` finding — fabricated, or matching
+// nothing even in the joined, marker-stripped reading — still withholds
+// every OTHER finding in the same lens result, `truncated` and `verified`
+// ones included. The case against that: it discards evidence nobody gets to
+// weigh, including findings this file has just proven are not fabricated.
+// The case for it, and the one this file still comes down on: a reply that
+// manufactured one claim has shown it will assert something that is not
+// there, and there is no mechanical way to tell that the rest of the SAME
+// reply was any more careful — verifying that finding B's quote is a real
+// (or genuinely reshaped) substring does not verify that the CLAIM built on
+// top of it is sound, and a model that fabricated evidence once has given a
+// specific, concrete reason to distrust its judgement elsewhere in that same
+// reply, not just its citations. A manufactured finding costs more than a
+// missed one — a missed finding leaves the code as it was; a manufactured
+// one causes a change that was not needed and a reviewer who trusted it —
+// so the asymmetry stays deliberate. What DID change is which findings are
+// subject to that asymmetry at all: a `truncated` finding was never accused
+// of inventing anything, so it no longer sits in the same bucket as one that
+// was.
+//
+// FAILS LOUD, NOT SILENT, for the outcome that remains `unverifiable`. A
+// finding that cannot be verified is not dropped — dropping it would let
+// the rest of a rejection stand as if nothing in it needed a second look,
+// which is a quieter version of the exact defect C2 describes. Instead the
+// whole lens result is downgraded to `could_not_run`, the same channel an
+// unreadable reply already uses (see `parseReply.ts`), carrying a reason
+// that names every finding that failed and what about it did not check
+// out. `could_not_run` outranking `rejected` in `aggregate` (verdict.ts) is
+// what makes that withholding visible at the level a reader actually looks
+// at.
 //
 // Wired into `runPanel` (panel.ts), the only place that holds both a parsed
 // `LensResult` and the `Subject.diff` it was parsed against.
 
-import type { Finding, LensResult } from './verdict.js';
+import type { Finding, FindingEvidence, LensResult } from './verdict.js';
 
 const QUOTE_PREVIEW = 80;
 
@@ -47,21 +92,94 @@ function preview(text: string): string {
   return text.length > QUOTE_PREVIEW ? `${text.slice(0, QUOTE_PREVIEW)}…` : text;
 }
 
+/** What checking a finding's evidence against the diff established. */
+export type EvidenceCheck = 'verified' | 'truncated' | 'unverifiable';
+
+function stripDiffMarker(line: string): string {
+  return line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')
+    ? line.slice(1)
+    : line;
+}
+
+// Deliberately narrow: `//` and `#` are the two single-line comment leaders
+// common enough, across enough of what this project's own diffs contain, to
+// name explicitly, rather than reaching for a general "strip anything that
+// looks like a comment" rule that would have to guess. Widening this list is
+// a decision to make by finding another real case, the way this pair was —
+// not by generalising ahead of one.
+const LINE_COMMENT_MARKERS = ['//', '#'];
+
+function stripLineCommentMarker(line: string): string {
+  const trimmed = line.trimStart();
+  const marker = LINE_COMMENT_MARKERS.find((candidate) => trimmed.startsWith(candidate));
+  return marker === undefined ? line : trimmed.slice(marker.length).trimStart();
+}
+
+/**
+ * The diff, read the way a citation quoting its prose would: each content
+ * line's leading unified-diff marker and, if present, a single-line comment
+ * leader stripped, then every line joined by one space rather than left
+ * broken across the newline a source wrap put there. This can only ever
+ * reveal bytes the diff already contains in a different arrangement — it
+ * strips and rejoins, it never invents.
+ */
+function joinedProse(diff: string): string {
+  return diff
+    .split('\n')
+    .map(stripDiffMarker)
+    .map(stripLineCommentMarker)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function checkQuote(text: string, diff: string): EvidenceCheck {
+  if (diff.includes(text)) {
+    return 'verified';
+  }
+  const prose = joinedProse(diff);
+  const at = prose.indexOf(text);
+  // Found once the diff is read as joined prose, with more of that prose
+  // left after it — the citation is real, in order, and stops before the
+  // source does. `at === -1` is the fabricated case: not there under either
+  // reading. A match with nothing left after it is not "cut short" by this
+  // file's definition, so it is left unverifiable rather than guessed at.
+  return at !== -1 && at + text.length < prose.length ? 'truncated' : 'unverifiable';
+}
+
+/**
+ * Check one finding's evidence against the diff, three ways. A finding with
+ * no evidence at all, or blank evidence text, is `unverifiable` — a bare
+ * claim gets no benefit of the doubt, and every string `includes('')`, so an
+ * empty quote would otherwise "verify" against any diff at all.
+ */
+export function checkEvidence(evidence: FindingEvidence | undefined, diff: string): EvidenceCheck {
+  if (evidence === undefined || evidence.text.trim() === '') {
+    return 'unverifiable';
+  }
+  if (evidence.kind === 'absence') {
+    // An absence claim has no truncated form: "this is not there" is not a
+    // quote that can be cited short. It is either genuinely absent
+    // (verified) or the diff contains it after all (unverifiable) — checked
+    // against the raw diff only, deliberately: the joined-prose reading
+    // exists to give a real citation the benefit of a source wrap, not to
+    // give an absence claim more ways to be found wrong.
+    return diff.includes(evidence.text) ? 'unverifiable' : 'verified';
+  }
+  return checkQuote(evidence.text, diff);
+}
+
 /**
  * Whether one finding's evidence actually holds up against the diff.
  *
- * A finding with no evidence at all is unverifiable, not innocent until
- * proven guilty — the whole point is that a bare claim gets no benefit of
- * the doubt. Evidence present but blank is treated the same way: every
- * string `includes('')`, so an empty quote would otherwise "verify" against
- * any diff at all, which is not a check.
+ * Kept as a boolean for existing callers: `true` for both `verified` and
+ * `truncated`, since both mean the citation is genuine — only
+ * `unverifiable` means it is not. Use `checkEvidence` directly where the
+ * distinction between "matches outright" and "matches, reshaped by a source
+ * wrap" matters.
  */
 export function findingIsVerified(finding: Finding, diff: string): boolean {
-  const evidence = finding.evidence;
-  if (evidence === undefined || evidence.text.trim() === '') {
-    return false;
-  }
-  return evidence.kind === 'quote' ? diff.includes(evidence.text) : !diff.includes(evidence.text);
+  return checkEvidence(finding.evidence, diff) !== 'unverifiable';
 }
 
 function describeFailure(finding: Finding): string {
@@ -74,31 +192,61 @@ function describeFailure(finding: Finding): string {
     : `${JSON.stringify(finding.summary)} — claimed absence of ${JSON.stringify(preview(evidence.text))}, which the diff contains`;
 }
 
+const TRUNCATION_NOTE =
+  'Evidence citation confirmed genuine, reshaped by a source line wrap the diff breaks with a real newline — not invented.';
+
+function flagTruncated(finding: Finding): Finding {
+  return {
+    ...finding,
+    detail:
+      finding.detail === undefined ? TRUNCATION_NOTE : `${finding.detail}\n\n${TRUNCATION_NOTE}`,
+  };
+}
+
 /**
  * Verify a lens's findings against the diff it reviewed.
  *
  * A no-op for `approved` and `could_not_run` — neither carries a claim to
  * check, and this function's only concern is claims. For `rejected`, every
- * finding is checked; if all hold up, the result is returned exactly as it
- * arrived — a sound rejection is not this file's business, and this is the
- * guarantee that a finding whose evidence is genuinely in the diff behaves
- * no differently than it did before this file existed.
+ * finding is checked three ways (see `checkEvidence`):
  *
- * If any finding fails, the WHOLE result becomes `could_not_run` — see the
- * file header for why that is deliberate rather than a per-finding filter.
+ *   - If every finding is `verified` or `truncated` — nothing fabricated —
+ *     the result stands. `truncated` findings are returned with a note
+ *     appended to `detail`, flagging the citation as reshaped rather than
+ *     silently treating it the same as an exact match; everything else is
+ *     unchanged, and if nothing was `truncated` either, the original result
+ *     is returned by reference, exactly as before this file drew the
+ *     distinction.
+ *   - If any finding is `unverifiable`, the WHOLE result is downgraded to
+ *     `could_not_run` — see the file header for why that withholding still
+ *     reaches findings that were not themselves accused of anything.
  */
 export function verifyLensResult(result: LensResult, diff: string): LensResult {
   if (result.outcome !== 'rejected') {
     return result;
   }
-  const failed = result.findings.filter((finding) => !findingIsVerified(finding, diff));
-  if (failed.length === 0) {
+
+  const checked = result.findings.map((finding) => ({
+    finding,
+    check: checkEvidence(finding.evidence, diff),
+  }));
+  const failed = checked.filter((c) => c.check === 'unverifiable');
+
+  if (failed.length > 0) {
+    const reason = [
+      `${String(failed.length)} of ${String(result.findings.length)} finding(s) did not verify ` +
+        'against the diff, so the whole rejection is withheld:',
+      ...failed.map((c) => `  - ${describeFailure(c.finding)}`),
+    ].join('\n');
+    return { lens: result.lens, outcome: 'could_not_run', findings: [], reason };
+  }
+
+  const anyTruncated = checked.some((c) => c.check === 'truncated');
+  if (!anyTruncated) {
     return result;
   }
-  const reason = [
-    `${String(failed.length)} of ${String(result.findings.length)} finding(s) did not verify ` +
-      'against the diff, so the whole rejection is withheld:',
-    ...failed.map((finding) => `  - ${describeFailure(finding)}`),
-  ].join('\n');
-  return { lens: result.lens, outcome: 'could_not_run', findings: [], reason };
+  return {
+    ...result,
+    findings: checked.map((c) => (c.check === 'truncated' ? flagTruncated(c.finding) : c.finding)),
+  };
 }

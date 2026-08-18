@@ -7,7 +7,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Finding, LensResult } from '../src/review/verdict.js';
-import { findingIsVerified, verifyLensResult } from '../src/review/verifyFindings.js';
+import {
+  checkEvidence,
+  findingIsVerified,
+  verifyLensResult,
+} from '../src/review/verifyFindings.js';
 
 const LENS = 'correctness';
 
@@ -103,6 +107,100 @@ describe('findingIsVerified', () => {
   });
 });
 
+// A same-line, byte-exact truncation, tried first and kept as a documented
+// negative result: if `text` is a character-exact prefix of content really
+// in the diff, `text` is thereby already a substring of the diff at that
+// same position, so plain `diff.includes(text)` already succeeds. There is
+// no length-based, single-line "cut short" case that fails today's check —
+// the arithmetic makes it impossible. This fixture exists to pin that down
+// rather than let it be re-discovered the hard way a second time.
+const SINGLE_LINE_DIFF = `--- a/src/thing.ts
++++ b/src/thing.ts
+@@
++export function tooLong(): void {
++throw new Error('this message is long enough to be truncated mid-sentence by a token limit');
++}
+`;
+const A_TRUE_PREFIX_OF_A_REAL_LINE =
+  "throw new Error('this message is long enough to be truncated mid-sentence by a token";
+
+// The real case, verbatim: the exact 80-character string this project's own
+// review report showed twice (the ellipsis the preview appended is not part
+// of the citation and is left off here), and the actual two-line excerpt of
+// scripts/check-cli.mjs it was quoting. The sentence it is drawn from wraps
+// across a source line — "...specifically is" ends one comment line,
+// "covered directly..." begins the next — the way a person reading wrapped
+// prose reads it as one sentence, joined by a space where the source has a
+// newline and the next line's `//`. That reshaping, not a length cut, is
+// what made this fail before this file's fix.
+const CHECK_CLI_DIFF = `--- a/scripts/check-cli.mjs
++++ b/scripts/check-cli.mjs
+@@
++// failure must fail the run loudly rather than pass silently with an
++// unreadable report; overriding a genuine approval's 0 specifically is
++// covered directly in tests/reportFile.test.ts, with a fake outcome, since
++// forcing a real approval here would cost a real model call.
+`;
+const REAL_OBSERVED_QUOTE =
+  "overriding a genuine approval's 0 specifically is covered directly in tests/repo";
+
+// A citation that would only match if a `//` were stripped from somewhere
+// other than a genuine line start — proving the marker-stripping in
+// `joinedProse` cannot be walked into matching content it should not.
+const FABRICATED_ACROSS_MARKERS = 'is covered by a mechanism that does not exist anywhere here';
+
+describe('checkEvidence — the three-way check, and what "truncated" actually turned out to mean', () => {
+  it('an exact quote is verified', () => {
+    expect(
+      checkEvidence(
+        { kind: 'quote', text: 'for (let attempt = 0; attempt < maxAttempts; attempt++)' },
+        DIFF,
+      ),
+    ).toBe('verified');
+  });
+
+  // The negative result, pinned: a true prefix of a real line is ALREADY
+  // verified by plain substring matching. There is no separate "truncated"
+  // outcome for this shape, because there cannot be one.
+  it('a true, byte-exact prefix of a real single line is verified outright, not truncated', () => {
+    expect(
+      checkEvidence({ kind: 'quote', text: A_TRUE_PREFIX_OF_A_REAL_LINE }, SINGLE_LINE_DIFF),
+    ).toBe('verified');
+  });
+
+  it('a quote matching nothing at all, joined or not, is unverifiable', () => {
+    expect(
+      checkEvidence(
+        { kind: 'quote', text: 'while (attempts < Infinity) { spin(); }' },
+        SINGLE_LINE_DIFF,
+      ),
+    ).toBe('unverifiable');
+    expect(checkEvidence({ kind: 'quote', text: FABRICATED_ACROSS_MARKERS }, CHECK_CLI_DIFF)).toBe(
+      'unverifiable',
+    );
+  });
+
+  // The real, twice-observed case: not a raw match (the source wrap sits
+  // between "is" and "covered"), but a genuine prefix of the diff's content
+  // once read as joined prose. This is the case that was wrongly treated
+  // the same as a fabrication before this fix.
+  it('the real observed case — a citation across a source line-wrap — is truncated, not unverifiable', () => {
+    expect(checkEvidence({ kind: 'quote', text: REAL_OBSERVED_QUOTE }, CHECK_CLI_DIFF)).toBe(
+      'truncated',
+    );
+  });
+
+  it('an absence claim has no truncated form — genuinely absent, or unverifiable, nothing between', () => {
+    expect(checkEvidence({ kind: 'absence', text: 'console.log(' }, DIFF)).toBe('verified');
+    expect(checkEvidence({ kind: 'absence', text: 'maxAttempts' }, DIFF)).toBe('unverifiable');
+    // Joined prose is deliberately not consulted for an absence claim — see
+    // checkEvidence's own comment on why.
+    expect(
+      checkEvidence({ kind: 'absence', text: 'overriding a genuine approval' }, CHECK_CLI_DIFF),
+    ).toBe('unverifiable');
+  });
+});
+
 describe('verifyLensResult', () => {
   it('is a no-op for approved, returned by reference', () => {
     const result: LensResult = { lens: LENS, outcome: 'approved', findings: [] };
@@ -191,5 +289,52 @@ describe('verifyLensResult', () => {
 
     expect(verified.reason).toContain(`${'x'.repeat(80)}…`);
     expect(verified.reason).not.toContain('x'.repeat(81));
+  });
+
+  // The behaviour this whole file exists to add, proven with the real,
+  // twice-observed citation rather than an imagined one. Before this fix,
+  // this exact case — a real quote, reshaped by a source line-wrap, nothing
+  // else wrong with the reply — was withheld identically to a fabrication.
+  // This test fails on the code as it stood before this change: it asserted
+  // `unverifiable`, not `truncated`.
+  it('the real observed finding survives, marked as reshaped, rather than being withheld', () => {
+    const result: LensResult = {
+      lens: LENS,
+      outcome: 'rejected',
+      findings: [
+        quoteFinding('the write-failure test only proves the pure function', REAL_OBSERVED_QUOTE),
+      ],
+    };
+
+    const verified = verifyLensResult(result, CHECK_CLI_DIFF);
+
+    expect(verified.outcome).toBe('rejected');
+    expect(verified.findings).toHaveLength(1);
+    expect(verified.findings[0]?.detail).toContain('reshaped by a source line wrap');
+    // Everything else about the finding is untouched.
+    expect(verified.findings[0]?.summary).toBe(
+      'the write-failure test only proves the pure function',
+    );
+    expect(verified.findings[0]?.evidence).toEqual({ kind: 'quote', text: REAL_OBSERVED_QUOTE });
+  });
+
+  // The collateral rule, argued in the file header and pinned here: a
+  // truncated finding does not escape being withheld when a SIBLING in the
+  // same reply is genuinely unverifiable. Only a reply with nothing
+  // fabricated in it gets its truncated findings kept.
+  it('a truncated finding is still withheld when a sibling in the same reply is unverifiable', () => {
+    const truncated = quoteFinding('cut short but real', REAL_OBSERVED_QUOTE);
+    const manufactured = quoteFinding('invented entirely', FABRICATED_ACROSS_MARKERS);
+    const result: LensResult = {
+      lens: LENS,
+      outcome: 'rejected',
+      findings: [truncated, manufactured],
+    };
+
+    const verified = verifyLensResult(result, CHECK_CLI_DIFF);
+
+    expect(verified.outcome).toBe('could_not_run');
+    expect(verified.findings).toEqual([]);
+    expect(verified.reason).not.toContain('cut short but real');
   });
 });
