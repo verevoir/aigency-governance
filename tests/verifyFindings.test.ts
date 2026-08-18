@@ -149,6 +149,45 @@ const REAL_OBSERVED_QUOTE =
 // `joinedProse` cannot be walked into matching content it should not.
 const FABRICATED_ACROSS_MARKERS = 'is covered by a mechanism that does not exist anywhere here';
 
+// A single line whose only difference from a real citation is doubled
+// internal whitespace — no line wrap, no comment marker involved at all.
+// Isolates WHITESPACE as the sole reason a citation can be `truncated`
+// rather than `verified`, independent of the wrap-and-comment case above.
+const WHITESPACE_ONLY_DIFF = `--- a/src/pair.ts
++++ b/src/pair.ts
+@@
++function pair(a,  b) { return [a, b]; }
+`;
+const WHITESPACE_ONLY_QUOTE = 'function pair(a, b) { return [a, b]; }';
+
+// Two plain lines, no comment marker anywhere, joined with a single space
+// that already matches the quote's own spacing exactly — isolates JOIN as
+// the sole reason, with neither COMMENT nor WHITESPACE also true.
+const WRAP_ONLY_DIFF = `--- a/src/wrap.ts
++++ b/src/wrap.ts
+@@
++function wrap(value) {
++return value;
++}
+`;
+const WRAP_ONLY_QUOTE = 'function wrap(value) { return value;';
+
+// Tried as a candidate for a comment-marker-only truncation, the same way
+// this file's header documents a byte-exact prefix was tried and found to
+// already be `verified`. A comment marker is only ever a PREFIX of the
+// line it starts, and substring matching does not require a match to
+// begin at position 0 — so a citation that simply omits it, on a single
+// line with nothing else different, was never something `diff.includes`
+// got wrong either. Kept as a negative result for the same reason the
+// prefix case was: a mechanism proven to do nothing is worth more on the
+// record than one quietly assumed to exist.
+const COMMENT_ONLY_SINGLE_LINE_DIFF = `--- a/src/note.ts
++++ b/src/note.ts
+@@
++// short comment text here
+`;
+const COMMENT_ONLY_SINGLE_LINE_QUOTE = 'short comment text here';
+
 describe('checkEvidence — the three-way check, and what "truncated" actually turned out to mean', () => {
   it('an exact quote is verified', () => {
     expect(
@@ -258,6 +297,26 @@ describe('checkEvidence — the three-way check, and what "truncated" actually t
       checkEvidence({ kind: 'absence', text: 'specifically is covered directly' }, CHECK_CLI_DIFF),
     ).toBe('verified');
   });
+
+  it('a pure whitespace difference on a single line, with no wrap and no comment marker, is truncated', () => {
+    expect(
+      checkEvidence({ kind: 'quote', text: WHITESPACE_ONLY_QUOTE }, WHITESPACE_ONLY_DIFF),
+    ).toBe('truncated');
+  });
+
+  // The comment-marker-only negative result, pinned the same way the
+  // byte-exact-prefix case near the top of this file is: a citation that
+  // omits a single line's leading `//`, with nothing else different and no
+  // wrap involved, is already `verified` — substring matching does not
+  // care that the real line has a two-character prefix the citation lacks.
+  it('a comment marker stripped from a single line with no wrap is verified outright, not truncated', () => {
+    expect(
+      checkEvidence(
+        { kind: 'quote', text: COMMENT_ONLY_SINGLE_LINE_QUOTE },
+        COMMENT_ONLY_SINGLE_LINE_DIFF,
+      ),
+    ).toBe('verified');
+  });
 });
 
 describe('verifyLensResult', () => {
@@ -356,7 +415,7 @@ describe('verifyLensResult', () => {
   // else wrong with the reply — was withheld identically to a fabrication.
   // This test fails on the code as it stood before this change: it asserted
   // `unverifiable`, not `truncated`.
-  it('the real observed finding survives, marked as reshaped, rather than being withheld', () => {
+  it('the real observed finding survives, naming the wrap and the comment marker but not whitespace, rather than being withheld', () => {
     const result: LensResult = {
       lens: LENS,
       outcome: 'rejected',
@@ -369,12 +428,66 @@ describe('verifyLensResult', () => {
 
     expect(verified.outcome).toBe('rejected');
     expect(verified.findings).toHaveLength(1);
-    expect(verified.findings[0]?.detail).toContain('reshaped by a source line wrap');
+    expect(verified.findings[0]?.detail).toContain('crossing a source line wrap');
+    expect(verified.findings[0]?.detail).toContain('stripping a single-line comment marker');
+    // Not claimed, because it is not true of this citation — the whole
+    // point of the fix this test pins: a two-reason match must not be
+    // reported as carrying a third reason it does not have.
+    expect(verified.findings[0]?.detail).not.toContain('normalizing internal whitespace');
     // Everything else about the finding is untouched.
     expect(verified.findings[0]?.summary).toBe(
       'the write-failure test only proves the pure function',
     );
     expect(verified.findings[0]?.evidence).toEqual({ kind: 'quote', text: REAL_OBSERVED_QUOTE });
+  });
+
+  it('names only the wrap reason when no comment marker or whitespace difference is involved', () => {
+    const result: LensResult = {
+      lens: LENS,
+      outcome: 'rejected',
+      findings: [quoteFinding('spans two lines cleanly, nothing else unusual', WRAP_ONLY_QUOTE)],
+    };
+
+    const verified = verifyLensResult(result, WRAP_ONLY_DIFF);
+
+    expect(verified.outcome).toBe('rejected');
+    expect(verified.findings[0]?.detail).toContain('crossing a source line wrap');
+    expect(verified.findings[0]?.detail).not.toContain('stripping a single-line comment marker');
+    expect(verified.findings[0]?.detail).not.toContain('normalizing internal whitespace');
+  });
+
+  it('names only the whitespace reason when a single-line citation differs only in spacing', () => {
+    const result: LensResult = {
+      lens: LENS,
+      outcome: 'rejected',
+      findings: [quoteFinding('doubled spacing collapses to one', WHITESPACE_ONLY_QUOTE)],
+    };
+
+    const verified = verifyLensResult(result, WHITESPACE_ONLY_DIFF);
+
+    expect(verified.outcome).toBe('rejected');
+    expect(verified.findings[0]?.detail).toContain('normalizing internal whitespace');
+    expect(verified.findings[0]?.detail).not.toContain('crossing a source line wrap');
+    expect(verified.findings[0]?.detail).not.toContain('stripping a single-line comment marker');
+  });
+
+  it('names all three reasons together when a citation both crosses a wrap and differs in whitespace', () => {
+    const withDoubleSpace = REAL_OBSERVED_QUOTE.replace(
+      'specifically is covered',
+      'specifically is  covered',
+    );
+    const result: LensResult = {
+      lens: LENS,
+      outcome: 'rejected',
+      findings: [quoteFinding('same citation, one extra internal space', withDoubleSpace)],
+    };
+
+    const verified = verifyLensResult(result, CHECK_CLI_DIFF);
+
+    expect(verified.outcome).toBe('rejected');
+    expect(verified.findings[0]?.detail).toContain('crossing a source line wrap');
+    expect(verified.findings[0]?.detail).toContain('stripping a single-line comment marker');
+    expect(verified.findings[0]?.detail).toContain('normalizing internal whitespace');
   });
 
   // The boundary fix, at this level: a finding quoting exactly the diff's
@@ -395,7 +508,8 @@ describe('verifyLensResult', () => {
 
     expect(verified.outcome).toBe('rejected');
     expect(verified.findings).toHaveLength(1);
-    expect(verified.findings[0]?.detail).toContain('reshaped by a source line wrap');
+    expect(verified.findings[0]?.detail).toContain('crossing a source line wrap');
+    expect(verified.findings[0]?.detail).toContain('stripping a single-line comment marker');
   });
 
   // The collateral rule, argued in the file header and pinned here: a

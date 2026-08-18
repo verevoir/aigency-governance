@@ -49,6 +49,37 @@
 // guard intact: a text that matches nothing in the diff, joined or not, is
 // unverifiable regardless of what markers surround it.
 //
+// A THIRD GAP, FOUND BY THE PANEL REVIEWING THIS FILE'S OWN FIRST RUN, AND
+// FIXED HERE. The note attached to every `truncated` finding was one fixed
+// sentence asserting a single, specific mechanism — "reshaped by a source
+// line wrap" — regardless of which of the three transformations above
+// (crossing a line wrap, stripping a `//`/`#` comment marker, normalizing
+// internal whitespace) actually explained the match. `honesty` correctly
+// named this: the message overclaimed certainty about its own reasoning,
+// on the one file in this project built specifically to stop findings from
+// doing that. `classifyTruncation` now tests each of the three
+// transformations independently — by removing just that one, holding the
+// other two applied, and checking whether the match still succeeds without
+// it — and `truncationNote` names every transformation that was actually
+// necessary, not the first one that might apply. More than one is often
+// true at once (a citation that crosses a wrap where the next line starts
+// with a comment marker needs both; one that also differs in whitespace
+// needs all three), and the note lists all of them rather than picking one
+// — the same defect this file exists to catch elsewhere (missing vs.
+// broken, found vs. not-found, could_not_run vs. rejected all collapsed
+// into one signal) would be reintroduced here in miniature by reporting a
+// two-reason match as a one-reason one.
+//
+// One combination turned out to be unreachable on inspection, and is kept
+// as a negative result the same way the byte-exact-prefix case above is: a
+// comment marker stripped from a SINGLE line, with no wrap involved at
+// all, can never be the sole reason a match is `truncated` rather than
+// `verified` — a comment marker is only ever a prefix of the line it
+// starts, and substring search does not require a match to begin at
+// position 0, so a citation omitting it already succeeds via plain
+// `diff.includes` before `classifyTruncation` is ever reached. It remains
+// possible, and common, IN COMBINATION with a wrap — see the tests.
+//
 // THE COLLATERAL RULE IS UNCHANGED, ON PURPOSE, ARGUED RATHER THAN ASSUMED.
 // A single genuinely `unverifiable` finding — fabricated, or matching
 // nothing even in the joined, marker-stripped reading — still withholds
@@ -224,14 +255,105 @@ function describeFailure(finding: Finding): string {
     : `${JSON.stringify(finding.summary)} — claimed absence of ${JSON.stringify(preview(evidence.text))}, which the diff contains`;
 }
 
-const TRUNCATION_NOTE =
-  'Evidence citation confirmed genuine, reshaped by a source line wrap the diff breaks with a real newline — not invented.';
+const TRUNCATION_PREFIX =
+  'Evidence citation confirmed genuine, not invented — matching it required ';
+const JOIN_REASON = 'crossing a source line wrap the diff breaks with a real newline';
+const COMMENT_REASON = 'stripping a single-line comment marker (// or #)';
+const WHITESPACE_REASON = 'normalizing internal whitespace (extra spaces or a tab)';
 
-function flagTruncated(finding: Finding): Finding {
+interface TruncationReasons {
+  readonly join: boolean;
+  readonly comment: boolean;
+  readonly whitespace: boolean;
+}
+
+/**
+ * Which of the three transformations `checkQuote`'s `truncated` branch
+ * applies were actually necessary for `text` to match `diff` — tested by
+ * removing each one in turn, holding the other two at the level they are
+ * normally applied, and checking whether the match still succeeds without
+ * it. Only meaningful once `checkQuote` has already decided the match is
+ * `truncated`; see `truncationNote` for what happens if none turn out true,
+ * which should not be possible.
+ */
+function classifyTruncation(text: string, diff: string): TruncationReasons {
+  const rawLines = diff.split('\n');
+  const markerStripped = rawLines.map(stripDiffMarker);
+  const commentStripped = markerStripped.map(stripLineCommentMarker);
+  const normalizedText = normalizeWhitespace(text);
+
+  // JOIN: does a SINGLE line, comment-stripped and whitespace-normalized,
+  // already contain the match on its own? If so, no wrap across lines was
+  // needed to find it.
+  const matchesWithinOneLine = commentStripped.some((line) =>
+    normalizeWhitespace(line).includes(normalizedText),
+  );
+  // COMMENT: does the joined, whitespace-normalized prose match WITHOUT
+  // stripping any comment marker? If so, stripping one was not what made
+  // the difference.
+  const matchesWithoutCommentStrip = normalizeWhitespace(markerStripped.join(' ')).includes(
+    normalizedText,
+  );
+  // WHITESPACE: does the joined, comment-stripped prose match the RAW
+  // (non-normalized) text? If so, no whitespace difference was involved.
+  const matchesWithoutWhitespaceNormalization = commentStripped.join(' ').includes(text);
+
+  return {
+    join: !matchesWithinOneLine,
+    comment: !matchesWithoutCommentStrip,
+    whitespace: !matchesWithoutWhitespaceNormalization,
+  };
+}
+
+function joinNaturally(parts: readonly string[]): string {
+  if (parts.length === 1) {
+    // Non-null: length === 1 guarantees index 0 exists.
+    return parts[0] as string;
+  }
+  // Non-null: length >= 2 guarantees a last element and a non-empty `rest`.
+  const last = parts[parts.length - 1] as string;
+  const rest = parts.slice(0, -1);
+  return parts.length === 2 ? `${rest.join(', ')} and ${last}` : `${rest.join(', ')}, and ${last}`;
+}
+
+function truncationNote(reasons: TruncationReasons): string {
+  const parts: string[] = [];
+  if (reasons.join) {
+    parts.push(JOIN_REASON);
+  }
+  if (reasons.comment) {
+    parts.push(COMMENT_REASON);
+  }
+  if (reasons.whitespace) {
+    parts.push(WHITESPACE_REASON);
+  }
+  if (parts.length === 0) {
+    // Unreachable: checkQuote only returns 'truncated' when joinedProse —
+    // join, comment-strip and whitespace-normalization all applied —
+    // matches and the raw diff does not. At least one of the three must be
+    // doing real work for that gap to exist. Thrown rather than silently
+    // falling back to a note that explains nothing, so a future change to
+    // checkQuote that breaks this invariant fails loudly here rather than
+    // shipping an unexplained "confirmed genuine" claim.
+    throw new Error(
+      'truncationNote: classifyTruncation found no reason for a match checkQuote called truncated',
+    );
+  }
+  return `${TRUNCATION_PREFIX}${joinNaturally(parts)}.`;
+}
+
+function flagTruncated(finding: Finding, diff: string): Finding {
+  const evidence = finding.evidence;
+  if (evidence === undefined) {
+    // Unreachable: checkEvidence returns 'unverifiable', never 'truncated',
+    // for a finding with no evidence at all — see checkEvidence's own guard
+    // above.
+    throw new Error('flagTruncated: called with a finding that carries no evidence');
+  }
+  const note = truncationNote(classifyTruncation(evidence.text, diff));
   return {
     ...finding,
-    detail:
-      finding.detail === undefined ? TRUNCATION_NOTE : `${finding.detail}\n\n${TRUNCATION_NOTE}`,
+    detail: finding.detail === undefined ? note : `${finding.detail}\n\n${note}`,
   };
 }
 
@@ -244,11 +366,13 @@ function flagTruncated(finding: Finding): Finding {
  *
  *   - If every finding is `verified` or `truncated` — nothing fabricated —
  *     the result stands. `truncated` findings are returned with a note
- *     appended to `detail`, flagging the citation as reshaped rather than
- *     silently treating it the same as an exact match; everything else is
- *     unchanged, and if nothing was `truncated` either, the original result
- *     is returned by reference, exactly as before this file drew the
- *     distinction.
+ *     appended to `detail`, naming which transformation(s) actually
+ *     explain the match (a line wrap, a stripped comment marker,
+ *     normalized whitespace — one or more) rather than silently treating
+ *     it the same as an exact match or asserting a single fixed cause;
+ *     everything else is unchanged, and if nothing was `truncated` either,
+ *     the original result is returned by reference, exactly as before this
+ *     file drew the distinction.
  *   - If any finding is `unverifiable`, the WHOLE result is downgraded to
  *     `could_not_run` — see the file header for why that withholding still
  *     reaches findings that were not themselves accused of anything.
@@ -279,6 +403,8 @@ export function verifyLensResult(result: LensResult, diff: string): LensResult {
   }
   return {
     ...result,
-    findings: checked.map((c) => (c.check === 'truncated' ? flagTruncated(c.finding) : c.finding)),
+    findings: checked.map((c) =>
+      c.check === 'truncated' ? flagTruncated(c.finding, diff) : c.finding,
+    ),
   };
 }
