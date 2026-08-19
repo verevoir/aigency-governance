@@ -1,0 +1,230 @@
+{
+  "version": 1,
+  "practices": [
+    {
+      "id": "adr001-events-published-not-pulled",
+      "title": "Consumers subscribe; they never read the store",
+      "body": "A downstream service reads a published event stream, never the runtime's own event log or database directly. No code in another service queries the runtime's storage."
+    },
+    {
+      "id": "adr001-consumer-idempotent",
+      "title": "Event consumers are idempotent",
+      "body": "A consumer of a published event is idempotent on (conversationId, sequence), because delivery is at-least-once. Processing the same event twice must not duplicate its effect."
+    },
+    {
+      "id": "adr001-contract-additive",
+      "title": "Published contracts change only additively",
+      "body": "A change to a published event schema adds fields; it never removes or repurposes one within a version. A consumer ignores fields it does not recognise and must not break when one is added."
+    },
+    {
+      "id": "adr001-no-shared-package",
+      "title": "No shared type package between services",
+      "body": "Two services agree on a wire contract, not on an imported TypeScript type. A type published as a library between independently deployed services is a dependency wearing a contract's clothes."
+    },
+    {
+      "id": "adr002-envelope-is-reference",
+      "title": "An inbound envelope carries a reference, not the work",
+      "body": "A message that starts work names an idempotency key and a resolvable reference to fetch the real work from; it does not carry the work's content directly."
+    },
+    {
+      "id": "adr002-unknown-envelope-fails-loud",
+      "title": "An unrecognised envelope fails loudly",
+      "body": "A trigger path that receives a package it does not recognise reports the failure; it never silently drops the message and continues as if nothing arrived."
+    },
+    {
+      "id": "adr003-verdict-from-system-not-model",
+      "title": "The system produces the verdict, not the model",
+      "body": "A turn that changed source state has its gates run by the system at outcome time; the model does not decide whether to call them or supply a verdict itself."
+    },
+    {
+      "id": "adr003-claimed-verdict-matches-system",
+      "title": "A claimed verdict must match the recorded one",
+      "body": "If a reply asserts a verdict that differs from the system's own recorded gate result for that turn, the reply is refused rather than recorded."
+    },
+    {
+      "id": "adr004-usage-event-fields",
+      "title": "Usage events carry the full field set, kept apart",
+      "body": "A usage record on the log carries model, inputTokens, outputTokens, cacheReadTokens and cacheCreationTokens as separate fields, plus port and purpose. They are never pre-summed into one number."
+    },
+    {
+      "id": "adr006-span-shape",
+      "title": "A span has identity, parent, and three measures",
+      "body": "A span carries an id, a parent reference, a start, an end, and three measures kept apart: duration, tokens (by kind), and cost."
+    },
+    {
+      "id": "adr006-span-rollup",
+      "title": "Span totals include descendants by fold",
+      "body": "A span's reported total is computed as a fold over its child spans, not tracked as a second, separately maintained running total."
+    },
+    {
+      "id": "adr006-span-three-states",
+      "title": "A span is running, finished, or failed",
+      "body": "An in-progress span is reported as running, never rendered as a zero-duration bar identical to one that finished instantly."
+    },
+    {
+      "id": "adr006-unparented-span-marked",
+      "title": "An orphaned span is marked, not hidden",
+      "body": "A span whose parent cannot be determined is attached to the root span and explicitly flagged as unparented, never silently dropped into the tree unmarked."
+    },
+    {
+      "id": "adr007-decorator-not-inline",
+      "title": "Cross-cutting behaviour is a decorator, not inline code",
+      "body": "Spans, accounting, error mapping, redaction and retry are applied as higher-order functions wrapping a port at the composition root; the wrapped logic contains none of that bookkeeping itself."
+    },
+    {
+      "id": "adr007-decorator-preserves-outcome",
+      "title": "A decorator never changes the outcome",
+      "body": "A decorator observes, maps, or retries a call; it never turns a failure into a success or an absence into a value."
+    },
+    {
+      "id": "adr007-error-mapping-preserves-distinction",
+      "title": "Error mapping keeps failure kinds apart",
+      "body": "Mapping a transport error to a domain error preserves the distinction between not-found, empty, and broken; it never collapses them into one error type."
+    },
+    {
+      "id": "adr008-smoke-test-can-fail",
+      "title": "A smoke test can actually fail",
+      "body": "A smoke test exercises the real thread being deployed and asserts something that would break if it were broken; a check that only confirms a 200 from a health endpoint is not sufficient."
+    },
+    {
+      "id": "adr009-review-definition-referenced-not-copied",
+      "title": "The review definition is referenced, not copied",
+      "body": "The corpus, lenses and synthesis rule a review runs against live in one place. A consuming repository references them (e.g. `uses:`); it never vendors or pastes a local copy."
+    },
+    {
+      "id": "adr009-synthesis-favors-findings",
+      "title": "Synthesis resolves ambiguity toward more findings",
+      "body": "When lens verdicts are combined, an ambiguous case is resolved by passing the finding through rather than suppressing it to produce a cleaner-looking verdict."
+    },
+    {
+      "id": "adr009-three-review-outcomes",
+      "title": "A review reports one of three outcomes",
+      "body": "A review reports approved, rejected-with-findings, or could-not-run. A missing key, unreachable corpus, or rate limit is reported as could-not-run — never silently treated as a pass."
+    },
+    {
+      "id": "adr010-conversation-serialized",
+      "title": "One conversation, one turn at a time",
+      "body": "Two turns belonging to the same conversation never execute concurrently; a conversation's mailbox is drained by exactly one consumer holding its lease."
+    },
+    {
+      "id": "adr010-lease-not-lock",
+      "title": "Claims are leases, not locks",
+      "body": "A conversation (or similar resource) is claimed by an expiring lease that a dead holder eventually loses, never by a lock that stays held forever if its holder crashes."
+    },
+    {
+      "id": "adr011-install-vs-ci",
+      "title": "install prepares; ci verifies",
+      "body": "A tree being changed is prepared with `npm install`, which may reconcile the lockfile. CI installs with `npm ci`, which refuses to reconcile and installs exactly what is locked."
+    },
+    {
+      "id": "adr011-audit-blocks-prepare",
+      "title": "A failed dependency audit blocks preparation",
+      "body": "A dependency audit runs as a step in preparing a repository, in declared order after install, and a bad result stops preparation rather than only emitting an ignorable report."
+    },
+    {
+      "id": "adr011-dependency-reason-recorded",
+      "title": "A new runtime dependency has a recorded reason",
+      "body": "Adding a package to `dependencies` is accompanied by a stated reason, because its transitive dependencies ship with it into production."
+    },
+    {
+      "id": "adr012-cross-repo-dep-pinned-sha",
+      "title": "Cross-repo dependencies are pinned to a sha",
+      "body": "A dependency on another repository in this organisation is an npm git dependency pinned to an exact commit sha — never a branch, a tag, or a copied/vendored file."
+    },
+    {
+      "id": "adr013-merge-keys-on-declared-gates",
+      "title": "Merge keys only on declared blocking gates",
+      "body": "A merge decision reads the repository's own declared blocking gates from its configuration and checks that they are green; it holds no built-in idea of what else counts as good enough."
+    },
+    {
+      "id": "adr013-costed-gate-never-implicit",
+      "title": "A costed gate never runs unnamed",
+      "body": "A gate or release step marked `costed: true` is skipped by any call that omits an explicit name list; it runs only when named explicitly, whatever else is declared blocking."
+    },
+    {
+      "id": "adr014-worktree-not-clone",
+      "title": "Parallel writes use one worktree per stream",
+      "body": "Concurrent write access to one repository is given via `git worktree` — one working tree per stream sharing a single object store — never via a second independent clone."
+    },
+    {
+      "id": "adr014-worktree-torn-down",
+      "title": "Every worktree is torn down after use",
+      "body": "A worktree created for a finished stream is removed. A worktree left behind holds its branch checked out and blocks the next stream that needs it."
+    },
+    {
+      "id": "adr015-mutating-verb-has-observer",
+      "title": "Every mutating verb has an observing counterpart",
+      "body": "A verb that changes a repository (checkout, merge, fetch) has a corresponding read-only verb that reports the same fact — current sha, ancestry, diff, checked-out branch — without itself mutating anything."
+    },
+    {
+      "id": "adr016-bytes-move-by-reference",
+      "title": "File content moves by reference, not through the model",
+      "body": "Copying a file's bytes from one ref to a branch is done by a verb that moves the reference directly; it is never read into the model and retyped back out as a write."
+    },
+    {
+      "id": "adr016-command-output-captured",
+      "title": "Command output is captured, never discarded",
+      "body": "The output of a run command is captured and returned or written somewhere readable. A command that is spawned with its output going nowhere has been paid for and not received."
+    },
+    {
+      "id": "adr017-command-declares-dependency",
+      "title": "A command names what it requires by name",
+      "body": "A declared command that depends on another declared command (e.g. a gate on a build) names that dependency explicitly; it does not rely on array order to imply it runs after."
+    },
+    {
+      "id": "adr017-gate-precondition-not-self-satisfied",
+      "title": "A gate never satisfies its own precondition",
+      "body": "If a gate requires a bootstrap step (e.g. a build) that has not run, it refuses and names what is missing rather than silently running the bootstrap as part of the same invocation that judges."
+    },
+    {
+      "id": "adr018-two-build-obligations",
+      "title": "Verification build and consumer build are distinct",
+      "body": "A repository meant to be depended on has both a disposable build for its own gate (gitignored output) and a `prepare`-triggered build whose artifact persists for a consumer's `npm install`."
+    },
+    {
+      "id": "constraint-a1-claimed-subset-obtained",
+      "title": "A claimed result must be in the tool record",
+      "body": "A verdict token in a reply appears only if that turn's own tool record contains a matching result. claimed is a subset of obtained, else the reply is discarded and refused."
+    },
+    {
+      "id": "constraint-b2-empty-vs-missing",
+      "title": "Empty and missing are different outcomes",
+      "body": "An empty result (found nothing) and a missing endpoint (could not check) are reported as distinguishable outcomes everywhere, at every layer — never collapsed into one."
+    },
+    {
+      "id": "constraint-c1-mutation-proves-behaviour",
+      "title": "Changed behaviour is proven by mutation",
+      "body": "A test claiming to cover new or changed behaviour is shown breaking when that behaviour is mutated, then restored — a test never watched failing is not evidence."
+    },
+    {
+      "id": "constraint-c4-gates-declared-not-from-claim",
+      "title": "Gates are declared by the repository, never by a claim",
+      "body": "The set of gates run against a change is read from the repository's own declaration; a caller- or claim-supplied gate list is never accepted or executed."
+    },
+    {
+      "id": "constraint-f1-credentials-absence-fails",
+      "title": "Absent credentials fail, never fall back",
+      "body": "When a required credential cannot be resolved, resolution fails outright. It never silently falls back to a default, a cached value, or an alternate source."
+    },
+    {
+      "id": "constraint-f2-no-secret-in-output",
+      "title": "No secret reaches an output surface",
+      "body": "A credential value never appears in a tool result, a log line, a span attribute, or a published event — checked as a property of the actual output, not assumed from a character cap."
+    },
+    {
+      "id": "wa-stage-by-path",
+      "title": "Commits stage explicit paths, not a sweep",
+      "body": "A commit names the files it stages explicitly; it does not use a blanket git add -A that could sweep in a collaborator's concurrent, unrelated changes."
+    },
+    {
+      "id": "wa-negative-claims-verified",
+      "title": "A negative claim is verified before it is acted on",
+      "body": "A claim of the form 'this does not exist' or 'there is no test for X' is backed by an actual check performed in this change, not asserted from memory or absence of a quick look."
+    },
+    {
+      "id": "wa-comment-no-false-property",
+      "title": "A comment does not claim an untested property",
+      "body": "A comment describing a guarantee the code has (e.g. 'best-effort, never fails the caller') is only kept if the code actually enforces that guarantee at every call site."
+    }
+  ]
+}

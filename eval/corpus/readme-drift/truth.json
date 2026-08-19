@@ -1,0 +1,39 @@
+[
+  {
+    "lens": "honesty",
+    "summary": "README's \"On a fork's pull request\" section describes a failure sequence the code no longer produces: it asserts the governance-token secret is what stops the run first, and that the caller's own checkout fails with `Repository not found` because the governance-repo checkout is never reached. The actual workflow now checks the key, unconditionally, before either checkout runs at all, and reports a different message entirely: `ANTHROPIC_API_KEY is not available to this workflow.`.",
+    "evidence": {
+      "kind": "quote",
+      "text": "Secrets are not passed to workflows triggered from a fork, so **both** arrive\nblank — and it is the governance token, not the key, that stops the run first.\nThe checkout of this repository fails with `Repository not found` before the\nrunner is ever built, so nothing reaches the code that would report a missing\nkey."
+    },
+    "verdict": "defect",
+    "provenance": "verified-directly — README.md fetched and read in full at 7b9e3e4609e80bb595c7be6f337f9422de846620~1 (before, shown above as evidence) and 7b9e3e4609e80bb595c7be6f337f9422de846620 (after, now describing the real fail-fast key check), both in this pass. PR #1's own body (verevoir/aigency-governance#1, read via read_pull_request in this pass) independently names this as one of four documentation findings fixed at that same commit. Full before/after diff in diff.txt (hunk 1)."
+  },
+  {
+    "lens": "honesty",
+    "summary": "README's \"Running it locally\" section claims the `cli` gate leaves the entire `readers` module invisible to it, alongside `load`, `panel`, `prompt`, `anthropic`, `parseReply` and `report`. In fact the gate's second scenario drives `keyFileReader()` through `review.ts`'s real wiring specifically to prove that one path exists — the claim overstates what is uncovered by folding a partially-covered module into a fully-uncovered list.",
+    "evidence": {
+      "kind": "quote",
+      "text": "Everything downstream of that guard is invisible to it: `readers`,\n`load`, `panel`, `prompt`, `anthropic`, `parseReply` and `report`. A stale build\nof any of those passes."
+    },
+    "verdict": "defect",
+    "provenance": "verified-directly — README.md fetched and read in full at 7b9e3e4609e80bb595c7be6f337f9422de846620~1 (before, shown above as evidence) and 7b9e3e4609e80bb595c7be6f337f9422de846620 (after, now narrowed to name exactly what readers-coverage exists and what doesn't), both in this pass. PR #1's own body independently names this as one of four documentation findings fixed at that same commit. Full before/after diff in diff.txt (hunk 2)."
+  },
+  {
+    "lens": "honesty",
+    "summary": "A truncation-classification message named one specific cause for three different code paths that could each produce a truncated result, misattributing a shared symptom to a single mechanism.",
+    "evidence": null,
+    "verdict": "defect",
+    "provenance": "reported-not-rechecked — named only in README.md's own HTML comment marker (read directly on main and at commit 7b9e3e4609e80bb595c7be6f337f9422de846620 in this pass: 'a truncation-classification message that named one specific cause for three different code paths'). No prior commit, report file, or diff pinning the specific broken sentence was located in this pass; grepping the retrievable .review-report/* files in this repository did not surface it. Recorded as reported, per the design record's own discipline about distinguishing observed from inferred, not independently verified beyond the marker's own claim that it existed and was fixed."
+  },
+  {
+    "lens": "honesty",
+    "summary": "The file's own header comment claims the gate proves \"the shebang survived emit,\" but the script never executes the emitted file directly (it runs `node <path>`, bypassing the shebang and the execute bit entirely) — and a later comment in the very same file admits this exact gap, so the header's claim is a state the code does not actually observe.",
+    "evidence": {
+      "kind": "quote",
+      "text": "that the shebang survived emit, and that node starts it."
+    },
+    "verdict": "defect",
+    "provenance": "verified-directly, but without a diff — summary and evidence copied verbatim from .review-report/branch__main__s24a-lens-set.json (read directly in this pass, real review output, not the marker's paraphrase). Fix independently confirmed in this pass: scripts/check-cli.mjs's current header (read on main) states 'A review found this claimed more than it checked: the shebang line was never read, only asserted about in prose,' and the code now reads BIN's first line and compares it exactly against EXPECTED_SHEBANG. The pre-fix state was checked in this pass at 7b9e3e4609e80bb595c7be6f337f9422de846620~1 and ~3 and found the fix ALREADY present at both, meaning the actual defect and its fix both predate those commits, within s24a/lens-set's own 33-commit history, at a sha not obtained in this pass. No diff.txt hunk covers this instance for that reason."
+  }
+]

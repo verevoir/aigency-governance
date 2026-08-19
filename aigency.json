@@ -43,6 +43,37 @@
       "command": ["node", "scripts/review-head.mjs"],
       "description": "Run the review panel against the HEAD commit. A release step rather than a gate because it costs money — one model call per lens — and a gate that bills on every verification is a gate someone turns off. Requires ANTHROPIC_API_KEY in the environment; without it the run reports which setting is missing and where to put it, and exits red without calling anything.",
       "timeoutMs": 900000
+    },
+    {
+      "name": "diag-env-probe",
+      "kind": "release",
+      "command": ["node", "scripts/_diag-env-probe.mjs"],
+      "description": "Temporary. No-cost probe: does CLAUDE_CODE_OAUTH_TOKEN reach a spawned child, given an explicit env allow-list naming only that variable.",
+      "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
+      "timeoutMs": 30000
+    },
+    {
+      "name": "diag-precompute-diff",
+      "kind": "release",
+      "command": ["node", "scripts/_diag-precompute-diff.mjs"],
+      "description": "Temporary. Writes the fixed diff to a file, unrestricted (needs PATH to spawn git, which the OAuth-scoped step below cannot declare).",
+      "timeoutMs": 60000
+    },
+    {
+      "name": "diag-hypothesis",
+      "kind": "release",
+      "command": ["node", "scripts/_diag-hypothesis.mjs"],
+      "description": "Temporary. Arm A vs Arm B: broad-lens sampling vs narrow-lens splitting, on the OAuth path.",
+      "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
+      "timeoutMs": 1800000
+    },
+    {
+      "name": "eval-sweep",
+      "kind": "release",
+      "command": ["node", "eval/sweep.mjs"],
+      "description": "Sweeps review fan width — how many lenses a panel is split into — against the practice corpus, at full and half corpus size, to find where recall, confirmed false positives and run-to-run stability trade off against cost, and whether the optimum moves with corpus size. Defaults to a dry run that calls no model and prints exactly what a real sweep would cost before anything is charged; `--spend` is required to actually spend, and every call across the whole sweep is capped at a shared concurrency limit (default 4) — the fix for the 429 storm `_diag-hypothesis` produced firing all its calls at once. A kept, committed, re-runnable measurement, not a diagnostic thrown away after use; see eval/README.md.",
+      "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
+      "timeoutMs": 3600000
     }
   ]
 }

@@ -1,0 +1,12 @@
+[
+  {
+    "lens": "blast-radius",
+    "summary": "Two generic, unrelated decorator modules for retrying and observing async operations (`src/decorate/retrying.ts`, `src/decorate/observing.ts`) are added and re-exported through the package's public barrel, even though nothing added in this diff's actual review pipeline (`anthropicReviewer`, `runPanel`, `runReview`, the readers) calls either one — the only callers anywhere in the change are their own dedicated test file, so the public surface is widened with capability this change does not use.",
+    "evidence": {
+      "kind": "quote",
+      "text": "export { retrying, RetryPolicyError, type RetryPolicy, type Sleep } from './decorate/retrying.js';"
+    },
+    "verdict": "defect",
+    "provenance": "verified-directly — summary/evidence copied verbatim from .review-report/branch__main__s24a-lens-set.json (read directly in this pass). Fix confirmed from PR #1's own body (verevoir/aigency-governance#1, read via read_pull_request in this pass): removed entirely at commit 7b9e3e4609e80bb595c7be6f337f9422de846620, per the review's own repeated recommendation across three runs. Independently re-confirmed in this pass: both files present and unmodified at 7b9e3e4609e80bb595c7be6f337f9422de846620~1, and src/decorate/ absent from main and from s24a/lens-set's head as of the fix commit. NOT independently re-verified in this pass: zero callers across all three flagged runs and every branch — that breadth of the claim is reported from PR #1's body, not re-derived here."
+  }
+]

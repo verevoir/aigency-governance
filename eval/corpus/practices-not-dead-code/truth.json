@@ -1,0 +1,13 @@
+[
+  {
+    "lens": "blast-radius",
+    "summary": "This diff, titled \"s24a/lens-set vs main,\" bundles in a large, functionally separate capability — a \"practices\" corpus reader and enactment gate (`src/practices/provision.ts`, `src/practices/enact.ts`, plus `tests/provision.test.ts` and `tests/enact.test.ts`) — that its own header comments identify as implementing a different story (S15), not the lens-set story this change is named for. Neither module is imported by any of the review pipeline code added in this same diff (`src/cli/run.ts`, `src/cli/review.ts`, `src/review/*`), and neither is exported from the public barrel (`src/index.ts`), so it ships as several hundred lines of production code and test code with no consumer or integration point in this change at all.",
+    "evidence": {
+      "kind": "quote",
+      "text": "S15's row says consulting the bar and"
+    },
+    "detail": "Evidence citation confirmed genuine, not invented — matching it required crossing a source line wrap the diff breaks with a real newline and stripping a single-line comment marker (// or #).",
+    "verdict": "not-a-defect",
+    "provenance": "verified-directly — summary/evidence/detail copied verbatim from .review-report/branch__main__s24a-lens-set.json (read directly in this pass). Rebuttal copied from PR #1's own body (verevoir/aigency-governance#1, read via read_pull_request in this pass): s23/api-and-bar (PR #4) imports PracticeGate, Judge, EnactOutcome from practices/enact.js and ProvisionResult from practices/provision.js directly into src/api/handler.ts, production code, three branches up from PR #1. Independently re-confirmed in this pass that both modules are present, unmodified, at commit 7b9e3e4609e80bb595c7be6f337f9422de846620."
+  }
+]

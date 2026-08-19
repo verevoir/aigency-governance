@@ -1,0 +1,1 @@
+Keeps this directory in git before any results file exists. sweep.mjs writes eval/results/&lt;iso-date&gt;-&lt;model-id&gt;.json here on a --spend run.
