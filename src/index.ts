@@ -58,4 +58,10 @@ export {
   type ReviewSettings,
   type SettingsResult,
 } from './review/settings.js';
-export { runReview, type ReviewDeps, type ReviewOutcome } from './cli/run.js';
+export {
+  runReview,
+  type LensAccess,
+  type LensReaderFactory,
+  type ReviewDeps,
+  type ReviewOutcome,
+} from './cli/run.js';

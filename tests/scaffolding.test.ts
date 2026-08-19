@@ -27,6 +27,8 @@ import type {
   KeyFileReader,
   KeyFileResult,
   Lens,
+  LensAccess,
+  LensReaderFactory,
   LensResult,
   LensSet,
   LoadResult,
@@ -74,6 +76,8 @@ export type PublishedTypes = [
   ReviewSettings,
   SettingsResult,
   ReviewDeps,
+  LensAccess,
+  LensReaderFactory,
   ReviewOutcome,
 ];
 

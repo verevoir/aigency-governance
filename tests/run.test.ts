@@ -4,16 +4,22 @@
 // the real thing calls a paid API once per lens, and the tests below assert
 // exactly when it must not.
 //
-// The recorder is split three ways on purpose. `factory` counts calls to the
-// deps factory, which is where a real composition CONSTRUCTS a client; `read`
-// and `reviewed` count the two things a client would then do. They are counted
-// separately because they fail separately: a run that resolves settings, builds
-// an Anthropic client and only then discovers there is no key has already done
-// the work this ordering exists to avoid, and a suite that watched only
-// `reviewed` would call that a pass.
+// The recorder is split four ways on purpose. `factory` counts calls to the
+// reviewer's deps factory, which is where a real composition constructs the
+// paid client; `readerBuilt` counts calls to the SEPARATE lens-reader
+// factory, which needs only the lens source and token and nothing else;
+// `read` and `reviewed` count the two things a client would then do. They
+// are counted separately because they fail separately: a run that resolves
+// settings, builds an Anthropic client and only then discovers there is no
+// key has already done the work this ordering exists to avoid, and a suite
+// that watched only `reviewed` would call that a pass. The split between
+// `factory` and `readerBuilt` is what lets a test prove the lens set was
+// checked (`readerBuilt` and `read` both non-zero) in the same run where no
+// paid client was ever built (`factory` zero) — the exact shape of the fix
+// this file exists to verify.
 import { describe, expect, it } from 'vitest';
 
-import { runReview, type ReviewDeps } from '../src/cli/run.js';
+import { runReview, type LensReaderFactory, type ReviewDeps } from '../src/cli/run.js';
 import type { ReadResult, SourceReader } from '../src/review/load.js';
 import type { Reviewer } from '../src/review/panel.js';
 import { NO_PRACTICES_NOTICE, type Subject } from '../src/review/prompt.js';
@@ -66,9 +72,13 @@ function env(
 }
 
 interface Calls {
-  /** Times the deps factory ran — where a real composition builds a client. */
+  /** Times the reviewer's deps factory ran — where a real composition builds
+   * the paid client. */
   factory: number;
-  /** The sources the reader was asked for. */
+  /** Times the SEPARATE lens-reader factory ran — needs only lens access,
+   * never the key. */
+  readerBuilt: number;
+  /** The sources the reader was actually asked for. */
   read: string[];
   /** The lenses the reviewer was asked to judge. Money, one call each. */
   reviewed: string[];
@@ -82,6 +92,7 @@ interface Calls {
 
 interface Harness {
   readonly deps: (settings: ReviewSettings) => ReviewDeps;
+  readonly buildReader: LensReaderFactory;
   readonly calls: Calls;
   /** What the factory was handed, so the wiring can be asserted on. */
   readonly settingsSeen: ReviewSettings[];
@@ -95,7 +106,7 @@ interface HarnessOptions {
 }
 
 function harness(options: HarnessOptions = {}): Harness {
-  const calls: Calls = { factory: 0, read: [], reviewed: [], shared: [] };
+  const calls: Calls = { factory: 0, readerBuilt: 0, read: [], reviewed: [], shared: [] };
   const settingsSeen: ReviewSettings[] = [];
   const found: ReadResult = options.found ?? { kind: 'text', text: TWO_LENSES };
   const reply: Reviewer = options.reply ?? (() => Promise.resolve(APPROVE));
@@ -121,7 +132,15 @@ function harness(options: HarnessOptions = {}): Harness {
       // Spread rather than an explicit `practices: options.practices`: under
       // exactOptionalPropertyTypes a field set to undefined is not the same as
       // a field that is absent, and absent is what "no bar" means here.
-      return { read, review, ...(practices === undefined ? {} : { practices }) };
+      return { review, ...(practices === undefined ? {} : { practices }) };
+    },
+    // Takes only lens access — the same `read` function is returned every
+    // time, regardless of what it is called with, which is deliberate: what
+    // matters for these tests is whether the reader was reachable and reached,
+    // not what it was built from.
+    buildReader: () => {
+      calls.readerBuilt += 1;
+      return read;
     },
     calls,
     settingsSeen,
@@ -129,49 +148,80 @@ function harness(options: HarnessOptions = {}): Harness {
 }
 
 describe('runReview, given a configuration it cannot use', () => {
-  it('spends nothing when there is no API key', async () => {
+  it('spends nothing when there is no API key, but still checks the lens set', async () => {
     const fakes = harness();
 
-    const outcome = await runReview(env({ ANTHROPIC_API_KEY: undefined }), SUBJECT, fakes.deps);
+    const outcome = await runReview(
+      env({ ANTHROPIC_API_KEY: undefined }),
+      SUBJECT,
+      fakes.deps,
+      fakes.buildReader,
+    );
 
-    expect(outcome.exitCode).toBe(1);
-    expect(outcome.report).toContain('ANTHROPIC_API_KEY');
-    expect(outcome.report).toContain('Nothing was reviewed');
     // The assertion this file exists for. Not "no model call" — no CLIENT.
     // The factory is where a key is read and a connection is configured, and
     // a run that gets that far before checking has already done the work.
-    expect(fakes.calls.factory).toBe(0);
-    expect(fakes.calls.read).toEqual([]);
-    expect(fakes.calls.reviewed).toEqual([]);
+    // The lens set, by contrast, HAS been checked — `read` was called and
+    // succeeded — because loadLensSet has no real dependency on the key.
+    // One whole-value comparison rather than five separate assertions, so a
+    // future change that drops one of these facts fails the same test that
+    // catches the others, not a differently-worded one nobody ran.
+    expect({
+      exitCode: outcome.exitCode,
+      namesKey: outcome.report.includes('ANTHROPIC_API_KEY'),
+      namesNothingReviewed: outcome.report.includes('Nothing was reviewed'),
+      factory: fakes.calls.factory,
+      read: fakes.calls.read,
+      reviewed: fakes.calls.reviewed,
+    }).toEqual({
+      exitCode: 1,
+      namesKey: true,
+      namesNothingReviewed: true,
+      factory: 0,
+      read: [DEFAULT_LENS_SOURCE],
+      reviewed: [],
+    });
   });
 
-  it('spends nothing when the token count is present and wrong', async () => {
+  it('spends nothing when the token count is present and wrong, but still checks the lens set', async () => {
     const fakes = harness();
 
     const outcome = await runReview(
       env({ AIGENCY_REVIEW_MAX_TOKENS: '4o96' }),
       SUBJECT,
       fakes.deps,
+      fakes.buildReader,
     );
 
-    expect(outcome.exitCode).toBe(1);
-    expect(outcome.report).toContain('AIGENCY_REVIEW_MAX_TOKENS');
-    // The value they typed, echoed back. A complaint that does not quote the
-    // offending value sends someone to re-read an environment they already
-    // believe is correct.
-    expect(outcome.report).toContain('4o96');
-    expect(outcome.report).toContain('Nothing was reviewed');
-    expect(fakes.calls.factory).toBe(0);
-    // Weaker than it reads, and recorded as such: the reviewer only exists on
-    // the object the factory returns, so nought calls follows from the line
-    // above rather than being independent evidence.
-    expect(fakes.calls.reviewed).toEqual([]);
+    expect({
+      exitCode: outcome.exitCode,
+      namesSetting: outcome.report.includes('AIGENCY_REVIEW_MAX_TOKENS'),
+      // The value they typed, echoed back. A complaint that does not quote the
+      // offending value sends someone to re-read an environment they already
+      // believe is correct.
+      namesValue: outcome.report.includes('4o96'),
+      namesNothingReviewed: outcome.report.includes('Nothing was reviewed'),
+      factory: fakes.calls.factory,
+      // Weaker than it reads, and recorded as such: the reviewer only exists on
+      // the object the factory returns, so nought calls follows from `factory`
+      // being nought rather than being independent evidence.
+      reviewed: fakes.calls.reviewed,
+    }).toEqual({
+      exitCode: 1,
+      namesSetting: true,
+      namesValue: true,
+      namesNothingReviewed: true,
+      factory: 0,
+      reviewed: [],
+    });
   });
 
   // A red result, not a green one, and not an exception either. The caller
   // gets something to print.
   it('reports a configuration failure as red rather than throwing', async () => {
-    const outcome = await runReview({}, SUBJECT, harness().deps);
+    const fakes = harness();
+
+    const outcome = await runReview({}, SUBJECT, fakes.deps, fakes.buildReader);
 
     expect(outcome.exitCode).toBe(1);
     expect(outcome.report).toContain('red result, not a passing one');
@@ -184,7 +234,7 @@ describe('runReview, given a configuration it cannot use', () => {
 // Not a `resolveSettings` test wearing a `runReview` hat: `resolveSettings`
 // is always driven here with an INJECTED reader, real or fake, and that
 // leaves the one thing only `runReview` itself can answer untested — what
-// happens when a caller supplies no fourth argument at all. `noKeyFile` in
+// happens when a caller supplies no fifth argument at all. `noKeyFile` in
 // run.ts claims to behave as "every path absent"; this is what actually
 // drives that default rather than a stand-in for it.
 describe('runReview, given no key-file reader at all', () => {
@@ -195,7 +245,8 @@ describe('runReview, given no key-file reader at all', () => {
       env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
       SUBJECT,
       fakes.deps,
-      // No fourth argument — this is the default parameter under test.
+      fakes.buildReader,
+      // No fifth argument — this is the default parameter under test.
     );
 
     // If the default silently supplied a real filesystem, or resolved the
@@ -221,52 +272,42 @@ describe('runReview, given a diff with nothing in it', () => {
   ];
 
   for (const { what, diff } of nothing) {
-    it(`is red and constructs nothing when the diff is ${what}`, async () => {
+    it(`is red and constructs no reviewer when the diff is ${what}, though the lens set is still checked`, async () => {
       const fakes = harness();
 
-      const outcome = await runReview(env(), { ...SUBJECT, diff }, fakes.deps);
+      const outcome = await runReview(env(), { ...SUBJECT, diff }, fakes.deps, fakes.buildReader);
 
       // The environment here is complete and the lens set loads: without the
       // guard this run reaches the panel, every lens approves an empty diff
-      // and the outcome is a green 0. So the code below is what the guard
-      // changed, and nothing else.
-      expect(outcome.exitCode).toBe(1);
-      expect(outcome.report).toContain('The diff was empty');
-      // The wiring causes, named. A report that said only "empty diff" sends
-      // someone to look at a change they can see is not empty.
-      expect(outcome.report).toContain('wrong base');
-      expect(outcome.report).toContain('shallow clone');
-      expect(outcome.report).toContain('fetch depth of 1');
-      expect(outcome.report).toContain('Nothing was reviewed');
-      expect(fakes.calls.factory).toBe(0);
-      expect(fakes.calls.read).toEqual([]);
-      expect(fakes.calls.reviewed).toEqual([]);
+      // and the outcome is a green 0. The diff-emptiness check is what stops
+      // that. It runs independently of the lens-set check below, which is
+      // why `read` is non-empty here even though the diff is what is wrong —
+      // that is the fix this file makes, not a leftover to explain away.
+      expect({
+        exitCode: outcome.exitCode,
+        namesEmptyDiff: outcome.report.includes('The diff was empty'),
+        // The wiring causes, named. A report that said only "empty diff"
+        // sends someone to look at a change they can see is not empty.
+        namesWrongBase: outcome.report.includes('wrong base'),
+        namesShallowClone: outcome.report.includes('shallow clone'),
+        namesFetchDepth: outcome.report.includes('fetch depth of 1'),
+        namesNothingReviewed: outcome.report.includes('Nothing was reviewed'),
+        factory: fakes.calls.factory,
+        read: fakes.calls.read,
+        reviewed: fakes.calls.reviewed,
+      }).toEqual({
+        exitCode: 1,
+        namesEmptyDiff: true,
+        namesWrongBase: true,
+        namesShallowClone: true,
+        namesFetchDepth: true,
+        namesNothingReviewed: true,
+        factory: 0,
+        read: [DEFAULT_LENS_SOURCE],
+        reviewed: [],
+      });
     });
   }
-
-  // Pins the ORDER, which the comment in run.ts asserts and nothing else
-  // holds: a guard placed before resolveSettings would pass both tests above
-  // and this one would go red. A configuration problem must be reported even
-  // when the diff is empty, because it has to be fixed either way — and
-  // "your diff is empty" sends someone to look at their workflow when what
-  // they actually need is a secret.
-  it('reports a missing key rather than an empty diff when both are wrong', async () => {
-    const fakes = harness();
-
-    const outcome = await runReview(
-      env({ ANTHROPIC_API_KEY: undefined }),
-      { ...SUBJECT, diff: '' },
-      fakes.deps,
-    );
-
-    expect(outcome.exitCode).toBe(1);
-    expect(outcome.report).toContain('ANTHROPIC_API_KEY');
-    // The half that makes this a test of order rather than a second test of
-    // the settings check: both faults are present, and only one of them may
-    // be reported.
-    expect(outcome.report).not.toContain('The diff was empty');
-    expect(fakes.calls.factory).toBe(0);
-  });
 });
 
 describe('runReview, given a lens set it cannot load', () => {
@@ -283,7 +324,7 @@ describe('runReview, given a lens set it cannot load', () => {
     it(`is red, reviews nothing and says "${why}"`, async () => {
       const fakes = harness({ found });
 
-      const outcome = await runReview(env(), SUBJECT, fakes.deps);
+      const outcome = await runReview(env(), SUBJECT, fakes.deps, fakes.buildReader);
 
       expect(outcome.exitCode).toBe(1);
       expect(outcome.report).toContain(why);
@@ -301,13 +342,14 @@ describe('runReview, given a lens set it cannot load', () => {
 
   // The reason the three stay apart all the way to the report. A 404 is
   // someone's wrong URL, a 503 is an outage to wait out, and a parse error is
-  // a bad commit to the definition — three different people, three different
-  // actions. A single "could not load" tells none of them which they are.
+  // a bad commit to the definition. A single "could not load" tells none of
+  // them which they are.
   it('gives three distinguishable reports, not one', async () => {
     const reports = await Promise.all(
-      unavailable.map(
-        async ({ found }) => (await runReview(env(), SUBJECT, harness({ found }).deps)).report,
-      ),
+      unavailable.map(async ({ found }) => {
+        const fakes = harness({ found });
+        return (await runReview(env(), SUBJECT, fakes.deps, fakes.buildReader)).report;
+      }),
     );
 
     expect(new Set(reports).size).toBe(3);
@@ -318,7 +360,7 @@ describe('runReview, when the panel runs', () => {
   it('exits 0 and says so when every lens approves', async () => {
     const fakes = harness();
 
-    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+    const outcome = await runReview(env(), SUBJECT, fakes.deps, fakes.buildReader);
 
     expect(outcome.exitCode).toBe(0);
     expect(outcome.report).toContain('## Review: Approved');
@@ -331,7 +373,7 @@ describe('runReview, when the panel runs', () => {
       reply: (lensId) => Promise.resolve(lensId === 'honesty' ? REJECT : APPROVE),
     });
 
-    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+    const outcome = await runReview(env(), SUBJECT, fakes.deps, fakes.buildReader);
 
     expect(outcome.exitCode).toBe(1);
     expect(outcome.report).toContain('## Review: Rejected');
@@ -349,7 +391,7 @@ describe('runReview, when the panel runs', () => {
           : Promise.resolve(REJECT),
     });
 
-    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+    const outcome = await runReview(env(), SUBJECT, fakes.deps, fakes.buildReader);
 
     expect(outcome.exitCode).toBe(1);
     expect(outcome.report).toContain('## Review: Could not run');
@@ -362,7 +404,7 @@ describe('runReview, when the panel runs', () => {
   it('names the source the definition actually came from', async () => {
     const fakes = harness();
 
-    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+    const outcome = await runReview(env(), SUBJECT, fakes.deps, fakes.buildReader);
 
     expect(outcome.report).toContain(DEFAULT_LENS_SOURCE);
   });
@@ -376,6 +418,7 @@ describe('runReview, when the panel runs', () => {
       env({ AIGENCY_REVIEW_LENSES: './review/lenses.json' }),
       SUBJECT,
       fakes.deps,
+      fakes.buildReader,
     );
 
     expect(outcome.report).toContain('./review/lenses.json');
@@ -392,7 +435,7 @@ describe('runReview, wiring the dependencies', () => {
   it('hands the factory the resolved settings, defaults and all', async () => {
     const fakes = harness();
 
-    await runReview(env(), SUBJECT, fakes.deps);
+    await runReview(env(), SUBJECT, fakes.deps, fakes.buildReader);
 
     expect(fakes.calls.factory).toBe(1);
     expect(fakes.settingsSeen[0]).toEqual({
@@ -411,7 +454,7 @@ describe('runReview, wiring the dependencies', () => {
   it('supplies the practices to every lens, not merely to the first', async () => {
     const fakes = harness({ practices: 'THE-BAR-MARKER: say what you observed' });
 
-    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+    const outcome = await runReview(env(), SUBJECT, fakes.deps, fakes.buildReader);
 
     expect(outcome.exitCode).toBe(0);
     expect(fakes.calls.reviewed).toHaveLength(2);
@@ -429,7 +472,7 @@ describe('runReview, wiring the dependencies', () => {
   it('announces the absence when the composition has no practices', async () => {
     const fakes = harness();
 
-    await runReview(env(), SUBJECT, fakes.deps);
+    await runReview(env(), SUBJECT, fakes.deps, fakes.buildReader);
 
     expect(fakes.calls.shared).toHaveLength(2);
     for (const shared of fakes.calls.shared) {
@@ -444,9 +487,198 @@ describe('runReview, wiring the dependencies', () => {
       env({ AIGENCY_REVIEW_MODEL: 'claude-haiku-3', AIGENCY_REVIEW_MAX_TOKENS: '12000' }),
       SUBJECT,
       fakes.deps,
+      fakes.buildReader,
     );
 
     expect(fakes.settingsSeen[0]?.model).toBe('claude-haiku-3');
     expect(fakes.settingsSeen[0]?.maxTokens).toBe(12000);
+  });
+});
+
+// R1: the defect this file was rewritten for. `runReview` used to evaluate
+// settings, the diff and the lens set in sequence and return at the first
+// failure — so a run with two things wrong named one, and a person fixed
+// what they were told and re-ran only to be told the next thing. The three
+// facts below are independently knowable, and every test in this block
+// drives a case where more than one of them is true at once, asserting
+// through one whole-value `toEqual` per test rather than a sequence of
+// separate checks — a sequential assertion proves only its first possible
+// failure, and these are exactly the tests where a silently-dropped second
+// problem must be caught.
+describe('runReview, gathering what is independently knowable', () => {
+  it('reports two problems together, leading with the one to fix first', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(
+      env({ ANTHROPIC_API_KEY: undefined }),
+      { ...SUBJECT, diff: '' },
+      fakes.deps,
+      fakes.buildReader,
+    );
+
+    const keyAt = outcome.report.indexOf('ANTHROPIC_API_KEY');
+    const diffAt = outcome.report.indexOf('The diff was empty');
+
+    expect({
+      exitCode: outcome.exitCode,
+      namesKey: keyAt >= 0,
+      namesEmptyDiff: diffAt >= 0,
+      // The configuration problem must be fixed whatever the diff turns out
+      // to be, so it leads — a caller reading only as far as the first
+      // heading still learns the thing to fix next.
+      keyBeforeDiff: keyAt >= 0 && diffAt >= 0 && keyAt < diffAt,
+      // Both were checked, and the panel still did not run: gathering is not
+      // continuing.
+      factory: fakes.calls.factory,
+      reviewed: fakes.calls.reviewed,
+    }).toEqual({
+      exitCode: 1,
+      namesKey: true,
+      namesEmptyDiff: true,
+      keyBeforeDiff: true,
+      factory: 0,
+      reviewed: [],
+    });
+  });
+
+  // The specific case the diagnosis names: loadLensSet needs a lens source
+  // and a lens token, not the API key, so its reachability must be checked
+  // even when the key is the thing that is missing. `read` is asserted
+  // directly, not merely inferred from the report, so a fixture that
+  // short-circuited before reaching the reader would fail this test rather
+  // than pass it for the wrong reason.
+  it('checks the lens set even when the API key is missing, and reports both', async () => {
+    const fakes = harness({ found: { kind: 'missing', reason: 'HTTP 404' } });
+
+    const outcome = await runReview(
+      env({ ANTHROPIC_API_KEY: undefined }),
+      SUBJECT,
+      fakes.deps,
+      fakes.buildReader,
+    );
+
+    const keyAt = outcome.report.indexOf('ANTHROPIC_API_KEY');
+    const lensAt = outcome.report.indexOf(DEFAULT_LENS_SOURCE);
+
+    expect({
+      exitCode: outcome.exitCode,
+      namesKey: keyAt >= 0,
+      namesLensSetProblem: outcome.report.includes('missing') && lensAt >= 0,
+      keyBeforeLensSet: keyAt >= 0 && lensAt >= 0 && keyAt < lensAt,
+      readerReached: fakes.calls.read,
+      factory: fakes.calls.factory,
+      reviewed: fakes.calls.reviewed,
+    }).toEqual({
+      exitCode: 1,
+      namesKey: true,
+      namesLensSetProblem: true,
+      keyBeforeLensSet: true,
+      readerReached: [DEFAULT_LENS_SOURCE],
+      factory: 0,
+      reviewed: [],
+    });
+  });
+
+  it('reports three problems together when three are present', async () => {
+    const fakes = harness({ found: { kind: 'unreachable', reason: 'HTTP 503' } });
+
+    const outcome = await runReview(
+      env({ ANTHROPIC_API_KEY: undefined }),
+      { ...SUBJECT, diff: '' },
+      fakes.deps,
+      fakes.buildReader,
+    );
+
+    const positions = [
+      outcome.report.indexOf('ANTHROPIC_API_KEY'),
+      outcome.report.indexOf('The diff was empty'),
+      outcome.report.indexOf(DEFAULT_LENS_SOURCE),
+    ];
+
+    expect({
+      exitCode: outcome.exitCode,
+      allPresent: positions.every((position) => position >= 0),
+      // Settled configuration, then the diff, then the lens set — the order
+      // the file header explains, each strictly after the last.
+      inOrder: positions.every((position, index) => {
+        if (index === 0) return true;
+        const previous = positions[index - 1];
+        return previous !== undefined && previous < position;
+      }),
+      namesUnreachable: outcome.report.includes('unreachable'),
+      factory: fakes.calls.factory,
+      reviewed: fakes.calls.reviewed,
+    }).toEqual({
+      exitCode: 1,
+      allPresent: true,
+      inOrder: true,
+      namesUnreachable: true,
+      factory: 0,
+      reviewed: [],
+    });
+  });
+
+  // The present-and-wrong branch, not just the missing one: `invalid` and
+  // `incomplete` are different `SettingsResult` kinds, and both must still
+  // let the lens-set check through independently.
+  it('reports both when the configuration is present-and-wrong and the lens set cannot be read', async () => {
+    const fakes = harness({ found: { kind: 'missing', reason: 'HTTP 404' } });
+
+    const outcome = await runReview(
+      env({ AIGENCY_REVIEW_MAX_TOKENS: '4o96' }),
+      SUBJECT,
+      fakes.deps,
+      fakes.buildReader,
+    );
+
+    const maxTokensAt = outcome.report.indexOf('AIGENCY_REVIEW_MAX_TOKENS');
+    const lensAt = outcome.report.indexOf(DEFAULT_LENS_SOURCE);
+
+    expect({
+      exitCode: outcome.exitCode,
+      namesMaxTokens: maxTokensAt >= 0 && outcome.report.includes('4o96'),
+      namesLensSet: lensAt >= 0,
+      maxTokensBeforeLensSet: maxTokensAt >= 0 && lensAt >= 0 && maxTokensAt < lensAt,
+      factory: fakes.calls.factory,
+    }).toEqual({
+      exitCode: 1,
+      namesMaxTokens: true,
+      namesLensSet: true,
+      maxTokensBeforeLensSet: true,
+      factory: 0,
+    });
+  });
+
+  // The other half of "gather, don't invent": when only one thing is wrong,
+  // the other two — checked, and found clean — must not appear as if they
+  // were also problems. `readerReached` proves the lens set really was
+  // checked (not skipped because the key was missing), and `isGathered`
+  // proves the report was not wrapped in the multi-problem framing over a
+  // single problem.
+  it('reports one problem alone, with no invented companions, when only one is wrong', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(
+      env({ ANTHROPIC_API_KEY: undefined }),
+      SUBJECT,
+      fakes.deps,
+      fakes.buildReader,
+    );
+
+    expect({
+      exitCode: outcome.exitCode,
+      namesKey: outcome.report.includes('ANTHROPIC_API_KEY'),
+      namesEmptyDiff: outcome.report.includes('The diff was empty'),
+      namesLensSetProblem: outcome.report.includes('could not be read'),
+      isGathered: outcome.report.includes('Problem 1 of'),
+      readerReached: fakes.calls.read,
+    }).toEqual({
+      exitCode: 1,
+      namesKey: true,
+      namesEmptyDiff: false,
+      namesLensSetProblem: false,
+      isGathered: false,
+      readerReached: [DEFAULT_LENS_SOURCE],
+    });
   });
 });
