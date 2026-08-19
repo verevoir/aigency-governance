@@ -35,7 +35,6 @@ export {
 } from './review/prompt.js';
 export { parseReply } from './review/parseReply.js';
 export { findingIsVerified, verifyLensResult } from './review/verifyFindings.js';
-export { runPanel, type PanelRun, type Reviewer } from './review/panel.js';
 export { NoRoomToAnswerError, runPanel, type PanelRun, type Reviewer } from './review/panel.js';
 export { exitCodeFor, renderReport, type ReportContext } from './review/report.js';
 export {
