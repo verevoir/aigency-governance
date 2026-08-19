@@ -22,15 +22,31 @@
 //   An API key (`ANTHROPIC_API_KEY`) is what CI has, and what production
 //   review runs on. It is billed per call.
 //
-//   A subscription OAuth token (`AIGENCY_REVIEW_OAUTH_TOKEN`) is what a
-//   laptop can have instead. It authenticates the identical Messages API call
-//   — see the header of anthropic.ts for why that identity is the whole
-//   reason this is safe to add rather than a second, divergent code path —
-//   and it is what makes local diagnosis affordable. Every real diagnosis in
-//   this repository's history so far — a missing key, a token ceiling, a
-//   broken build — was found by running the panel locally against the exact
-//   diff, and API rates are expensive enough to discourage the thing that
-//   has been most valuable about this codebase.
+//   A subscription OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) is what a laptop
+//   can have instead. NAMED THAT, NOT SOMETHING TIDIER, BECAUSE THAT IS THE
+//   VARIABLE THAT IS ACTUALLY THERE: this is the token Claude Code's own
+//   runtime already sets when this project is being worked on inside it —
+//   this file reads the name a caller already has, rather than inventing an
+//   `AIGENCY_...`-prefixed one and asking every caller to alias it. A
+//   resolver that reads a name of its own choosing instead of the name an
+//   operator actually has is exactly the shape of defect (H87) this codebase
+//   keeps finding elsewhere: a value that is genuinely present and never
+//   arrives, because nothing was listening for its real name. It
+//   authenticates the identical Messages API call — see the header of
+//   anthropic.ts for why that identity is the whole reason this is safe to
+//   add rather than a second, divergent code path — and it is what makes
+//   local diagnosis affordable. Every real diagnosis in this repository's
+//   history so far — a missing key, a token ceiling, a broken build — was
+//   found by running the panel locally against the exact diff, and API rates
+//   are expensive enough to discourage the thing that has been most valuable
+//   about this codebase.
+//
+//   The FILE-based fallback for this credential (`..._FILE` and the default
+//   path) keeps this project's own `AIGENCY_REVIEW_OAUTH_TOKEN_FILE` naming
+//   rather than following suit, deliberately: that mechanism does not come
+//   from any runtime, it is this project's own convention for a laptop not
+//   running inside Claude Code, and it stays named the way the rest of this
+//   project names things it invented.
 //
 // EACH CREDENTIAL HAS ITS OWN THREE-SOURCE CHAIN, THE SAME SHAPE THE API KEY
 // ALREADY HAD, EXTENDED RATHER THAN DUPLICATED (see `resolveChain` and
@@ -64,7 +80,7 @@
 // BETWEEN THE TWO CREDENTIALS, THE ORDER IS: OAUTH FIRST, ENTIRELY, THEN THE
 // API KEY. Not the other order, and not "whichever is set" left to accident.
 // The reasoning: nothing anywhere in this repository's CI configuration ever
-// names `AIGENCY_REVIEW_OAUTH_TOKEN` — not in a workflow's `env:` block, not
+// names `CLAUDE_CODE_OAUTH_TOKEN` — not in a workflow's `env:` block, not
 // in a `secrets:` mapping (see `.github/workflows/review.yml`, whose one
 // `Review` step lists every variable it receives, and does not list this
 // one). A GitHub Actions runner starts with none of a contributor's local
@@ -324,9 +340,15 @@ const API_KEY_CHAIN: ChainConfig = {
   defaultFileName: 'anthropic.key',
 };
 
+// `envVar` here is `CLAUDE_CODE_OAUTH_TOKEN`, not an `AIGENCY_...`-prefixed
+// name to match its sibling below — see the file header's "NAMED THAT, NOT
+// SOMETHING TIDIER" paragraph for why: this is the name a caller already
+// has, from Claude Code's own runtime, and reading a name of this project's
+// own choosing instead would mean the token that is actually present never
+// resolves.
 const OAUTH_CHAIN: ChainConfig = {
   source: 'subscription-oauth',
-  envVar: 'AIGENCY_REVIEW_OAUTH_TOKEN',
+  envVar: 'CLAUDE_CODE_OAUTH_TOKEN',
   fileEnvVar: 'AIGENCY_REVIEW_OAUTH_TOKEN_FILE',
   defaultFileName: 'anthropic-oauth.token',
 };
@@ -488,9 +510,9 @@ export async function resolveSettings(
         'export ANTHROPIC_API_KEY=sk-..., or set ANTHROPIC_API_KEY_FILE to a path ' +
         'holding it, or place it at $XDG_CONFIG_HOME/verevoir/anthropic.key ' +
         '(~/.config/verevoir/anthropic.key when XDG_CONFIG_HOME is unset). Or a ' +
-        'subscription, which costs nothing per call: export ' +
-        'AIGENCY_REVIEW_OAUTH_TOKEN=..., or set AIGENCY_REVIEW_OAUTH_TOKEN_FILE to a ' +
-        'path holding it, or place it at ' +
+        'subscription, which costs nothing per call: Claude Code already sets ' +
+        'CLAUDE_CODE_OAUTH_TOKEN when this runs inside it, or export it yourself, ' +
+        'or set AIGENCY_REVIEW_OAUTH_TOKEN_FILE to a path holding it, or place it at ' +
         '$XDG_CONFIG_HOME/verevoir/anthropic-oauth.token ' +
         '(~/.config/verevoir/anthropic-oauth.token when XDG_CONFIG_HOME is unset). ' +
         'CI never sets the OAuth variable, so it is the right default for a laptop and ' +

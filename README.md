@@ -110,24 +110,32 @@ of a review.
 
 ### Or a subscription, for free
 
-Set `AIGENCY_REVIEW_OAUTH_TOKEN` instead of `ANTHROPIC_API_KEY` and the panel
-authenticates against a subscription rather than a billed key — same request,
-same response, same failure shapes (see `src/review/anthropic.ts`'s own header
-for why that identity is the whole safety argument for this), just a different
-header on the wire. Every real diagnosis this repository's own history
-records — a missing key, a token ceiling, a broken build — was found by
-running the panel locally against the exact diff, and API rates are expensive
-enough to discourage doing that. This is the cheap version of the same thing.
+`CLAUDE_CODE_OAUTH_TOKEN` — the token Claude Code's own runtime already sets,
+not an `AIGENCY_...` name of this project's own invention — authenticates
+against a subscription rather than a billed key when it is present, instead
+of `ANTHROPIC_API_KEY`: same request, same response, same failure shapes (see
+`src/review/anthropic.ts`'s own header for why that identity is the whole
+safety argument for this), just a different header on the wire. Every real
+diagnosis this repository's own history records — a missing key, a token
+ceiling, a broken build — was found by running the panel locally against the
+exact diff, and API rates are expensive enough to discourage doing that. This
+is the cheap version of the same thing.
+
+Working outside Claude Code and want the same thing? Set
+`AIGENCY_REVIEW_OAUTH_TOKEN_FILE` to a path holding the token, or place it at
+the conventional default path — see the table below. There is no
+`AIGENCY_REVIEW_OAUTH_TOKEN` environment variable: the primary source reads
+the name a caller already has rather than asking every caller to alias it,
+see `src/review/settings.ts`'s file header for why that distinction matters.
 
 When both are set, the OAuth token wins — deterministically, not by accident
 of which happened to be checked first (see `src/review/settings.ts`'s file
 header for the full argument). CI cannot be affected either way:
-`AIGENCY_REVIEW_OAUTH_TOKEN` is never named in any workflow in this
-repository, so a GitHub Actions run — which starts with none of a
-contributor's local environment regardless — structurally never has it. The
-report a run produces says which one judged it, on its last line: "via API
-key" or "via subscription OAuth" — never the credential's value, only which
-kind it was.
+`CLAUDE_CODE_OAUTH_TOKEN` is never named in any workflow in this repository,
+so a GitHub Actions run — which starts with none of a contributor's local
+environment regardless — structurally never has it. The report a run
+produces says which one judged it, on its last line: "via API key" or "via
+subscription OAuth" — never the credential's value, only which kind it was.
 
 Run `npm run build` after changing anything under `src/`. The `cli` gate covers
 less than its name suggests: it starts the emitted binary, so the CLI boundary
@@ -157,15 +165,15 @@ fully-uncovered modules passes.
 
 ## Settings
 
-| Variable                          | Default                            | Notes                                                                                                                                                                                                                                                                       |
-| --------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ANTHROPIC_API_KEY`               | —                                  | Required.                                                                                                                                                                                                                                                                   |
-| `AIGENCY_REVIEW_LENSES`           | the published `review/lenses.json` | A URL or a path.                                                                                                                                                                                                                                                            |
-| `AIGENCY_REVIEW_LENSES_TOKEN`     | `GITHUB_TOKEN`                     | Only needed when the lens set comes from `raw.githubusercontent.com`, which is the published default. Any other `https://` source is fetched anonymously and no token is sent.                                                                                              |
-| `AIGENCY_REVIEW_MODEL`            | pinned in `src/review/settings.ts` | Leave it alone unless you know why. The same commit judged by two models is two verdicts.                                                                                                                                                                                   |
-| `AIGENCY_REVIEW_MAX_TOKENS`       | 65536                              | A value that is present and not a positive whole number is refused, never silently replaced by this default. Raised from 4096 on direct evidence: this repository's own review check hit the old default on a large diff and lost four of five lenses to a truncated reply. |
-| `AIGENCY_REVIEW_OAUTH_TOKEN`      | —                                  | A subscription credential, tried before `ANTHROPIC_API_KEY` — see "Or a subscription, for free" above. Never set by anything in this repository's own CI.                                                                                                                   |
-| `AIGENCY_REVIEW_OAUTH_TOKEN_FILE` | —                                  | A path to read the OAuth token from, tried when the variable above is unset. Falls back further to `$XDG_CONFIG_HOME/verevoir/anthropic-oauth.token` (`~/.config/verevoir/anthropic-oauth.token` when unset), the same shape `ANTHROPIC_API_KEY_FILE` already had.          |
+| Variable                          | Default                            | Notes                                                                                                                                                                                                                                                                                                           |
+| --------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`               | —                                  | Required.                                                                                                                                                                                                                                                                                                       |
+| `AIGENCY_REVIEW_LENSES`           | the published `review/lenses.json` | A URL or a path.                                                                                                                                                                                                                                                                                                |
+| `AIGENCY_REVIEW_LENSES_TOKEN`     | `GITHUB_TOKEN`                     | Only needed when the lens set comes from `raw.githubusercontent.com`, which is the published default. Any other `https://` source is fetched anonymously and no token is sent.                                                                                                                                  |
+| `AIGENCY_REVIEW_MODEL`            | pinned in `src/review/settings.ts` | Leave it alone unless you know why. The same commit judged by two models is two verdicts.                                                                                                                                                                                                                       |
+| `AIGENCY_REVIEW_MAX_TOKENS`       | 65536                              | A value that is present and not a positive whole number is refused, never silently replaced by this default. Raised from 4096 on direct evidence: this repository's own review check hit the old default on a large diff and lost four of five lenses to a truncated reply.                                     |
+| `CLAUDE_CODE_OAUTH_TOKEN`         | —                                  | A subscription credential, tried before `ANTHROPIC_API_KEY` — see "Or a subscription, for free" above. Set by Claude Code's own runtime, not by this project; never set by anything in this repository's own CI.                                                                                                |
+| `AIGENCY_REVIEW_OAUTH_TOKEN_FILE` | —                                  | A path to read the OAuth token from, tried when the variable above is unset — the option for working outside Claude Code. Falls back further to `$XDG_CONFIG_HOME/verevoir/anthropic-oauth.token` (`~/.config/verevoir/anthropic-oauth.token` when unset), the same shape `ANTHROPIC_API_KEY_FILE` already had. |
 
 ## If the diff is empty
 

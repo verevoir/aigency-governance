@@ -465,7 +465,7 @@ describe('runReview, choosing a credential', () => {
     const fakes = harness();
 
     const outcome = await runReview(
-      env({ ANTHROPIC_API_KEY: undefined, AIGENCY_REVIEW_OAUTH_TOKEN: OAUTH_TOKEN }),
+      env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN }),
       SUBJECT,
       fakes.deps,
     );
@@ -496,7 +496,7 @@ describe('runReview, choosing a credential', () => {
     const fakes = harness();
 
     const outcome = await runReview(
-      env({ AIGENCY_REVIEW_OAUTH_TOKEN: OAUTH_TOKEN }),
+      env({ CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN }),
       SUBJECT,
       fakes.deps,
     );
@@ -514,7 +514,7 @@ describe('runReview, choosing a credential', () => {
     const fakes = harness();
 
     const outcome = await runReview(
-      env({ ANTHROPIC_API_KEY: undefined, AIGENCY_REVIEW_OAUTH_TOKEN: OAUTH_TOKEN }),
+      env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN }),
       SUBJECT,
       fakes.deps,
     );

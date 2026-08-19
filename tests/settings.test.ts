@@ -157,7 +157,7 @@ describe('resolveSettings, given no credential at all', () => {
     );
     const entry = named(missing, 'ANTHROPIC_API_KEY');
 
-    expect(entry.where).toContain('AIGENCY_REVIEW_OAUTH_TOKEN');
+    expect(entry.where).toContain('CLAUDE_CODE_OAUTH_TOKEN');
     expect(entry.where).toContain('AIGENCY_REVIEW_OAUTH_TOKEN_FILE');
     expect(entry.where).toContain('.config/verevoir/anthropic-oauth.token');
   });
@@ -496,7 +496,7 @@ describe('resolveSettings, resolving the subscription OAuth token', () => {
   it('resolves from the environment variable to a subscription-oauth credential', async () => {
     const settings = readyOf(
       await resolveSettings(
-        env({ ANTHROPIC_API_KEY: undefined, AIGENCY_REVIEW_OAUTH_TOKEN: OAUTH_TOKEN }),
+        env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN }),
         NO_FILES,
       ),
     );
@@ -515,7 +515,7 @@ describe('resolveSettings, resolving the subscription OAuth token', () => {
   it('prefers the OAuth token over the API key when both are genuinely present', async () => {
     const settings = readyOf(
       await resolveSettings(
-        env({ ANTHROPIC_API_KEY: 'sk-ant-also-present', AIGENCY_REVIEW_OAUTH_TOKEN: OAUTH_TOKEN }),
+        env({ ANTHROPIC_API_KEY: 'sk-ant-also-present', CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN }),
         NO_FILES,
       ),
     );
@@ -574,7 +574,7 @@ describe('resolveSettings, resolving the subscription OAuth token', () => {
   it('falls through to the API key when the OAuth variable is blank', async () => {
     const settings = readyOf(
       await resolveSettings(
-        env({ ANTHROPIC_API_KEY: 'sk-from-env', AIGENCY_REVIEW_OAUTH_TOKEN: '   ' }),
+        env({ ANTHROPIC_API_KEY: 'sk-from-env', CLAUDE_CODE_OAUTH_TOKEN: '   ' }),
         NO_FILES,
       ),
     );
@@ -650,7 +650,7 @@ describe('resolveSettings, resolving the subscription OAuth token', () => {
     await resolveSettings(
       env({
         ANTHROPIC_API_KEY: undefined,
-        AIGENCY_REVIEW_OAUTH_TOKEN: OAUTH_TOKEN,
+        CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN,
         AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/token',
       }),
       fs.read,

@@ -30,7 +30,7 @@
 // header), so the only honest place to prove the wiring is here, running the
 // real compiled binary against a real file on disk. The third scenario is
 // the same argument applied to the credential chain gaining a second
-// variable name (AIGENCY_REVIEW_OAUTH_TOKEN): every unit test for it drives
+// variable name (CLAUDE_CODE_OAUTH_TOKEN): every unit test for it drives
 // resolveSettings directly too, so nothing before this scenario proved the
 // real binary's environment reaches that name specifically, as opposed to a
 // fake reaching it in a test's own process.
@@ -166,12 +166,12 @@ try {
 // process.env, not a test's injected fake, is what resolveSettings actually
 // reads — for the variable name this story added.
 const viaOauth = await runEmptyDiff({
-  AIGENCY_REVIEW_OAUTH_TOKEN: 'not-a-real-token-and-must-never-need-to-be',
+  CLAUDE_CODE_OAUTH_TOKEN: 'not-a-real-token-and-must-never-need-to-be',
 });
-const oauthOut = checkRefused('AIGENCY_REVIEW_OAUTH_TOKEN', viaOauth);
+const oauthOut = checkRefused('CLAUDE_CODE_OAUTH_TOKEN', viaOauth);
 if (oauthOut.includes('ANTHROPIC_API_KEY')) {
   problems.push(
-    '[AIGENCY_REVIEW_OAUTH_TOKEN] the report mentions ANTHROPIC_API_KEY as unconfigured — ' +
+    '[CLAUDE_CODE_OAUTH_TOKEN] the report mentions ANTHROPIC_API_KEY as unconfigured — ' +
       'the token in the environment was not found, so review.ts is not actually reaching ' +
       'the OAuth branch of credential resolution',
   );
