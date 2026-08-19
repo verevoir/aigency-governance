@@ -1,0 +1,74 @@
+# What a consumer repository's copy of this file looks like — and this is one.
+#
+# Governance reviews its own pull requests through exactly the workflow every
+# other repository will call. That is deliberate: an example that diverges
+# from the thing it is an example of is the first place drift appears and the
+# last place anyone looks.
+name: review-pr
+
+on:
+  pull_request:
+
+jobs:
+  review:
+    # `./` rather than `verevoir/aigency-governance/...@main`, and the
+    # difference has a real cost that is being accepted rather than missed.
+    #
+    # With a local path, GitHub runs the reusable workflow from the pull
+    # request's OWN commit. So a change to the reviewer is tested by the pull
+    # request that makes it, which is the only way a reviewer can ever be
+    # improved safely — and it also means a pull request can modify the thing
+    # that reviews it. For this repository that trade is right: the alternative
+    # is a reviewer nobody can change without merging blind.
+    #
+    # The other five repositories will pin `@main` and will NOT have that
+    # property, which is the correct asymmetry: they consume the reviewer, this
+    # one develops it.
+    uses: ./.github/workflows/review.yml
+    # `governance-ref`, pinned to the pull request's own head commit rather
+    # than left at the reusable workflow's default of `main`.
+    #
+    # The local `./` path above and this input fix two DIFFERENT halves of
+    # self-review, and it is worth being explicit that they are separate,
+    # because a reader who sees the local path will assume it covers
+    # everything. The local path decides which JOB DEFINITION runs — with
+    # it, GitHub reads review.yml from this pull request's own commit rather
+    # than from main. It says nothing about what that job then does inside
+    # itself. review.yml's second checkout step fetches the reviewer and the
+    # lens set from `governance-ref`, and that input defaults to `main` —
+    # so, unpinned, a self-review job whose DEFINITION came from this PR
+    # would still build and run the RUNNER from main. On this branch main
+    # has no `build` script, no `bin` entry and no `review/` directory, so
+    # that second checkout's `npm run build` fails with "Missing script:
+    # build" before a single lens runs — a pull request cannot be reviewed
+    # by work that has not reached main yet, which is exactly the
+    # bootstrap paradox this input closes.
+    #
+    # `github.event.pull_request.head.sha`, not `github.sha`. On a
+    # `pull_request` event `github.sha` is the ephemeral merge commit GitHub
+    # synthesises for the run — it is not a ref the second checkout, which
+    # targets a *different* checkout of this same repository by `ref:`, can
+    # be relied on to resolve consistently. `head.sha` is the real commit
+    # the pull request is actually proposing, and is what must be reviewed.
+    # Do not "simplify" this to `github.sha` — that is the obvious-looking
+    # substitution and it is wrong for the reason above.
+    #
+    # Untested from here whether a `contents: read` token can fetch an
+    # unmerged head sha by `ref:` at all, as opposed to needing
+    # `refs/pull/N/head` — actions/checkout's behaviour with a fine-grained
+    # token against an arbitrary sha on a PR branch is not something this
+    # comment can verify by reading. If this input alone does not fix the
+    # check, that is the next thing to try: change `ref:` on the second
+    # checkout in review.yml to `refs/pull/${{ github.event.number }}/head`
+    # (or pass it through as a second input) instead of a bare sha.
+    with:
+      governance-ref: ${{ github.event.pull_request.head.sha }}
+    secrets:
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+      # The one case where the ambient token is enough: the repository being
+      # checked out IS the repository running the job. Every other caller needs
+      # a token that can see across, which is why the reusable workflow makes
+      # this a required secret rather than an optional one — a default that
+      # silently worked here and silently failed everywhere else is the defect
+      # that was already found and fixed once.
+      governance-token: ${{ secrets.GITHUB_TOKEN }}

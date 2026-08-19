@@ -3,9 +3,23 @@
     {
       "name": "install",
       "kind": "bootstrap",
-      "command": ["npm", "ci"],
-      "description": "Install dependencies exactly as the lockfile pins them.",
+      "command": ["npm", "install"],
+      "description": "Install dependencies and reconcile the lockfile with package.json. NOT `npm ci`, and the difference is load-bearing: bootstrap prepares a tree that is being changed, so a turn that adds a dependency must be able to record it. `npm ci` refuses a lockfile that does not match, which made taking any dependency at all impossible through the belt. CI keeps `npm ci` — see .github/workflows/verify.yml — so the lockfile is still authoritative wherever the verdict counts (ADR 011). The lockfile diff is the sensor here; it does not block, and a change that grows it must be accounted for in the reason given.",
       "timeoutMs": 600000
+    },
+    {
+      "name": "format",
+      "kind": "bootstrap",
+      "command": ["npm", "run", "format"],
+      "description": "Apply the repository's own formatting. Declared as bootstrap and ordered after install, because it runs prettier from node_modules and a tree that has not installed cannot format. It writes to the tree — that is the point, and it is why it is not a gate.",
+      "timeoutMs": 300000
+    },
+    {
+      "name": "build",
+      "kind": "bootstrap",
+      "command": ["npm", "run", "build"],
+      "description": "Emit dist/ from src/ using tsconfig.build.json. Bootstrap rather than gate for the same reason format is: it writes to the tree, and a gate whose verdict describes a tree it changed is not a verdict. Ordered after install because tsc comes from node_modules.",
+      "timeoutMs": 300000
     },
     {
       "name": "verify",
@@ -13,6 +27,21 @@
       "command": ["npm", "run", "verify"],
       "description": "The bar: typecheck, test, lint. One script, so the gate the belt runs and the gate CI runs cannot drift apart (S1).",
       "blocking": true,
+      "timeoutMs": 900000
+    },
+    {
+      "name": "cli",
+      "kind": "gate",
+      "command": ["node", "scripts/check-cli.mjs"],
+      "description": "Start the emitted binary and check it refuses an empty diff. The only check in this repository that runs the artifact rather than the source, and the only one that can catch the emitted files landing somewhere bin does not point. Costs nothing: an empty diff returns before any client is constructed.",
+      "blocking": true,
+      "timeoutMs": 120000
+    },
+    {
+      "name": "review",
+      "kind": "release",
+      "command": ["node", "scripts/review-head.mjs"],
+      "description": "Run the review panel against the HEAD commit. A release step rather than a gate because it costs money — one model call per lens — and a gate that bills on every verification is a gate someone turns off. Requires ANTHROPIC_API_KEY in the environment; without it the run reports which setting is missing and where to put it, and exits red without calling anything.",
       "timeoutMs": 900000
     }
   ]
