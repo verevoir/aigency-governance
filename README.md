@@ -80,15 +80,20 @@ failure that matters.
 ### On a fork's pull request
 
 Secrets are not passed to workflows triggered from a fork, so **both** arrive
-blank — and it is the governance token, not the key, that stops the run first.
-The checkout of this repository fails with `Repository not found` before the
-runner is ever built, so nothing reaches the code that would report a missing
-key.
+blank. The run fails at the very first step in the job — "Confirm the key is
+available before doing anything expensive" — which checks the key,
+unconditionally, before either checkout runs. Neither the governance-repo
+checkout nor the caller's own checkout is ever attempted.
 
 The outcome is right: the run is red, and your key is not spent reviewing a diff
-written by someone outside your repository. The message is not the one you would
-expect from the rest of this document — if you go looking in the log for
-`ANTHROPIC_API_KEY is not configured`, it will not be there.
+written by someone outside your repository. The message is not the one you
+would expect from the rest of this document, and it is not either of the two
+you might guess: it is not `Repository not found` (that checkout never runs),
+and it is not the Node-level `ANTHROPIC_API_KEY is not configured` report from
+`resolveSettings` (that code never runs either — the check is a shell
+condition inside the workflow itself). It is
+`ANTHROPIC_API_KEY is not available to this workflow.`, from the workflow
+step's own `::error` lines.
 
 ## Running it locally
 
@@ -106,9 +111,28 @@ of a review.
 Run `npm run build` after changing anything under `src/`. The `cli` gate covers
 less than its name suggests: it starts the emitted binary, so the CLI boundary
 and settings resolution genuinely are exercised — but it stops at the empty-diff
-guard. Everything downstream of that guard is invisible to it: `readers`,
-`load`, `panel`, `prompt`, `anthropic`, `parseReply` and `report`. A stale build
-of any of those passes.
+guard. Everything downstream of that guard is invisible to it: `load`, `panel`,
+`prompt`, `anthropic`, `parseReply` and `report`. `readers` is only partly
+covered — the gate's second scenario drives `keyFileReader()` through
+`review.ts`'s real wiring specifically to prove that one path exists, but the
+readers that fetch the lens set itself (`httpReader`, `fileReader`,
+`lensReaderFor`) are not reached by anything here. A stale build of any of the
+fully-uncovered modules passes.
+
+<!--
+  A recurring shape, worth being able to find again: prose in this repository
+  asserting something the code does not do, or no longer does, once the code
+  it described has moved on. Two instances lived in this very file until this
+  commit — the fork-PR failure sequence above, and this readers-coverage
+  claim. Two more lived elsewhere: a truncation-classification message that
+  named one specific cause for three different code paths, and this project's
+  own CLI gate once asserting a shebang check it never performed. All four
+  were fixed the same way — not by finding new logic, but by making an
+  existing sentence true, either by narrowing the claim or by making the code
+  do what the claim already said. The defects in this repository are rarely
+  in the logic. They are in the sentences describing the logic, once the
+  logic has changed and the sentence has not.
+-->
 
 ## Settings
 
