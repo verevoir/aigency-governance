@@ -45,6 +45,28 @@ export interface AnthropicConfig {
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
 
+// Measured, not assumed. The request built below never set `temperature` at
+// all until this line existed, which left the provider's own default in
+// effect — undocumented here and not pinned anywhere a reader could find it.
+// A fixed diff, one lens (failure-modes), the same prompt sent five times in
+// a row: PR #3's own review found a real, evidence-verified finding in one
+// run out of three earlier that same diff was reviewed end to end, and a
+// dedicated five-repeat measurement of that exact lens against that exact
+// diff came back five-for-five approved with no findings at all. Combined,
+// that is 1 rejection in 8 identical calls — a real disagreement, not a
+// fluke of a different input, because the diff and the prompt were
+// byte-identical every time (see PANEL_TEMPERATURE below for what setting
+// this to 0 does and, as importantly, does not claim to fix).
+//
+// Every response also carried a large `thinking` block nobody requested —
+// this file sends no `thinking` parameter at all, so the model is choosing
+// to reason at length on its own, and up to 14,019 of a given call's output
+// tokens were spent on that reasoning versus roughly ten on the actual
+// VERDICT/FINDING lines. That reasoning trace is itself sampled, which is a
+// second source of run-to-run variance independent of the final answer's own
+// sampling — pinning `temperature` narrows both, but does not remove either.
+const PANEL_TEMPERATURE = 0;
+
 /**
  * Remove anything secret from text that is about to be thrown, logged or
  * returned.
@@ -137,6 +159,16 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
     const body = JSON.stringify({
       model: config.model,
       max_tokens: config.maxTokens,
+      // Pinned, not left to the provider's default — see PANEL_TEMPERATURE's
+      // own comment for the measurement that motivated this and the honest
+      // limit of what it buys. Zero is the request asking the model to sample
+      // as little as it will allow, not a request for identical output: a
+      // provider is free to change what temperature 0 even means release to
+      // release, floating-point summation is not associative across
+      // parallelised hardware, and nothing here was measured AT this setting
+      // — it narrows the variance already measured at the default; it is not
+      // proven to remove it.
+      temperature: PANEL_TEMPERATURE,
       // The shared half, marked cacheable. This is the ordering contract from
       // `Prompt` made real: identical bytes for every lens, sent first, so a
       // five-lens panel pays for the diff once.

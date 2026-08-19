@@ -92,6 +92,7 @@ interface SystemBlock {
 interface RequestBody {
   readonly model: string;
   readonly max_tokens: number;
+  readonly temperature?: number;
   readonly system: readonly SystemBlock[];
   readonly messages: readonly { readonly role: string; readonly content: string }[];
 }
@@ -183,6 +184,17 @@ describe('the wire format', () => {
     const body = bodyOf(post);
     expect(body.model).toBe('claude-pinned-for-this-test');
     expect(body.max_tokens).toBe(1234);
+  });
+
+  // Pinned on measured evidence (see anthropic.ts's own comment): a fixed
+  // diff and a fixed lens, sent repeatedly at the provider's unpinned
+  // default, disagreed with itself. Zero is not a claim of determinism — it
+  // is the narrowest sampling setting the API accepts — and this test pins
+  // only that the request carries it, not that it works.
+  it('pins temperature to 0 rather than leaving the provider default in effect', async () => {
+    const post = replying('ok');
+    await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
+    expect(bodyOf(post).temperature).toBe(0);
   });
 
   it('posts to /v1/messages on the provider host by default', async () => {

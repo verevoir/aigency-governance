@@ -152,6 +152,35 @@ merge base — and five lenses reviewing nothing would each find nothing wrong.
 That is the most likely way this stops working without anybody noticing, so it
 is checked rather than trusted.
 
+## Run-to-run variance, measured rather than assumed
+
+The same commit, reviewed twice, is not guaranteed to produce the same
+verdict. This was measured directly rather than inferred from a red check
+someone couldn't explain: one lens, one fixed diff, the same prompt sent
+five times in a row with the request's `temperature` left at the provider's
+unpinned default came back approved all five times — and that same lens, on
+that same diff, had already produced a real, evidence-verified rejection
+once out of three end-to-end runs earlier that day. Combined: 1 disagreement
+in 8 identical calls.
+
+`temperature` is now pinned to 0 (see `src/review/anthropic.ts`) on the
+strength of that measurement. Be precise about what that buys: it narrows
+sampling, it does not remove it. Zero is not a promise of identical output
+run to run — a provider is free to define what temperature 0 even means from
+one release to the next, and every response measured above also carried a
+substantial, unrequested `thinking` block (up to 14,019 tokens of reasoning
+behind roughly ten tokens of actual `VERDICT`/`FINDING` text) whose own
+sampling is a second source of variance this setting narrows but does not
+eliminate.
+
+The practical consequence: a single **approved** result is evidence the
+panel did not find anything on that pass, not proof there is nothing to
+find. A single **rejected** result with a finding whose evidence verifies
+against the diff (see `verifyFindings.ts`) is real regardless of how many
+other passes would have missed it — the measured 1-in-8 disagreement above
+was a genuine finding, not noise, and a scheme that discarded it for being a
+minority report would have been wrong to.
+
 ## What this is not
 
 It is not a substitute for a human reviewer, and it does not merge anything. It
