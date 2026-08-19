@@ -396,7 +396,7 @@ describe('runReview, wiring the dependencies', () => {
 
     expect(fakes.calls.factory).toBe(1);
     expect(fakes.settingsSeen[0]).toEqual({
-      apiKey: 'sk-ant-test',
+      credential: { source: 'api-key', value: 'sk-ant-test' },
       model: DEFAULT_MODEL,
       maxTokens: DEFAULT_MAX_TOKENS,
       lensSource: DEFAULT_LENS_SOURCE,
@@ -448,5 +448,85 @@ describe('runReview, wiring the dependencies', () => {
 
     expect(fakes.settingsSeen[0]?.model).toBe('claude-haiku-3');
     expect(fakes.settingsSeen[0]?.maxTokens).toBe(12000);
+  });
+});
+
+// End to end, through the real settings resolution this file drives with a
+// real (if complete-by-construction) environment — not through a fake that
+// merely returns whatever a test wants it to. This is the composition's own
+// proof that a credential resolved by settings.ts actually reaches the
+// factory and the report, and that a local development run can never be
+// mistaken for a production one: see report.ts's own header for why that
+// distinction is the whole point of the line these tests check for.
+describe('runReview, choosing a credential', () => {
+  const OAUTH_TOKEN = 'oauth-THE-SUBSCRIPTION-SECRET-VALUE-DO-NOT-LOG';
+
+  it('resolves the OAuth credential and names it in the report, when only OAuth is set', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(
+      env({ ANTHROPIC_API_KEY: undefined, AIGENCY_REVIEW_OAUTH_TOKEN: OAUTH_TOKEN }),
+      SUBJECT,
+      fakes.deps,
+    );
+
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.report).toContain('via subscription OAuth');
+    expect(outcome.report).not.toContain('via API key');
+    expect(fakes.settingsSeen[0]?.credential).toEqual({
+      source: 'subscription-oauth',
+      value: OAUTH_TOKEN,
+    });
+  });
+
+  it('names the API key in the report when that is what resolved', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+
+    expect(outcome.report).toContain('via API key');
+    expect(outcome.report).not.toContain('via subscription OAuth');
+  });
+
+  // The deterministic precedence, proven end to end rather than only at the
+  // settings layer: with both genuinely present, the report — not just the
+  // internal SettingsResult — says OAuth, because that is what a caller
+  // actually reads.
+  it('prefers OAuth over the API key end to end, when both are present', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(
+      env({ AIGENCY_REVIEW_OAUTH_TOKEN: OAUTH_TOKEN }),
+      SUBJECT,
+      fakes.deps,
+    );
+
+    expect(outcome.report).toContain('via subscription OAuth');
+  });
+
+  // The leak test. Worth more than the tests above asserting the report was
+  // produced: this asserts the token is ABSENT from it. A report only ever
+  // carries `credentialSource` (report.ts's `ReportContext`), a label rather
+  // than the credential itself — this is the end-to-end proof that the value
+  // genuinely never rides along, not merely that the type system says it
+  // should not.
+  it('never puts the OAuth token itself anywhere in the report', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(
+      env({ ANTHROPIC_API_KEY: undefined, AIGENCY_REVIEW_OAUTH_TOKEN: OAUTH_TOKEN }),
+      SUBJECT,
+      fakes.deps,
+    );
+
+    expect(outcome.report).not.toContain(OAUTH_TOKEN);
+  });
+
+  it('never puts the API key itself anywhere in the report', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+
+    expect(outcome.report).not.toContain('sk-ant-test');
   });
 });

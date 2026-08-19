@@ -52,6 +52,8 @@ export {
   DEFAULT_MODEL,
   renderMissing,
   resolveSettings,
+  type Credential,
+  type CredentialSource,
   type KeyFileReader,
   type KeyFileResult,
   type MissingSetting,

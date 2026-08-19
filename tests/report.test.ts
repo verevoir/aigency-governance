@@ -4,7 +4,11 @@ import { exitCodeFor, renderReport } from '../src/review/report.js';
 import { aggregate, type LensResult } from '../src/review/verdict.js';
 
 const DECLARED = ['correctness', 'honesty', 'blast-radius'];
-const CONTEXT = { source: 'review/lenses.json', subject: 'PR #1: add a retry' };
+const CONTEXT = {
+  source: 'review/lenses.json',
+  subject: 'PR #1: add a retry',
+  credentialSource: 'api-key' as const,
+};
 
 function approved(lens: string): LensResult {
   return { lens, outcome: 'approved', findings: [] };
@@ -68,6 +72,26 @@ describe('renderReport', () => {
     const lines = report.split('\n');
     expect(lines[lines.length - 1]).toContain('Judged by 3 lens(es)');
     expect(lines[lines.length - 1]).toContain('review/lenses.json');
+  });
+
+  // Rule zero's provenance principle, applied to credentials: a local
+  // development run must never be mistaken for a production verdict. Both
+  // labels asserted, on the SAME last line the source and lens count already
+  // live on, so a reader who stops at that one line still gets the fact.
+  it('names the credential on the same last line, for an API key', () => {
+    const report = renderReport(aggregate(DECLARED, DECLARED.map(approved)), CONTEXT);
+    const lines = report.split('\n');
+    expect(lines[lines.length - 1]).toContain('via API key');
+  });
+
+  it('names the credential on the same last line, for a subscription OAuth token', () => {
+    const report = renderReport(aggregate(DECLARED, DECLARED.map(approved)), {
+      ...CONTEXT,
+      credentialSource: 'subscription-oauth',
+    });
+    const lines = report.split('\n');
+    expect(lines[lines.length - 1]).toContain('via subscription OAuth');
+    expect(lines[lines.length - 1]).not.toContain('via API key');
   });
 
   it('names the subject', () => {

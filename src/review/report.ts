@@ -11,6 +11,7 @@
 //   of findings invites exactly the reading where the findings get addressed
 //   and the gap does not.
 
+import type { CredentialSource } from './settings.js';
 import type { Finding, Outcome, Verdict } from './verdict.js';
 
 const HEADING: Record<Outcome, string> = {
@@ -19,11 +20,30 @@ const HEADING: Record<Outcome, string> = {
   could_not_run: 'Could not run',
 };
 
+// Named for a reader, not for the code that produced it. 'via API key' and
+// 'via subscription OAuth' are both true, complete sentences fragments once
+// appended after 'Judged by N lens(es) from `source`,' - see the attribution
+// line below. Never the credential's value: this map's domain is
+// CredentialSource, which is a KIND, not a Credential, which would also carry
+// the secret - the type itself is what makes a leak here unreachable rather
+// than merely avoided.
+const CREDENTIAL_LABEL: Record<CredentialSource, string> = {
+  'api-key': 'API key',
+  'subscription-oauth': 'subscription OAuth',
+};
+
 export interface ReportContext {
   /** Where the lens set was read from, so a reader knows whose bar this was. */
   readonly source: string;
   /** What was reviewed. */
   readonly subject: string;
+  /**
+   * Which credential judged this. Named so a local development run can never
+   * be mistaken for a production verdict, and so a CI-versus-local
+   * credential mismatch is visible in the report itself rather than assumed
+   * from wherever the run happened to be started. Costs one line.
+   */
+  readonly credentialSource: CredentialSource;
 }
 
 /**
@@ -95,8 +115,14 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
   }
 
   // Whose idea of correct, and how much of it ran. A reader who cannot tell
-  // which definition judged a change cannot tell whether the bar moved.
-  const attribution = `Judged by ${verdict.results.length} lens(es) from \`${context.source}\`.`;
+  // which definition judged a change cannot tell whether the bar moved. Which
+  // credential ran it is the same kind of fact, extended: a reader who cannot
+  // tell whether this was a paid, production run or a local subscription run
+  // cannot tell whether a clean verdict here means what a clean verdict on
+  // main means.
+  const attribution =
+    `Judged by ${verdict.results.length} lens(es) from \`${context.source}\`, ` +
+    `via ${CREDENTIAL_LABEL[context.credentialSource]}.`;
   lines.push('---', '', attribution);
 
   return lines.join('\n');

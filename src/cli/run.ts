@@ -155,7 +155,11 @@ export async function runReview(
 
   const run = await runPanel(loaded.set, subject, wired.review, wired.practices);
   return {
-    report: renderReport(run.verdict, { source: loaded.source, subject: subject.title }),
+    report: renderReport(run.verdict, {
+      source: loaded.source,
+      subject: subject.title,
+      credentialSource: settings.credential.source,
+    }),
     exitCode: exitCodeFor(run.verdict.outcome),
   };
 }

@@ -42,7 +42,7 @@ async function main(): Promise<number> {
       // `lensReaderFor`'s own doc comment for what that omission is worth.
       read: lensReaderFor(settings, fetch),
       review: anthropicReviewer(
-        { apiKey: settings.apiKey, model: settings.model, maxTokens: settings.maxTokens },
+        { credential: settings.credential, model: settings.model, maxTokens: settings.maxTokens },
         (url, init) => fetch(url, init),
       ),
     }),

@@ -21,14 +21,19 @@
 // keys below are deliberately not real ones, and if this ever starts needing
 // one, something has moved that should not have.
 //
-// Two scenarios, not one. The panel's first real review found that nothing
+// Three scenarios, not one. The panel's first real review found that nothing
 // in this repository actually proves `review.ts` WIRES `keyFileReader()`
 // into `runReview` — every unit test drives `resolveSettings` or `runReview`
 // directly with an injected fake, and none of them touch the process
 // boundary where that wiring either happens or doesn't. `review.ts` is
 // deliberately kept free of anything a unit test could exercise (see its own
 // header), so the only honest place to prove the wiring is here, running the
-// real compiled binary against a real file on disk.
+// real compiled binary against a real file on disk. The third scenario is
+// the same argument applied to the credential chain gaining a second
+// variable name (AIGENCY_REVIEW_OAUTH_TOKEN): every unit test for it drives
+// resolveSettings directly too, so nothing before this scenario proved the
+// real binary's environment reaches that name specifically, as opposed to a
+// fake reaching it in a test's own process.
 
 import { spawn } from 'node:child_process';
 // Imported, not assumed. The flat config declares no environment globals, and
@@ -155,6 +160,23 @@ try {
   await rm(keyDir, { recursive: true, force: true });
 }
 
+// Scenario 3: the second credential, resolved via its own environment
+// variable, with no ANTHROPIC_API_KEY present at all. Proves the same thing
+// scenario 1 proved for the API key — that the compiled binary's real
+// process.env, not a test's injected fake, is what resolveSettings actually
+// reads — for the variable name this story added.
+const viaOauth = await runEmptyDiff({
+  AIGENCY_REVIEW_OAUTH_TOKEN: 'not-a-real-token-and-must-never-need-to-be',
+});
+const oauthOut = checkRefused('AIGENCY_REVIEW_OAUTH_TOKEN', viaOauth);
+if (oauthOut.includes('ANTHROPIC_API_KEY')) {
+  problems.push(
+    '[AIGENCY_REVIEW_OAUTH_TOKEN] the report mentions ANTHROPIC_API_KEY as unconfigured — ' +
+      'the token in the environment was not found, so review.ts is not actually reaching ' +
+      'the OAuth branch of credential resolution',
+  );
+}
+
 if (problems.length > 0) {
   console.error(
     `The binary ran and did the wrong thing:\n${problems.map((p) => `  - ${p}`).join('\n')}`,
@@ -163,5 +185,6 @@ if (problems.length > 0) {
 }
 
 console.log(
-  `${BIN} started, resolved the key from both an env var and a file on disk, and refused an empty diff both times.`,
+  `${BIN} started, resolved a credential from an env var, a file on disk and a second env ` +
+    'var for the OAuth token, and refused an empty diff all three times.',
 );

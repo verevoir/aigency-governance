@@ -21,6 +21,8 @@ import { describe, expect, it } from 'vitest';
 
 import type {
   AnthropicConfig,
+  Credential,
+  CredentialSource,
   FetchLike,
   Finding,
   HttpPost,
@@ -75,6 +77,8 @@ export type PublishedTypes = [
   SettingsResult,
   ReviewDeps,
   ReviewOutcome,
+  Credential,
+  CredentialSource,
 ];
 
 // Type-only exports vanish at runtime, so this list is the VALUES the barrel
