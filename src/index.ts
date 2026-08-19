@@ -31,7 +31,7 @@ export {
   type Subject,
 } from './review/prompt.js';
 export { parseReply } from './review/parseReply.js';
-export { runPanel, type PanelRun, type Reviewer } from './review/panel.js';
+export { NoRoomToAnswerError, runPanel, type PanelRun, type Reviewer } from './review/panel.js';
 export { exitCodeFor, renderReport, type ReportContext } from './review/report.js';
 export {
   fileReader,
@@ -67,3 +67,4 @@ export {
 } from './cli/run.js';
 export { retrying, RetryPolicyError, type RetryPolicy, type Sleep } from './decorate/retrying.js';
 export { observing, type Clock, type Observation, type Recorder } from './decorate/observing.js';
+export { runReview, type ReviewDeps, type ReviewOutcome } from './cli/run.js';

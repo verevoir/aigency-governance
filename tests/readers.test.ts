@@ -15,8 +15,11 @@ import {
   fileReader,
   httpReader,
   keyFileReader,
+  lensFetchHeaders,
+  lensReaderFor,
   readerFor,
   type FetchLike,
+  type RawFetch,
 } from '../src/review/readers.js';
 
 type FetchResponse = Awaited<ReturnType<FetchLike>>;
@@ -263,5 +266,130 @@ describe('readerFor', () => {
     expect(result.kind).toBe('missing');
     if (result.kind === 'text') throw new Error('unreachable');
     expect(result.reason).toContain(source);
+  });
+});
+
+// The security property the README documents: the lens-set bearer token
+// never leaves the one host it exists for, no matter what
+// AIGENCY_REVIEW_LENSES was set to. A caller who points that variable at a
+// third party must get an anonymous fetch, not their token forwarded to a
+// stranger.
+describe('lensFetchHeaders', () => {
+  const TOKEN = 'gh-token-for-the-private-lens-repo';
+
+  it('attaches the token and the github accept header on the expected host', () => {
+    const headers = lensFetchHeaders(
+      'https://raw.githubusercontent.com/verevoir/aigency-governance/main/review/lenses.json',
+      TOKEN,
+    );
+    expect(headers).toEqual({
+      authorization: `Bearer ${TOKEN}`,
+      accept: 'application/vnd.github.raw',
+    });
+  });
+
+  // The discriminating case: a source on any other host gets no
+  // authorization header at all — asserted as absence, not as something else
+  // being present, because a redacted or substituted value sent to the wrong
+  // host is still a defect this must rule out.
+  it('sends no authorization header at all to a different host', () => {
+    const headers = lensFetchHeaders('https://evil.example/lenses.json', TOKEN);
+    expect('authorization' in headers).toBe(false);
+    expect(headers).toEqual({});
+  });
+
+  // A host that merely contains the expected one, rather than being it, must
+  // not pass — a startsWith or includes check would be fooled by exactly this.
+  it('sends no authorization header to a look-alike host', () => {
+    const headers = lensFetchHeaders('https://raw.githubusercontent.com.evil.example/x', TOKEN);
+    expect('authorization' in headers).toBe(false);
+  });
+
+  it('sends no authorization header when there is no token to send', () => {
+    const headers = lensFetchHeaders(
+      'https://raw.githubusercontent.com/verevoir/aigency-governance/main/review/lenses.json',
+      undefined,
+    );
+    expect(headers).toEqual({});
+  });
+
+  // A URL that cannot even be parsed is not one this can prove is safe to
+  // send a credential to, so it is treated the same as a mismatched host
+  // rather than throwing.
+  it('sends no authorization header for a URL that does not parse', () => {
+    const headers = lensFetchHeaders('not a url at all', TOKEN);
+    expect(headers).toEqual({});
+  });
+});
+
+// The wiring itself, not just the pure decision. A hand-written call site at
+// the process boundary, naming a URL and a token together itself, would have
+// nothing proving the arguments arrive in the right order — every test
+// driving `lensFetchHeaders` directly passes regardless of whether that call
+// site got it right. Driving `lensReaderFor` end to end, through a fake
+// two-argument fetch, proves the actual outgoing call carries — or omits —
+// the header, rather than only proving the header-computing function would be
+// right if called correctly.
+describe('lensReaderFor', () => {
+  const TOKEN = 'gh-token-for-the-private-lens-repo';
+  const EXPECTED_HOST_SOURCE =
+    'https://raw.githubusercontent.com/verevoir/aigency-governance/main/review/lenses.json';
+
+  interface RawCall {
+    readonly url: string;
+    readonly headers: Record<string, string>;
+  }
+
+  function fakeRawFetch(body: string): { readonly impl: RawFetch; readonly calls: RawCall[] } {
+    const calls: RawCall[] = [];
+    return {
+      calls,
+      impl: (url, init) => {
+        calls.push({ url, headers: init.headers });
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(body) });
+      },
+    };
+  }
+
+  it('sends the token to the expected host, through the actual call the reader makes', async () => {
+    const fetch = fakeRawFetch('lens set body');
+    const result = await lensReaderFor(
+      { lensSource: EXPECTED_HOST_SOURCE, lensToken: TOKEN },
+      fetch.impl,
+    )(EXPECTED_HOST_SOURCE);
+
+    expect(result).toEqual({ kind: 'text', text: 'lens set body' });
+    expect(fetch.calls).toEqual([
+      {
+        url: EXPECTED_HOST_SOURCE,
+        headers: { authorization: `Bearer ${TOKEN}`, accept: 'application/vnd.github.raw' },
+      },
+    ]);
+  });
+
+  // The discriminating case, driven end to end: a source on any other host
+  // reaches the actual outgoing fetch call with no authorization header at
+  // all — asserted on the call the fake recorded, not on the pure function.
+  it('sends no authorization header at all to a different host, through the actual call', async () => {
+    const source = 'https://evil.example/lenses.json';
+    const fetch = fakeRawFetch('whatever a stranger serves');
+
+    await lensReaderFor({ lensSource: source, lensToken: TOKEN }, fetch.impl)(source);
+
+    expect(fetch.calls).toHaveLength(1);
+    expect('authorization' in (fetch.calls[0]?.headers ?? {})).toBe(false);
+    expect(fetch.calls[0]?.headers).toEqual({});
+  });
+
+  it('reads from disk, never touching rawFetch at all, when the source is a path', async () => {
+    const fetch = fakeRawFetch('should never be served');
+
+    const result = await lensReaderFor(
+      { lensSource: PACKAGE_JSON, lensToken: TOKEN },
+      fetch.impl,
+    )(PACKAGE_JSON);
+
+    expect(fetch.calls).toEqual([]);
+    expect(result.kind).toBe('text');
   });
 });

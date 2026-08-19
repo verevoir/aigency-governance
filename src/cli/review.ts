@@ -11,7 +11,7 @@ import { stdin } from 'node:process';
 import process from 'node:process';
 
 import { anthropicReviewer } from '../review/anthropic.js';
-import { keyFileReader, readerFor } from '../review/readers.js';
+import { keyFileReader, lensReaderFor } from '../review/readers.js';
 import { runReview } from './run.js';
 
 async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
@@ -34,6 +34,13 @@ async function main(): Promise<number> {
     process.env,
     { title, description: '', diff },
     (settings) => ({
+      // `settings` is passed straight through to `lensReaderFor` (readers.ts)
+      // and nothing else: this file never itself writes an expression naming
+      // a URL and a token together, because a branch deciding whether a
+      // credential is safe to send belongs in a module a test can drive, not
+      // in the process boundary this file is meant to stay free of. See
+      // `lensReaderFor`'s own doc comment for what that omission is worth.
+      read: lensReaderFor(settings, fetch),
       review: anthropicReviewer(
         { apiKey: settings.apiKey, model: settings.model, maxTokens: settings.maxTokens },
         (url, init) => fetch(url, init),

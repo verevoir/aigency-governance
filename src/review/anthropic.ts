@@ -17,7 +17,7 @@
 // would be worse than none — it would look like accounting exists.
 
 import type { Prompt } from './prompt.js';
-import type { Reviewer } from './panel.js';
+import { NoRoomToAnswerError, type Reviewer } from './panel.js';
 
 /** A POST, shaped so the global `fetch` satisfies it without adaptation. */
 export type HttpPost = (
@@ -105,9 +105,18 @@ function textFrom(body: string): string {
     // fields that separate them were both already in the response.
     const kinds = (content as TextBlock[]).map((block) => block.type).join(', ');
     const stop = typeof document.stop_reason === 'string' ? document.stop_reason : 'absent';
-    throw new Error(
-      `response carried no text: ${String(content.length)} block(s) [${kinds}], stop_reason ${stop}`,
-    );
+    const message = `response carried no text: ${String(content.length)} block(s) [${kinds}], stop_reason ${stop}`;
+    // stop_reason max_tokens with zero text is a specific, recognisable fact:
+    // the entire output budget went to reasoning and nothing was left to
+    // answer with. That is not the provider being unreachable and not the
+    // model answering badly - it is the model being cut off before it could
+    // answer - and NoRoomToAnswerError says so precisely rather than arriving
+    // at the panel wearing the generic word "threw", which reads as a
+    // transport fault and sent an earlier investigation looking for one. Any
+    // other stop reason with no text (a bare tool_use block, an absent
+    // stop_reason) stays a plain Error: this class is reserved for the one
+    // case it is actually true of.
+    throw stop === 'max_tokens' ? new NoRoomToAnswerError(message) : new Error(message);
   }
   return text;
 }
@@ -188,7 +197,14 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
     try {
       return textFrom(raw);
     } catch (cause) {
-      throw new Error(redact((cause as Error).message, secrets));
+      const message = redact((cause as Error).message, secrets);
+      // Preserve the class through redaction rather than rewrap into a plain
+      // Error: a NoRoomToAnswerError that lost its type here would still say
+      // the right words but stop being distinguishable to anything reading
+      // the exception itself, only to something re-parsing the message.
+      throw cause instanceof NoRoomToAnswerError
+        ? new NoRoomToAnswerError(message)
+        : new Error(message);
     }
   };
 }

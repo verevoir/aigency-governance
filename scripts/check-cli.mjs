@@ -2,10 +2,19 @@
 //
 // A gate rather than a test, because what it checks cannot be checked
 // in-process: that `rootDir` put the emitted file where `bin` says it is,
-// that the shebang survived emit, and that node starts it. A sibling project
-// in this rebuild shipped a container that started a file it had never
-// emitted, and no unit test could have caught it — the failure was entirely
-// in where the bytes landed.
+// that the shebang line tsc emitted matches what it was given verbatim, and
+// that node starts the file. A sibling project in this rebuild shipped a
+// container that started a file it had never emitted, and no unit test could
+// have caught it — the failure was entirely in where the bytes landed.
+//
+// A review found this claimed more than it checked: the shebang line was
+// never read, only asserted about in prose. Reading it back and comparing it
+// exactly is cheap enough to do rather than to merely narrow the sentence —
+// see below, right after the existence check. What is still NOT checked, and
+// is not cheap enough to be worth adding here, stays named further down:
+// this runs `node <path>` rather than executing the file directly, so
+// whether the execute bit npm sets when it LINKS `bin` survives is unproven
+// by anything in this file.
 //
 // It costs nothing to run. An empty diff makes `runReview` return before the
 // deps factory is called, so no client is built and no request is made; the
@@ -27,12 +36,13 @@ import { spawn } from 'node:child_process';
 // plain .mjs `console` is genuinely undeclared. Same reason `process` is
 // imported below rather than reached for as a global.
 import console from 'node:console';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 
 const BIN = 'dist/cli/review.js';
+const EXPECTED_SHEBANG = '#!/usr/bin/env node';
 
 try {
   await access(BIN);
@@ -43,6 +53,23 @@ try {
       'tsconfig.build.json exists to prevent: with the root inferred rather ' +
       'than stated, tsc emits dist/src/... and every path in package.json is ' +
       'wrong. Run `npm run build` and check what appeared under dist/.',
+  );
+  process.exit(1);
+}
+
+// The check the header now actually makes true: read the first line back
+// and compare it exactly, rather than only asserting in prose that tsc
+// preserved it. Cheap — one file read, no process, no exec bit needed — and
+// it is the literal claim a reader of the header would expect this gate to
+// have made.
+const firstLine = (await readFile(BIN, 'utf8')).split('\n')[0];
+if (firstLine !== EXPECTED_SHEBANG) {
+  console.error(
+    `${BIN}'s first line is ${JSON.stringify(firstLine)}, expected exactly ` +
+      `${JSON.stringify(EXPECTED_SHEBANG)}.\n\n` +
+      'The shebang did not survive emit — `node <path>` still starts the file ' +
+      'regardless, which is exactly why this is checked separately rather than ' +
+      'inferred from the process below starting successfully.',
   );
   process.exit(1);
 }
