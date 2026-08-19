@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LensSet } from '../src/review/lensSet.js';
-import { runPanel, type Reviewer } from '../src/review/panel.js';
+import { NoRoomToAnswerError, runPanel, type Reviewer } from '../src/review/panel.js';
 import type { Subject } from '../src/review/prompt.js';
 import {
   APPROVED_WORD,
@@ -114,6 +114,25 @@ describe('runPanel', () => {
   // No disable directive here: that rule is type-checked and this config loads
   // only `tseslint.configs.recommended`, so it is not enabled — and a disable
   // for a rule that is not on is itself a comment claiming something untrue.
+  it('reports a NoRoomToAnswerError with its own reason, not "reviewer threw"', async () => {
+    const run = await runPanel(SET, SUBJECT, (lensId) =>
+      lensId === 'honesty'
+        ? Promise.reject(
+            new NoRoomToAnswerError(
+              'response carried no text: 1 block(s) [thinking], stop_reason max_tokens',
+            ),
+          )
+        : Promise.resolve(REJECT),
+    );
+    expect(run.verdict.unran).toEqual([
+      {
+        lens: 'honesty',
+        reason:
+          'no room to answer: response carried no text: 1 block(s) [thinking], stop_reason max_tokens',
+      },
+    ]);
+  });
+
   it('does not lose a rejection that was not an Error', async () => {
     const run = await runPanel(SET, SUBJECT, (lensId) =>
       lensId === 'correctness' ? Promise.reject('rate limited') : Promise.resolve(APPROVE),

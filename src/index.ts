@@ -36,6 +36,7 @@ export {
 export { parseReply } from './review/parseReply.js';
 export { findingIsVerified, verifyLensResult } from './review/verifyFindings.js';
 export { runPanel, type PanelRun, type Reviewer } from './review/panel.js';
+export { NoRoomToAnswerError, runPanel, type PanelRun, type Reviewer } from './review/panel.js';
 export { exitCodeFor, renderReport, type ReportContext } from './review/report.js';
 export {
   fileReader,
@@ -69,5 +70,3 @@ export {
   type ReviewDeps,
   type ReviewOutcome,
 } from './cli/run.js';
-export { retrying, RetryPolicyError, type RetryPolicy, type Sleep } from './decorate/retrying.js';
-export { observing, type Clock, type Observation, type Recorder } from './decorate/observing.js';

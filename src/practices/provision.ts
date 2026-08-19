@@ -1,5 +1,20 @@
 // Provision: read-only access to the bar a change is judged against.
 //
+// A REVIEW FOUND THIS FILE BUNDLED INTO THE WRONG PULL REQUEST, AND IT WAS
+// RIGHT. This module and enact.ts landed in the same branch as S24a (the
+// review panel) and S25 (the rubric-loading fix), even though nothing in
+// either of those imports from here and nothing here imports the panel
+// code added alongside it — two unrelated stories, one diff. Not fixed by
+// re-cutting the branch: by the time the finding surfaced, this branch had
+// already been through several rounds of real review work and sat three
+// branches deep in a stack nothing else in it had moved. Unpicking it into
+// its own pull request at that point would have traded an understood,
+// recorded problem for the risk of a fresh one, to buy a cleaner git
+// history nobody downstream needed. SO: next story, don't do this again —
+// a story that is not the one a branch is named for belongs in its own
+// pull request, cut from the moment it is understood to be separate rather
+// than after the fact.
+//
 // S15 asks for three outcomes, and it is tempting to build two: "here are
 // practices" and "here is nothing, or something is wrong". That collapse is
 // exactly the failure this file exists to avoid. `nothing-matched` and

@@ -73,6 +73,22 @@
 // collected on the way through `resolveSettings` is ever silently dropped,
 // whichever `kind` ends up describing the run, and `renderMissing` renders
 // both when both are true.
+//
+// THE SAME GAP EXISTED FOR BLANK, NARROWER THAN UNREADABLE. A key file that
+// IS there and reads back empty is deliberately collapsed into `absent`
+// inside `keyFromPath` itself, so resolution keeps trying the next source —
+// matching what `present()` already does for the environment. But collapsing
+// the CONTROL FLOW and collapsing the INFORMATION are two different choices,
+// and an earlier version of this file made only the first one: if every
+// source ultimately came up empty, the report said only "ANTHROPIC_API_KEY is
+// not configured", with no trace that the specific, user-configured
+// `ANTHROPIC_API_KEY_FILE` path was found and was blank — the exact collapse
+// of "you never set this up" and "you set this up and it produced nothing"
+// that `unreadable` was already kept apart from `missing` to prevent, simply
+// missed for `blank` the first time. `resolveApiKey` still falls through past
+// a blank file exactly as before; it now also remembers every path that was
+// blank along the way, and `resolveSettings` names each one in `problems`
+// whenever the key still could not be resolved from any source.
 
 /** A setting the run needs and does not have. */
 export interface MissingSetting {
@@ -149,7 +165,25 @@ export type KeyFileReader = (path: string) => Promise<KeyFileResult>;
  * differs is a bar that moved without anyone deciding to move it.
  */
 export const DEFAULT_MODEL = 'claude-sonnet-5';
-export const DEFAULT_MAX_TOKENS = 4096;
+
+/**
+ * Raised from 4096 on direct evidence, not a guess: PR #1's own review
+ * check - this repository judging its own definition, in CI, with no
+ * override anywhere in that path - hit this ceiling on a 324,603-character
+ * diff, and four of five lenses returned a `thinking` block and no text at
+ * all, stop_reason max_tokens. The budget was spent entirely on reasoning
+ * before a single word of the verdict could be written. 65536 is the number
+ * already proven, elsewhere in this project, to complete cleanly on diffs
+ * of comparable size - not a doubling picked because doubling is the
+ * obvious move.
+ *
+ * If a lens still hits this ceiling at 65536, raising it again treats a
+ * symptom. The more honest question at that point is very likely the
+ * subject, not the budget: this repository's own review check, unlike
+ * review-branch.mjs's standalone size cap, has no limit at all on how large
+ * a diff it will attempt.
+ */
+export const DEFAULT_MAX_TOKENS = 65536;
 
 /**
  * One home, read live — the same shape the practices already have. A
@@ -178,12 +212,14 @@ function defaultKeyFilePath(env: Record<string, string | undefined>): string | u
 type ApiKeyResolution =
   | { readonly kind: 'found'; readonly value: string }
   | { readonly kind: 'absent' }
+  | { readonly kind: 'blank'; readonly path: string }
   | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string };
 
-/** Reads and classifies one candidate file: found, contributing nothing
- * (absent, or present but blank — the same collapse `present()` already
- * makes for the environment variable, and for the same reason), or a real
- * problem the reader could not get past. */
+/** Reads and classifies one candidate file: genuinely absent, found, or
+ * present but blank — kept apart from absent, unlike a step further up this
+ * chain, because the caller needs to know WHICH path was blank if nothing
+ * else ends up supplying a key — or a real problem the reader could not get
+ * past. */
 async function keyFromPath(path: string, readKeyFile: KeyFileReader): Promise<ApiKeyResolution> {
   const found = await readKeyFile(path);
   if (found.kind === 'absent') {
@@ -197,39 +233,61 @@ async function keyFromPath(path: string, readKeyFile: KeyFileReader): Promise<Ap
   // place a file's content is treated differently from the environment's, and
   // the difference is deliberate — see the file header.
   const trimmed = found.text.trim();
-  return trimmed === '' ? { kind: 'absent' } : { kind: 'found', value: trimmed };
+  return trimmed === '' ? { kind: 'blank', path } : { kind: 'found', value: trimmed };
+}
+
+/**
+ * What resolving the API key found: the final resolution the three sources
+ * settle on, plus every path along the way that was found but blank —
+ * remembered even though a blank source does not stop the search, because it
+ * must not be lost if the search comes up empty regardless. See the file
+ * header.
+ */
+interface ApiKeyLookup {
+  readonly resolution: ApiKeyResolution;
+  readonly blankPaths: readonly string[];
 }
 
 /** The three sources, tried in order, stopping at the first that supplies a
- * value or hits a real problem. `absent` — from any source — is what lets
- * resolution try the next one; `unreadable` is not, because it is a problem
- * with a source someone already configured. */
+ * value or hits a real problem. `absent` and `blank` — from any source — are
+ * both what let resolution try the next one; `unreadable` is not, because it
+ * is a problem with a source someone already configured. A `blank` result is
+ * never returned as the final resolution — it always either yields to the
+ * next source or, having none left, becomes `absent` — but every path found
+ * blank along the way is collected in `blankPaths` regardless of how the
+ * search ends. */
 async function resolveApiKey(
   env: Record<string, string | undefined>,
   readKeyFile: KeyFileReader,
-): Promise<ApiKeyResolution> {
+): Promise<ApiKeyLookup> {
   const fromEnv = present(env['ANTHROPIC_API_KEY']);
   if (fromEnv !== undefined) {
-    return { kind: 'found', value: fromEnv };
+    return { resolution: { kind: 'found', value: fromEnv }, blankPaths: [] };
   }
+
+  const blankPaths: string[] = [];
 
   const explicitPath = present(env['ANTHROPIC_API_KEY_FILE']);
   if (explicitPath !== undefined) {
     const result = await keyFromPath(explicitPath, readKeyFile);
-    if (result.kind !== 'absent') {
-      return result;
+    if (result.kind === 'blank') {
+      blankPaths.push(result.path);
+    } else if (result.kind !== 'absent') {
+      return { resolution: result, blankPaths };
     }
   }
 
   const defaultPath = defaultKeyFilePath(env);
   if (defaultPath !== undefined) {
     const result = await keyFromPath(defaultPath, readKeyFile);
-    if (result.kind !== 'absent') {
-      return result;
+    if (result.kind === 'blank') {
+      blankPaths.push(result.path);
+    } else if (result.kind !== 'absent') {
+      return { resolution: result, blankPaths };
     }
   }
 
-  return { kind: 'absent' };
+  return { resolution: { kind: 'absent' }, blankPaths };
 }
 
 /**
@@ -255,7 +313,8 @@ export async function resolveSettings(
   const missing: MissingSetting[] = [];
   const problems: string[] = [];
 
-  const apiKeyResolution = await resolveApiKey(env, readKeyFile);
+  const apiKeyLookup = await resolveApiKey(env, readKeyFile);
+  const apiKeyResolution = apiKeyLookup.resolution;
   let apiKey: string | undefined;
   if (apiKeyResolution.kind === 'found') {
     apiKey = apiKeyResolution.value;
@@ -263,6 +322,9 @@ export async function resolveSettings(
     problems.push(
       `the API key file at ${apiKeyResolution.path} could not be read: ` + apiKeyResolution.reason,
     );
+    for (const path of apiKeyLookup.blankPaths) {
+      problems.push(`the API key file at ${path} was found but was blank`);
+    }
   } else {
     missing.push({
       name: 'ANTHROPIC_API_KEY',
@@ -274,6 +336,9 @@ export async function resolveSettings(
         '$XDG_CONFIG_HOME/verevoir/anthropic.key (~/.config/verevoir/anthropic.key ' +
         'when XDG_CONFIG_HOME is unset).',
     });
+    for (const path of apiKeyLookup.blankPaths) {
+      problems.push(`the API key file at ${path} was found but was blank`);
+    }
   }
 
   const lensSource = present(env['AIGENCY_REVIEW_LENSES']) ?? DEFAULT_LENS_SOURCE;

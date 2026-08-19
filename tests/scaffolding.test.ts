@@ -21,7 +21,6 @@ import { describe, expect, it } from 'vitest';
 
 import type {
   AnthropicConfig,
-  Clock,
   FetchLike,
   Finding,
   FindingEvidence,
@@ -35,20 +34,16 @@ import type {
   LensSet,
   LoadResult,
   MissingSetting,
-  Observation,
   Outcome,
   PanelRun,
   Prompt,
   ReadResult,
-  Recorder,
   ReportContext,
-  RetryPolicy,
   ReviewDeps,
   Reviewer,
   ReviewOutcome,
   ReviewSettings,
   SettingsResult,
-  Sleep,
   SourceReader,
   Subject,
   Verdict,
@@ -86,11 +81,6 @@ export type PublishedTypes = [
   LensAccess,
   LensReaderFactory,
   ReviewOutcome,
-  RetryPolicy,
-  Sleep,
-  Clock,
-  Observation,
-  Recorder,
 ];
 
 // Type-only exports vanish at runtime, so this list is the VALUES the barrel
@@ -106,11 +96,11 @@ const PUBLISHED = [
   'FINDING_MARKER',
   'LensSetError',
   'NO_PRACTICES_NOTICE',
+  'NoRoomToAnswerError',
   'PanelMismatchError',
   'REASON_MARKER',
   'REJECTED_WORD',
   'REPLY_CONTRACT',
-  'RetryPolicyError',
   'SUPPORTED_VERSION',
   'VERDICT_MARKER',
   'aggregate',
@@ -122,7 +112,6 @@ const PUBLISHED = [
   'httpReader',
   'keyFileReader',
   'loadLensSet',
-  'observing',
   'parseLensSet',
   'parseReply',
   'readerFor',
@@ -131,7 +120,6 @@ const PUBLISHED = [
   'renderPrompt',
   'renderReport',
   'resolveSettings',
-  'retrying',
   'runPanel',
   'runReview',
   'verifyLensResult',
@@ -149,5 +137,6 @@ describe('the published surface', () => {
     expect(surface.SUPPORTED_VERSION).toBe(1);
     expect(new surface.LensSetError('x')).toBeInstanceOf(Error);
     expect(new surface.PanelMismatchError('x')).toBeInstanceOf(Error);
+    expect(new surface.NoRoomToAnswerError('x')).toBeInstanceOf(Error);
   });
 });

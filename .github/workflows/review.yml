@@ -60,6 +60,40 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Runs before anything else in this job: no checkout, no npm ci, no
+      # build. A review found that a missing ANTHROPIC_API_KEY was only ever
+      # discovered after all of that had already run, behind the exact
+      # "review did not approve" ambiguity the Checks-tab step below exists
+      # to prevent — a red check with no legible reason short of reading the
+      # Actions log directly. This step costs nothing (no network, no
+      # process) and fails immediately, naming the missing secret, rather
+      # than letting the absence surface three steps and several minutes
+      # later as a generic build-and-review failure.
+      #
+      # Checks only anthropic-api-key, deliberately. `required: true` on a
+      # workflow_call secret enforces that the CALLER's `secrets:` mapping
+      # names the key — it does not enforce that the value is non-blank, and
+      # `${{ secrets.X }}` for a secret that does not exist on the calling
+      # repository evaluates to the empty string, which satisfies
+      # `required: true` and arrives here blank. governance-token's failure
+      # mode is already distinct and already legible on its own — a missing
+      # or wrong value fails the very next step, the governance checkout,
+      # with GitHub's own "Repository not found", which is unambiguous
+      # without needing this pattern repeated for it.
+      - name: Confirm the key is available before doing anything expensive
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::error title=Review::ANTHROPIC_API_KEY is not available to this workflow." 
+            echo "::error title=Review::Check that the repository (or organisation) running" 
+            echo "::error title=Review::this job has an ANTHROPIC_API_KEY secret configured," 
+            echo "::error title=Review::and that whatever calls this reusable workflow passes" 
+            echo "::error title=Review::it under secrets.anthropic-api-key rather than" 
+            echo "::error title=Review::secrets: inherit or nothing at all." 
+            exit 1
+          fi
+
       # fetch-depth: 0 is load-bearing, and the single most likely line here
       # to be "tidied up" by someone speeding up CI.
       #
@@ -244,5 +278,14 @@ jobs:
       - name: Take the verdict
         if: (success() || failure()) && steps.review.outcome == 'failure'
         run: |
-          echo "::error title=Review::The review did not approve. The report is in the job summary."
+          # The report's own heading already carries the distinction this
+          # annotation must not throw away (see report.ts: every report opens
+          # with "## Review: Approved", "## Review: Rejected" or
+          # "## Review: Could not run"). Grepped rather than re-derived, so
+          # this step can never say something the report itself does not.
+          if [ -f "${RUNNER_TEMP}/review.md" ] && grep -q '^## Review: Could not run' "${RUNNER_TEMP}/review.md"; then
+            echo "::error title=Review::The review could not run — nothing was reviewed. The report says why, in the job summary."
+          else
+            echo "::error title=Review::The review did not approve. The report is in the job summary."
+          fi
           exit 1

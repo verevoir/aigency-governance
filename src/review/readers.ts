@@ -90,6 +90,95 @@ export function readerFor(source: string, fetchImpl: FetchLike): SourceReader {
 }
 
 /**
+ * The only host the lens-set bearer token is ever sent to. It is the host
+ * `DEFAULT_LENS_SOURCE` (settings.ts) points at, and the README documents the
+ * property this constant enforces: "Any other `https://` source is fetched
+ * anonymously and no token is sent."
+ */
+export const LENS_TOKEN_HOST = 'raw.githubusercontent.com';
+
+/**
+ * Headers for one lens-set fetch.
+ *
+ * `AIGENCY_REVIEW_LENSES` is caller-controlled — a repository sets it to
+ * point at wherever it keeps its lens set. The bearer token is read access to
+ * a private repository, and attaching it unconditionally to whatever host
+ * that variable resolves to would hand it to any third party a caller (or an
+ * attacker with write access to that variable) pointed the source at. So the
+ * token — and the GitHub-specific `accept` header that only means anything to
+ * that one host — is attached only when `url`'s host is exactly
+ * `LENS_TOKEN_HOST`. Every other host, including a URL that fails to parse at
+ * all, is fetched with no headers whatsoever: not a redacted token, not a
+ * different one, nothing that identifies the caller.
+ */
+export function lensFetchHeaders(url: string, token: string | undefined): Record<string, string> {
+  if (token === undefined) {
+    return {};
+  }
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return {};
+  }
+  if (host !== LENS_TOKEN_HOST) {
+    return {};
+  }
+  return { authorization: `Bearer ${token}`, accept: 'application/vnd.github.raw' };
+}
+
+/**
+ * What building the lens-set reader needs — nothing else. Lives here, next
+ * to the reader that consumes it, rather than at the process boundary that
+ * merely holds one: see `lensReaderFor` below for why.
+ */
+export interface LensAccess {
+  readonly lensSource: string;
+  /** Absent, not present-and-undefined, when the source needs no token. */
+  readonly lensToken?: string;
+}
+
+/**
+ * The two-argument shape of the global `fetch` — what `lensReaderFor` needs
+ * in order to attach headers per request, since `FetchLike` above takes only
+ * a URL.
+ */
+export type RawFetch = (
+  url: string,
+  init: { readonly headers: Record<string, string> },
+) => Promise<{ readonly ok: boolean; readonly status: number; text(): Promise<string> }>;
+
+/**
+ * Builds the reader used to fetch a lens set, with the bearer-token
+ * restriction wired in as part of construction.
+ *
+ * This exists because an earlier version left the assembly to the caller:
+ * the CLI boundary (src/cli/review.ts) would call `lensFetchHeaders(url,
+ * access.lensToken)` itself, inside a closure it wrote out by hand — naming
+ * `url` and `access.lensToken` together in the one file this codebase
+ * deliberately keeps untestable (see that file's own header: everything
+ * that decides anything lives elsewhere, and only the process boundary
+ * lives there). A caller writing that closure by hand has nothing proving
+ * it passed the right values in the right order: `access.lensSource` where
+ * `url` belonged, or the two arguments swapped, would type-check and pass
+ * every test that only drives `lensFetchHeaders` directly.
+ *
+ * The fix is not a test for that call site — it is removing the call
+ * site's ability to make the mistake. The boundary calls
+ * `lensReaderFor(access, fetch)`: it passes `access` through whole and
+ * never writes an expression naming a URL and a token together itself. The
+ * wiring this function does — calling `lensFetchHeaders` with the URL
+ * actually being fetched — is proven here, end to end, by driving
+ * `lensReaderFor` itself with a fake `rawFetch` and reading what arrived,
+ * rather than only exercising `lensFetchHeaders` in isolation.
+ */
+export function lensReaderFor(access: LensAccess, rawFetch: RawFetch): SourceReader {
+  return readerFor(access.lensSource, (url) =>
+    rawFetch(url, { headers: lensFetchHeaders(url, access.lensToken) }),
+  );
+}
+
+/**
  * Reads a candidate API key file from disk. `ENOENT` and `ENOTDIR` are
  * `absent` — a file nobody wrote is the ordinary shape of a source with
  * nothing to offer, and `resolveSettings` moves on to the next one.
