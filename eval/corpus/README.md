@@ -69,8 +69,8 @@ This is worth stating plainly rather than leaving implicit: a lens is scored by 
 it finds when shown a diff. A `truth.json` entry attached to a case with no
 `diff.txt` cannot be shown to anything, so it cannot be caught, so it cannot count
 toward a configuration's recall — it exists in this corpus as a documented, honestly-
-sourced label, not as a scoring input. The corpus's *case count* and its *usable-for-
-scoring size* are different numbers, and the gap between them is exactly the set of
+sourced label, not as a scoring input. The corpus's _case count_ and its _usable-for-
+scoring size_ are different numbers, and the gap between them is exactly the set of
 cases with `diff.txt` absent. Whoever runs the eval against this corpus should count
 only the diff-bearing cases as contributing to recall.
 
@@ -82,7 +82,7 @@ wrong conclusion about it. Those are directly comparable to what this corpus's
 recall/false-positive metrics measure a review configuration on.
 
 **`guard-destroyed-report-false-positive` and `guard-quoted-verdict-not-asserted` are
-a different class.** Both are false positives from a *guard* — the harness-level
+a different class.** Both are false positives from a _guard_ — the harness-level
 mechanism that checks a turn's own report for an unearned verdict claim — not from a
 review lens looking at a diff. Neither has a diff, by nature: the thing that went
 wrong was not a judgement about source code, it was a judgement about a report's own
