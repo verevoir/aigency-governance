@@ -68,6 +68,13 @@
       "timeoutMs": 1800000
     },
     {
+      "name": "make-corpus-diffs",
+      "kind": "release",
+      "command": ["node", "eval/corpus/make-diffs.mjs"],
+      "description": "For every eval/corpus/<case> directory carrying a refs.json naming a real base/head branch, runs `git diff --merge-base origin/<base> origin/<head>` (scoped to refs.json's paths, when named) and writes the result to that case's own diff.txt. A case with no refs.json is left alone. Same reasoning and pattern as _diag-precompute-diff.mjs: no verb on the belt reports a diff, so this shells out to git directly, unrestricted, because it needs PATH to spawn git.",
+      "timeoutMs": 60000
+    },
+    {
       "name": "eval-sweep",
       "kind": "release",
       "command": ["node", "eval/sweep.mjs"],

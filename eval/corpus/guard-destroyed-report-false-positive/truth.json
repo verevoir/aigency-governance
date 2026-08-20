@@ -1,0 +1,13 @@
+[
+  {
+    "lens": "verdict-claims-guard",
+    "summary": "Some guard, on an earlier harness turn, destroyed that turn's entire report — discarding all of it, not just the disputed part — on what recon/harness-findings-overnight.md's own H60 heading names outright as a false positive: the report itself was not actually the problem the guard took it for.",
+    "evidence": {
+      "kind": "quote",
+      "text": "## H60. A guard destroyed a whole turn's report on a false positive."
+    },
+    "detail": "Body text was not retrieved in this pass — see subject.md for why (a 59.9KB file, no windowed-read tool available, and a deliberate refusal to grep-hunt for unpredictable body wording). The verdict below rests on the heading's own framing, confirmed verbatim via grep, not on the incident's full specifics.",
+    "verdict": "not-a-defect",
+    "provenance": "reported-not-rechecked — heading text confirmed real and verbatim via grep against recon/harness-findings-overnight.md (line 99) in this pass; the incident's own specifics (which guard, which turn, what exactly was flagged) were not independently retrieved or re-checked in this pass, since the file is too large for a whole read and no tool here supports a windowed read of it."
+  }
+]

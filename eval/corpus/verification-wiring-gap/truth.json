@@ -1,0 +1,12 @@
+[
+  {
+    "lens": "verification",
+    "summary": "The security-critical change is the call site in `review.ts` that now supplies `url` and `access.lensToken` to `lensFetchHeaders`, but every new test (in `tests/readers.test.ts`) exercises `lensFetchHeaders` in isolation as a pure function — none verifies that `review.ts` actually wires the real fetch `url` and `access.lensToken` into it, so a regression at the call site (e.g. passing `access.lensSource` instead of `url`, or swapping the arguments) would not be caught by any test in this diff.",
+    "evidence": {
+      "kind": "quote",
+      "text": "fetch(url, { headers: lensFetchHeaders(url, access.lensToken) }),"
+    },
+    "verdict": "defect",
+    "provenance": "verified-directly — finding text copied verbatim from .review-report/head.json (real review output, read directly in this pass). Fix independently confirmed in this pass by reading current main: src/review/readers.ts's lensReaderFor (line 175) composes the fetch call and lensFetchHeaders together, its doc comment names this exact finding, tests/readers.test.ts has a dedicated end-to-end 'lensReaderFor' describe block (from line 333) proving access.lensSource and access.lensToken are wired correctly together, and src/cli/review.ts (line 43) wires the composed lensReaderFor, not the bare lensFetchHeaders, into runReview. Not established: the exact commit head.json reviewed, or the gap between that commit and the fix — no tool in this pass maps the report file to a git sha."
+  }
+]

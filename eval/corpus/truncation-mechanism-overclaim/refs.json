@@ -1,0 +1,6 @@
+{
+  "base": "s24/verify-findings",
+  "head": "s23/api-and-bar",
+  "paths": ["src/review/verifyFindings.ts", "tests/verifyFindings.test.ts"],
+  "note": "These are the real branch names named by the report file itself (branch__s24-verify-findings__s23-api-and-bar.json/.md, whose own .md header reads 's23/api-and-bar vs s24/verify-findings') and confirmed still present on origin in this pass. paths is scoped to the file checkQuote actually lives in (src/review/verifyFindings.ts, confirmed present on s23/api-and-bar via grep in this pass) plus its test file, rather than the whole PR's diff."
+}

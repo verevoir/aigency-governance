@@ -1,0 +1,10 @@
+[
+  {
+    "lens": "verdict-claims-guard",
+    "summary": "The verdict-claims guard rejected an entire turn's report because the turn quoted a gate-verdict token verbatim while reading design/tuned-constants-and-eval-harness.md aloud — reproducing a verdict string already present in that document's own text — and the guard treated the quotation as if the turn were itself asserting that verdict. The turn had made no such claim; it was citing, not concluding.",
+    "evidence": null,
+    "detail": "The literal quoted token and the exact guard message are not available to this pass — the guard's own rejection is what destroyed the report that would contain them. Reported per the operator's direct, firsthand account of the incident, given in this conversation.",
+    "verdict": "not-a-defect",
+    "provenance": "verified-directly (on the operator's account) — reported directly and firsthand by the operator in this conversation, with the specific mechanism (a gate-verdict token quoted, not asserted, while reading a named design document aloud) named precisely; the operator explicitly authorized this provenance level while asking it be attributed to their own account rather than to independent verification by this pass, since the original destroyed report is not recoverable to re-check directly."
+  }
+]
