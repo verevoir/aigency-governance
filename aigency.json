@@ -94,8 +94,16 @@
     {
       "name": "eval-sweep-stage2",
       "kind": "release",
-      "command": ["node", "eval/sweep.mjs", "--spend", "--widths", "8,21"],
-      "description": "SPENDS MONEY — the authorised stage 2 sweep: widths 8 and 21, both corpus arms (full and half), default 3 repeats — 522 model calls. Run eval-sweep-probe first; do not run this if the probe came back red. Named for exactly what it spends on, same reasoning as eval-sweep-smoke: a declared release step's arguments are fixed at declaration time, so a scoped real run needs its own name rather than a flag on the argument-free, dry-run-by-default eval-sweep command that would otherwise get run by mistake. Aborts on its own after 20 consecutive HTTP 429 responses (MAX_CONSECUTIVE_429 in eval/sweep.mjs) rather than grinding through the whole sweep into a wall; a resulting partial results file can be finished later with --resume.",
+      "command": [
+        "node",
+        "eval/sweep.mjs",
+        "--spend",
+        "--widths",
+        "8,21",
+        "--practice-counts",
+        "full"
+      ],
+      "description": "SPENDS MONEY — the authorised stage 2 BRACKETING sweep: widths 8 and 21, full corpus only, default 3 repeats — 261 model calls (halved from 522 by dropping the half-corpus arm, which answers a scaling question this run is not asking). Each configuration comes back classified good/bad/indistinguishable per eval/criterion.mjs's stated rule, not ranked — a bracket (\"10 good, 15 bad\") is the goal, not a precise optimum. Run eval-sweep-probe first; do not run this if the probe came back red. Named for exactly what it spends on, same reasoning as eval-sweep-smoke: a declared release step's arguments are fixed at declaration time, so a scoped real run needs its own name rather than a flag on the argument-free, dry-run-by-default eval-sweep command that would otherwise get run by mistake. Aborts on its own after 20 consecutive HTTP 429 responses (MAX_CONSECUTIVE_429 in eval/sweep.mjs) rather than grinding through the whole sweep into a wall; a resulting partial results file can be finished later with --resume.",
       "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
       "timeoutMs": 10800000
     }

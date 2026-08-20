@@ -31,6 +31,54 @@ recording (it explains a stability number, it flags a width that has
 collapsed into one redundant read), but optimising _for_ it selects for
 exactly the failure mode the sweep exists to detect.
 
+## The bracket, not a leaderboard
+
+The harness does not need a precise optimum — "10 good, 15 bad" is enough to
+act on; nobody needs "12 is the limit". Each width gets a **verdict**, not a
+rank: `good`, `bad`, or `indistinguishable`, computed by
+`eval/criterion.mjs`'s `classifyWidth`. Widths are never ranked against each
+other on small differences — three repeats over three cases cannot separate
+neighbours, and presenting an ordering would imply a precision the data does
+not have.
+
+**The rule, stated once, named, with its reasoning attached** (the full text
+is `CRITERION_RULE` in `eval/criterion.mjs`, and is also printed into every
+results file's `criterion` field, so a reader never has to leave `results/`
+to know what "good" meant that run):
+
+> A width is **good** if, across the repeats, every `defect` corpus entry is
+> caught (named by a finding) in at least `CATCH_THRESHOLD_OF_3` (2) of 3
+> repeats, **and** every `not-a-defect` entry is correctly rejected (never
+> named by any finding) in at least `REJECT_THRESHOLD_OF_3` (2) of 3
+> repeats. It is **bad** if any entry fails its own threshold with enough
+> usable data to judge. It is **indistinguishable** if fewer than
+> `MIN_USABLE_REPEATS_OF_3` (2) of 3 repeats produced a usable score for
+> some entry and nothing failed outright — too few usable calls to judge,
+> not a verdict about quality.
+
+Correct rejection is not optional and is not special-cased to one entry: a
+configuration that catches every real defect by flagging _everything_,
+including `eval/corpus/practices-not-dead-code`'s correct-rejection entry
+(named as `CORRECT_REJECTION_CASE_ID`, the corpus's sharpest such case), is
+not good, and a rule scored on recall alone would rank exactly that
+configuration top. Every `not-a-defect` entry in the corpus is held to the
+same bar, not only the named one.
+
+**Binary chop is only valid between a known-good point and a known-bad
+point — never assumed from zero.** The design record
+(`design/tuned-constants-and-eval-harness.md`) predicts an **interior
+optimum**: total attention is per-lens breadth plus combiner breadth, so
+quality is expected to rise and then fall as width grows, rather than
+increasing monotonically. A narrow fan and a wide fan are predicted to fail
+for **opposite reasons** — per-lens crowding at the narrow end, combiner
+overload at the wide end — so nothing may be assumed to improve
+monotonically from either end. If width 8 comes back `good` and width 21
+comes back `bad`, that bracket is already actionable on its own; narrowing
+it further with a chop to 13 or 14 is optional, not required. If both come
+back `good`, the informative direction to test next is _up_, not between
+them — the interior-optimum prediction says the failure, if there is one, is
+farther out.
+
 Failures are recorded as data, not dropped: a lens that comes back
 `could_not_run` — a truncated `max_tokens` reply, a transport failure that
 outlasted retry, an unparseable reply — is a real property of that
@@ -57,8 +105,11 @@ To actually spend money:
 node eval/sweep.mjs --spend
 ```
 
-This requires `CLAUDE_CODE_OAUTH_TOKEN` (or an `ANTHROPIC_API_KEY` — see
-`src/review/settings.ts` for the full resolution order) and needs the
+This requires `ANTHROPIC_API_KEY` (env, `ANTHROPIC_API_KEY_FILE`, or the
+default key file at `$XDG_CONFIG_HOME/verevoir/anthropic.key` — see
+`src/review/settings.ts` for the full resolution order; `resolveSettings`
+does not read `CLAUDE_CODE_OAUTH_TOKEN` at all under its current contract)
+and needs the
 practice corpus, at least one labelled corpus case, `eval/partition.mjs` and
 `eval/score.mjs` all present; missing any of them refuses to spend and says
 which one.
@@ -238,3 +289,57 @@ ladder — `{"type":"rate_limit_error","message":"Error"}` with a real
 still up. Per the operator's own decision rule (probe 429s → stop, do not
 spend on the sweep), **stage 2 was not run.** `eval-sweep-stage2` remains
 declared and ready to run once `eval-sweep-probe` comes back green.
+
+**2026-08-20 — confirmed defect (now fixed): `sweep.mjs` assumed a
+`settings.credential.{source,value}` shape that `resolveSettings` does not
+produce.** Surfaced by running `eval-sweep-probe` for real against a
+freshly-rebuilt `dist/`: `TypeError: Cannot read properties of undefined
+(reading 'source')`. `ReviewSettings` (`src/review/settings.ts`) is `{
+apiKey, model, maxTokens, lensSource, lensToken? }` — no `credential` field
+— and `src/review/anthropic.ts`, the real production request path, sends
+`'x-api-key': config.apiKey` unconditionally; there is no OAuth-bearer
+alternative anywhere in this codebase's actual request-building code. This
+file's `headersFor`/credential logic was copied from
+`scripts/_diag-hypothesis.mjs`, which made the identical assumption and
+would crash identically if run against the current, freshly-built `dist/`.
+This session's _earlier_ stage-2 probe calls (the ones reporting
+`credential=subscription-oauth` and a real HTTP 429, above) ran against a
+`dist/` that had not yet been rebuilt from the currently-committed
+`src/review/settings.ts` — rebuilding it (via the repository's own `build`
+bootstrap step) surfaced the mismatch immediately as a crash rather than
+silently sending whatever header the stale assumption produced. **Fixed**:
+`headersFor` now sends `'x-api-key': settings.apiKey` unconditionally,
+matching `anthropic.ts` exactly, and `aigency.json`'s `eval-sweep*` commands
+now declare `ANTHROPIC_API_KEY`, `ANTHROPIC_API_KEY_FILE`,
+`XDG_CONFIG_HOME` and `HOME` — the variables `resolveSettings` actually
+reads — in place of `CLAUDE_CODE_OAUTH_TOKEN`, which it does not read at
+all. A lesson for this harness generally: a shared, production settings
+module can change contract out from under a script that imports it, and the
+only way this was caught was running the real thing against a freshly built
+`dist/`, not by reading the source in isolation.
+
+**2026-08-20 — confirmed defect: the real corpus `truth.json` files do not
+match `score.mjs`'s matcher contract, and it crashes on any non-empty
+findings array.** Found while building the bracket criterion above, and
+verified with a temporary, non-committed vitest case (not left in the tree)
+rather than asserted from reading alone: `eval/score.mjs`'s default matcher
+(`mentionsTarget`) requires each truth entry's `target` field; every entry
+in all three of `eval/corpus/{dead-decorators,practices-not-dead-code,
+readme-drift}/truth.json`, as committed, carries only `lens`, `summary`,
+`evidence`, `verdict`, `provenance` — **no `id`, no `target`**. Calling
+`score()` with a non-empty findings array against any of the three throws
+`Cannot read properties of undefined (reading 'toLowerCase')`, confirmed for
+all three cases. `sweep.mjs` already catches this (`score: { error: ... }`
+per repeat, never an uncaught crash), so a real run would not itself abort —
+but every repeat where a lens actually raised a finding would score as
+unusable, and `classifyWidth`'s `MIN_USABLE_REPEATS_OF_3` would read most
+real configurations as `indistinguishable` rather than `good` or `bad`,
+regardless of what the panel actually said. **A real spend right now would
+mostly measure this bug, not fan width.** This is a defect in the corpus
+data / `score.mjs` contract, both owned by a sibling track, not something
+fixed in this change — flagging it here rather than either spending past it
+silently or patching sibling-owned matching logic without their sign-off.
+Until it is fixed (either the corpus's truth entries gain `id`/`target`, or
+`score.mjs`'s matcher is given a fallback for entries that carry `evidence`
+instead), a real `eval-sweep-stage2` run is not recommended even once the
+quota recovers.
