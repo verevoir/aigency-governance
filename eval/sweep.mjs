@@ -399,21 +399,37 @@ async function loadOptionalModule(relPath, exportName) {
 }
 
 /**
- * `full` is the whole corpus. `half` is a deterministic prefix slice of it —
- * not a random sample, and not a "representative" hand pick — because the
- * whole point of the practiceCount axis is that the SAME slice is used every
- * time this runs, so a difference between runs is a difference in the
- * measurement, not in which half happened to be drawn. Documented here
- * because it is a real modelling choice a reader of results.json needs to
- * know: the first half of `practices.json`'s declared order, not a random
- * or stratified half.
+ * The corpus carries `appliesTo === "process"` practices alongside
+ * `appliesTo === "diff"` ones — the former govern the harness/belt itself,
+ * not an arbitrary product diff (see eval/practices/README.md, "A third
+ * axis"). A lens holding a product diff has nothing to check a `process`
+ * practice against, so it is filtered out here, before either practiceCount
+ * mode is applied, rather than left in to silently occupy a lens slot at
+ * wide widths. `practicesResult.count` (recorded separately in provenance)
+ * is the RAW total before this filter — 90 as of this corpus; this
+ * function's output, 60, is what a lens actually sees.
+ */
+function diffApplicablePractices(all) {
+  return all.filter((p) => p.appliesTo === 'diff');
+}
+
+/**
+ * `full` is the whole diff-applicable corpus. `half` is a deterministic
+ * prefix slice of it — not a random sample, and not a "representative" hand
+ * pick — because the whole point of the practiceCount axis is that the SAME
+ * slice is used every time this runs, so a difference between runs is a
+ * difference in the measurement, not in which half happened to be drawn.
+ * Documented here because it is a real modelling choice a reader of
+ * results.json needs to know: the first half of the diff-applicable
+ * practices' declared order, not a random or stratified half.
  */
 function selectPractices(all, mode) {
+  const applicable = diffApplicablePractices(all);
   if (mode === 'full') {
-    return all;
+    return applicable;
   }
   if (mode === 'half') {
-    return all.slice(0, Math.ceil(all.length / 2));
+    return applicable.slice(0, Math.ceil(applicable.length / 2));
   }
   throw new Error(`unknown practiceCount mode: ${JSON.stringify(mode)}`);
 }
@@ -860,9 +876,13 @@ function printDryRunReport(ctx) {
   console.log('');
 
   console.log('Inputs:');
+  const diffApplicableCount = practicesResult.found
+    ? diffApplicablePractices(practicesResult.practices).length
+    : null;
   console.log(
     practicesResult.found
-      ? `  practices: FOUND at ${practicesResult.path} (${practicesResult.count} practices)`
+      ? `  practices: FOUND at ${practicesResult.path} (${practicesResult.count} available, ` +
+          `${diffApplicableCount} diff-applicable — filter: appliesTo === "diff")`
       : `  practices: MISSING at ${practicesResult.path} — ${practicesResult.reason}`,
   );
   console.log(
@@ -1380,7 +1400,12 @@ async function main() {
       credentialSources,
       repeats,
       axes: { widths, practiceCounts },
-      practiceCorpus: { path: practicesFile, totalCount: practicesResult.count },
+      practiceCorpus: {
+        path: practicesFile,
+        totalCount: practicesResult.count,
+        diffApplicableCount: diffApplicablePractices(practicesResult.practices).length,
+        filterApplied: "appliesTo === 'diff'",
+      },
       corpus: {
         dir: corpusDir,
         caseCount: subjects.length,
