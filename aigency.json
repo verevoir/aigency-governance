@@ -78,7 +78,7 @@
     {
       "name": "eval-sweep-smoke",
       "kind": "release",
-      "command": ["node", "eval/sweep.mjs", "--spend", "--widths", "1,3"],
+      "command": ["node", "eval/sweep.mjs", "--spend", "--widths", "1,3", "--credential", "oauth"],
       "description": "SPENDS MONEY — a scoped smoke run of eval-sweep at --widths 1,3 only (72 calls), never the full default sweep. Exists because a declared release step's arguments are fixed at declaration time (nothing calling this step can pass extra argv through), so a first, deliberately small real run needs its own name rather than a flag on the everyday command. The general-purpose `eval-sweep` step stays argument-free and dry-run by default on purpose — a command that spends whenever anyone runs it is exactly the shape of thing that gets run by mistake. Run this once the transport is trusted at this scale; widen the swept axes only by editing this step's baked-in --widths or by running eval/sweep.mjs directly with --spend and explicit flags.",
       "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
       "timeoutMs": 3600000

@@ -142,6 +142,7 @@ const VALUE_FLAGS = new Set([
   'practices-file',
   'corpus-dir',
   'results-dir',
+  'credential',
   'resume',
 ]);
 
@@ -174,6 +175,12 @@ function applyOption(options, key, value) {
       break;
     case 'results-dir':
       options.resultsDir = value;
+      break;
+    case 'credential':
+      if (value !== 'oauth' && value !== 'api-key') {
+        throw new Error(`--credential must be "oauth" or "api-key", got ${JSON.stringify(value)}`);
+      }
+      options.credential = value;
       break;
     case 'resume':
       options.resume = value;
@@ -239,6 +246,7 @@ function printHelp() {
       '  --corpus-dir PATH        Override eval/corpus.',
       '  --results-dir PATH       Override eval/results.',
       '  --probe                  Make exactly ONE model call and report success/429/transport-failure. Requires --spend.',
+      '  --credential=oauth|api-key  Required with --spend. Refuses before any model call unless this matches the credential actually eligible to serve one (observed the same way --probe reports it) — naming both what was asked for and what is available rather than guessing.',
       `  --resume PATH            Continue an aborted/partial --spend run from its results file; adopts that file's own axes and --repeats, and does not re-spend on configurations it already completed.`,
       '  --help                   This message.',
       '',
@@ -528,6 +536,29 @@ function printCredentialSources(credentialSources) {
   console.log(
     `  CLAUDE_CODE_OAUTH_TOKEN present: ${String(credentialSources.claudeCodeOauthTokenEnvPresent)}`,
   );
+}
+
+/**
+ * Which credential is actually eligible to serve a call TODAY, given what
+ * `describeCredentialSources` observed — decided the same way
+ * src/review/settings.ts's own resolution chain would decide, without
+ * calling into that file (it remains the subject of the still-open
+ * s26/subscription-oauth-locally routing question).
+ *
+ * This branch's settings.ts, as committed, reads only the ANTHROPIC_API_KEY
+ * chain — no CLAUDE_CODE_OAUTH_TOKEN resolution exists here at all — so
+ * this returns 'api-key' or null, never 'oauth', regardless of whether
+ * CLAUDE_CODE_OAUTH_TOKEN is present in the environment. That is not an
+ * oversight: it is what makes --credential=oauth refuse honestly today
+ * instead of silently billing the API key while claiming to have used the
+ * subscription path.
+ */
+function credentialActuallyEligible(sources) {
+  const apiKeyEligible =
+    sources.anthropicApiKeyEnvPresent ||
+    (sources.anthropicApiKeyFileEnvPresent && sources.anthropicApiKeyFileExists === true) ||
+    sources.conventionalKeyFileExists === true;
+  return apiKeyEligible ? 'api-key' : null;
 }
 
 async function readGitSha(repoRoot) {
@@ -967,6 +998,35 @@ async function main() {
   let repeats = options.repeats ?? DEFAULT_REPEATS;
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   const spend = options.spend === true;
+
+  // The guard: no default that guesses. A --spend run must name which
+  // credential it is authorised to bill, and this refuses before a single
+  // model call if that name does not match what is actually eligible to
+  // serve one — "resolveSettings found something" is not the operator
+  // choosing which credential pays for it.
+  if (spend) {
+    if (options.credential === undefined) {
+      console.error(
+        'Refusing to --spend without --credential=oauth|api-key: a run that spends money ' +
+          'must say which credential it is authorised to bill, not accept whatever ' +
+          'resolveSettings happens to find. Pass --credential=oauth or --credential=api-key.',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const observedSources = await describeCredentialSources(process.env);
+    const eligible = credentialActuallyEligible(observedSources);
+    if (eligible !== options.credential) {
+      console.error(
+        `Refusing to --spend: --credential=${options.credential} was requested, but the ` +
+          `credential actually eligible to serve a call today is ${eligible ?? 'none observed'}. ` +
+          'Asked for vs. available, named plainly rather than guessed:',
+      );
+      printCredentialSources(observedSources);
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   const practicesFile =
     options.practicesFile ?? join(REPO_ROOT, 'eval', 'practices', 'practices.json');
