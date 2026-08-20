@@ -343,3 +343,40 @@ Until it is fixed (either the corpus's truth entries gain `id`/`target`, or
 `score.mjs`'s matcher is given a fallback for entries that carry `evidence`
 instead), a real `eval-sweep-stage2` run is not recommended even once the
 quota recovers.
+
+**2026-08-20 — OAuth-credentialed probe, one real call, still HTTP 429.**
+With `dist/` rebuilt from the ported `src/review/settings.ts` (see the
+credential-shape entry above) and `--credential oauth` supplied, a real
+probe call ran and reported `credential=subscription-oauth` in its own
+output — the first call this harness made that is _verified_, not assumed,
+to have gone over the subscription-OAuth path. Result: six retries on the
+existing 15/30/45/60/75s backoff ladder, ~229s total, HTTP 429 throughout
+with `{"type":"rate_limit_error","message":"Error"}` and a real
+`request_id` each time. This was a single call, so concurrency was not a
+factor at all. **Conclusion: the subscription quota, not the harness, is
+the current binding constraint on running this eval.** No stage-2 spend was
+attempted, per the standing rule (probe fails → stop).
+
+**2026-08-20 — two traps found getting to that verified probe, recorded so
+the next person doesn't spend the same time on them:**
+
+1. `eval-sweep-probe`'s declared command predated the `--spend` credential
+   guard (added in a later turn) and carried no `--credential` flag at all.
+   The guard refuses any `--spend` with no `--credential` given, so the
+   step was refusing _unconditionally_, before attempting any call,
+   regardless of what was actually eligible — a red result that looked like
+   the quota wall but was actually a stale declaration. Fixed by declaring
+   `--credential oauth` explicitly on the step, matching
+   `eval-sweep-smoke`/`eval-sweep-stage2`.
+2. **Green gates do not imply a current `dist/`.** `run_gates` never
+   rebuilds `dist/`; only `prepare_repository`'s `build` bootstrap step
+   does, and this file imports compiled `dist/review/*`, not `src/`. A
+   `--spend` run against a stale `dist/` measures old compiled behaviour
+   while its results file records the _current_ branch's sha — false
+   provenance, discovered here as a `TypeError` when `dist/` still
+   predated the OAuth port. `sweep.mjs` now refuses `--spend` (and
+   `--probe --spend`) outright if any file under `src/` is newer than the
+   oldest file under `dist/`, naming the mtime finding and the remedy
+   (`prepare_repository`, or the `build` step) rather than running against
+   an unknown build — see `checkBuildFreshness` and the `buildFreshness`
+   field now recorded in every results file's provenance.

@@ -59,7 +59,7 @@
 // Those files may not exist yet — every reference to them below is
 // defensive: absence is reported, never a crash.
 
-import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
@@ -622,6 +622,97 @@ async function readGitSha(repoRoot) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Build freshness: `run_gates` does not rebuild `dist/` -- only the `build`
+// bootstrap step (via `prepare_repository`) does -- and this file imports
+// from `dist/review/*`, not `src/` (see the header comment above). A
+// --spend run against a stale `dist/` would write a results file recording
+// this branch's sha while the behaviour it measured came from older
+// compiled code: false provenance, at up to hundreds of calls' expense --
+// exactly the failure this harness exists to prevent. Comparing mtimes is a
+// HEURISTIC, not a proof -- a touched-but-unchanged file, or clock skew
+// between filesystem writes, can fool it in either direction -- but it is
+// far better than the nothing that caught this the first two times today.
+// ---------------------------------------------------------------------------
+
+async function newestMtimeUnder(dir) {
+  let newest = null;
+  async function walk(d) {
+    let entries;
+    try {
+      entries = await readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(d, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (entry.isFile()) {
+        const st = await stat(full);
+        if (newest === null || st.mtimeMs > newest) {
+          newest = st.mtimeMs;
+        }
+      }
+    }
+  }
+  await walk(dir);
+  return newest;
+}
+
+async function oldestMtimeUnder(dir) {
+  let oldest = null;
+  async function walk(d) {
+    let entries;
+    try {
+      entries = await readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(d, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (entry.isFile()) {
+        const st = await stat(full);
+        if (oldest === null || st.mtimeMs < oldest) {
+          oldest = st.mtimeMs;
+        }
+      }
+    }
+  }
+  await walk(dir);
+  return oldest;
+}
+
+async function checkBuildFreshness(repoRoot) {
+  const srcDir = join(repoRoot, 'src');
+  const distDir = join(repoRoot, 'dist');
+  const newestSrc = await newestMtimeUnder(srcDir);
+  const oldestDist = await oldestMtimeUnder(distDir);
+  if (newestSrc === null) {
+    return { checked: false, fresh: null, reason: `no files found under ${srcDir}` };
+  }
+  if (oldestDist === null) {
+    return {
+      checked: true,
+      fresh: false,
+      reason: `dist/ has no files at ${distDir} -- it has never been built`,
+    };
+  }
+  const stale = newestSrc > oldestDist;
+  return {
+    checked: true,
+    fresh: !stale,
+    newestSrcMtime: new Date(newestSrc).toISOString(),
+    oldestDistMtime: new Date(oldestDist).toISOString(),
+    reason: stale
+      ? `src/ has a file newer (${new Date(newestSrc).toISOString()}) than dist/'s oldest ` +
+        `file (${new Date(oldestDist).toISOString()}) -- dist/ looks stale`
+      : null,
+  };
+}
+
 // Concurrency-capped pool. `limit` workers pull from a shared index, so at
 // most `limit` calls are ever in flight regardless of how many
 // configurations, cases and repeats the plan holds — the fix for
@@ -984,6 +1075,16 @@ async function runProbe({ spend, practicesResult, partitionModule, subjects }) {
     return;
   }
 
+  const freshness = await checkBuildFreshness(REPO_ROOT);
+  if (freshness.checked && !freshness.fresh) {
+    console.error(
+      `Cannot probe: dist/ looks stale -- ${freshness.reason}. Run \`prepare_repository\` ` +
+        `(or the \`build\` bootstrap step) to rebuild dist/ from the current src/ before probing.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const settingsResult = await resolveSettings(process.env, keyFileReader());
   if (settingsResult.kind === 'incomplete') {
     console.error(renderMissing(settingsResult.missing, settingsResult.problems));
@@ -1232,6 +1333,18 @@ async function main() {
     return;
   }
 
+  const buildFreshness = await checkBuildFreshness(REPO_ROOT);
+  if (buildFreshness.checked && !buildFreshness.fresh) {
+    console.error(
+      `Cannot spend: dist/ looks stale -- ${buildFreshness.reason}. A --spend run against a ` +
+        `stale dist/ would record this branch's sha in the results file while the behaviour ` +
+        `it measured came from older compiled code. Run \`prepare_repository\` (or the ` +
+        `\`build\` bootstrap step) to rebuild dist/ from the current src/, then retry.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const settingsResult = await resolveSettings(process.env, keyFileReader());
   if (settingsResult.kind === 'incomplete') {
     console.error(renderMissing(settingsResult.missing, settingsResult.problems));
@@ -1429,6 +1542,7 @@ async function main() {
         correctRejectionCaseId: CORRECT_REJECTION_CASE_ID,
         rule: CRITERION_RULE,
       },
+      buildFreshness,
       resumedFrom: options.resume ?? null,
       abortReason,
       partial,
