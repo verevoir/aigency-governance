@@ -74,6 +74,14 @@
       "description": "Sweeps review fan width — how many lenses a panel is split into — against the practice corpus, at full and half corpus size, to find where recall, confirmed false positives and run-to-run stability trade off against cost, and whether the optimum moves with corpus size. Defaults to a dry run that calls no model and prints exactly what a real sweep would cost before anything is charged; `--spend` is required to actually spend, and every call across the whole sweep is capped at a shared concurrency limit (default 4) — the fix for the 429 storm `_diag-hypothesis` produced firing all its calls at once. A kept, committed, re-runnable measurement, not a diagnostic thrown away after use; see eval/README.md.",
       "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
       "timeoutMs": 3600000
+    },
+    {
+      "name": "eval-sweep-smoke",
+      "kind": "release",
+      "command": ["node", "eval/sweep.mjs", "--spend", "--widths", "1,3"],
+      "description": "SPENDS MONEY — a scoped smoke run of eval-sweep at --widths 1,3 only (72 calls), never the full default sweep. Exists because a declared release step's arguments are fixed at declaration time (nothing calling this step can pass extra argv through), so a first, deliberately small real run needs its own name rather than a flag on the everyday command. The general-purpose `eval-sweep` step stays argument-free and dry-run by default on purpose — a command that spends whenever anyone runs it is exactly the shape of thing that gets run by mistake. Run this once the transport is trusted at this scale; widen the swept axes only by editing this step's baked-in --widths or by running eval/sweep.mjs directly with --spend and explicit flags.",
+      "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
+      "timeoutMs": 3600000
     }
   ]
 }

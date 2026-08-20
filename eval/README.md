@@ -149,3 +149,41 @@ and practice-set sizes, and the **full generated `LensSet`** for each
 configuration — not just its width, but the actual lenses `partition.mjs`
 produced, so a later reader can see exactly what each lens's mandate was
 without re-running the partition.
+
+**The file is written incrementally, not once at the end.** A `--spend` run
+persists after every configuration completes — every call belonging to that
+`(width, practiceCount)` scored and folded in — rather than assembling the
+whole document only once every call in the sweep has resolved. It always
+carries `partial` (`true` until the last planned configuration lands),
+`configurationsCompleted` and `configurationsPlanned`, so a run that crashes
+or is interrupted partway through leaves an honest, readable record of
+whatever it actually finished, instead of losing everything collected up to
+that point. This exists because the harness's own first real run did exactly
+that — see Measurements below — and the fix is the same discipline
+`lensSet.ts` already applies to its own output: an elision announces itself.
+
+## Measurements
+
+**2026-08-20 — first real spend, 0 of 72 calls succeeded.** `eval-sweep-smoke`
+(`--spend --widths 1,3`, concurrency 4, model `claude-sonnet-5`, credential
+`subscription-oauth`) ran for 49 minutes and every one of its 72 calls
+returned **HTTP 429** at every attempt of the retry ladder — the run was then
+killed outright by a bare `fetch()` throw the harness did not yet catch (see
+the fix above and in `callOnce`). **$0 billed**: no call ever reached
+`response.ok`, so no usage was ever reported to bill against. No scoring
+data exists for this run and no results file was produced (the incremental
+persistence described above did not exist yet at the time of this run).
+
+This **falsifies the concurrency hypothesis**, not confirms it. The
+predecessor to this harness, `_diag-hypothesis.mjs`, fired all 10 of its
+calls simultaneously and got ten-for-ten HTTP 429s; that failure was
+attributed to firing everything at once, and this harness's concurrency cap
+(default 4) was built specifically to fix it. At a cap of 4, over a sustained
+49-minute window, the wall did not clear — every attempt at every backoff
+interval (15s/30s/45s/60s/75s) still came back 429, which reads as a quota
+exhausted for the credential over that whole window rather than a burst
+limiter that a lower concurrency would satisfy. The harness has **not yet
+produced a fan-width number** — recall, confirmed false positives,
+run-to-run stability and cost all remain unmeasured. Quota is not something
+this file can fix; the next real run is a decision for whoever holds the
+credential, not a retry loop.

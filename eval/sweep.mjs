@@ -42,6 +42,20 @@ import { aggregate } from '../dist/review/verdict.js';
 import { resolveSettings, renderMissing } from '../dist/review/settings.js';
 import { keyFileReader } from '../dist/review/readers.js';
 
+// resolveSettings requires AIGENCY_REVIEW_LENSES_TOKEN whenever
+// AIGENCY_REVIEW_LENSES resolves to its default (a private-repo HTTPS URL) -
+// correct for the production review path, which fetches a LensSet over HTTP.
+// This file never does: every LensSet it uses comes from partition.mjs
+// against eval/practices/practices.json, and settings.lensSource /
+// settings.lensToken are read by nothing below. Pointing at a local file
+// (which needs no token) clears the requirement without changing what this
+// file actually uses settings for - the same workaround _diag-hypothesis.mjs
+// used for the identical reason. Only applied if the caller has not already
+// set the variable themselves.
+if (process.env.AIGENCY_REVIEW_LENSES === undefined) {
+  process.env.AIGENCY_REVIEW_LENSES = './review/lenses.json';
+}
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 
@@ -404,7 +418,12 @@ async function readGitSha(repoRoot) {
 // ten HTTP 429s.
 // ---------------------------------------------------------------------------
 
-async function runPool(items, limit, worker) {
+// `onItemDone`, when given, fires synchronously as each individual call
+// resolves — before the whole pool has finished — so a caller can persist
+// progress incrementally rather than only after every call in the sweep is
+// done. Optional and additive: a caller that only wants the final array is
+// unaffected.
+async function runPool(items, limit, worker, onItemDone) {
   const results = new Array(items.length);
   let next = 0;
   async function runner() {
@@ -414,7 +433,11 @@ async function runPool(items, limit, worker) {
       if (i >= items.length) {
         return;
       }
-      results[i] = await worker(items[i], i);
+      const result = await worker(items[i], i);
+      results[i] = result;
+      if (onItemDone) {
+        onItemDone(items[i], result, i);
+      }
     }
   }
   const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, () =>
@@ -457,16 +480,50 @@ async function callOnce(lens, subject, settings) {
   for (;;) {
     attempts += 1;
     const started = Date.now();
-    response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'anthropic-version': '2023-06-01',
-        ...headersFor(settings.credential),
-      },
-      body,
-    });
-    rawText = await response.text();
+    // A transport-level exception — no response arrived at all — is a
+    // different fact from an HTTP 429: a 429 means the server answered and
+    // said "not now"; this means the request never completed. Collapsing
+    // the two into one reason would send whoever reads it looking for the
+    // wrong fix — the same distinction panel.ts keeps between
+    // NoRoomToAnswerError and an ordinary reviewer throw ("no room to
+    // answer" vs "reviewer threw"), and the same split readers.ts's
+    // httpReader keeps between "fetch failed" and "body unreadable". Caught
+    // here so a network failure is data — a `could_not_run` result carrying
+    // its reason, counted per configuration — never an uncaught throw that
+    // discards the rest of the sweep, which is exactly what happened the
+    // first time this file ran for real.
+    try {
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          ...headersFor(settings.credential),
+        },
+        body,
+      });
+    } catch (cause) {
+      return {
+        lens: lens.id,
+        outcome: 'could_not_run',
+        findings: [],
+        reason: `transport failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        elapsedMs: Date.now() - started,
+        attempts,
+      };
+    }
+    try {
+      rawText = await response.text();
+    } catch (cause) {
+      return {
+        lens: lens.id,
+        outcome: 'could_not_run',
+        findings: [],
+        reason: `response unreadable: ${cause instanceof Error ? cause.message : String(cause)}`,
+        elapsedMs: Date.now() - started,
+        attempts,
+      };
+    }
     elapsedMs = Date.now() - started;
     if (response.status !== 429 || attempts >= MAX_ATTEMPTS) {
       break;
@@ -783,32 +840,29 @@ async function main() {
     }
   }
 
-  console.log(`Dispatching ${calls.length} model call(s) at concurrency ${concurrency}...`);
-  const raw = await runPool(calls, concurrency, (call) =>
-    callOnce(call.lens, call.subject, settings),
-  );
-
-  // Regroup flat call results back into configuration → case → repeat.
+  // Every call is tracked back to its configuration as it completes, not
+  // regrouped once at the end — persistence below fires the moment a
+  // configuration's own calls are all in, so a crash partway through the
+  // sweep loses only the configurations still in flight, never the ones
+  // already finished.
+  const configKeyOf = (cb) => `${cb.practiceCount}:${cb.width}`;
+  const expectedByConfig = new Map();
   const byConfig = new Map();
-  for (let i = 0; i < calls.length; i += 1) {
-    const call = calls[i];
-    const key = `${call.cb.practiceCount}:${call.cb.width}`;
-    if (!byConfig.has(key)) {
-      byConfig.set(key, { cb: call.cb, cases: new Map() });
-    }
-    const configEntry = byConfig.get(key);
-    if (!configEntry.cases.has(call.subject.id)) {
-      configEntry.cases.set(call.subject.id, new Map());
-    }
-    const caseEntry = configEntry.cases.get(call.subject.id);
-    if (!caseEntry.has(call.repeatIndex)) {
-      caseEntry.set(call.repeatIndex, []);
-    }
-    caseEntry.get(call.repeatIndex).push(raw[i]);
+  for (const cb of runConfigs) {
+    const key = configKeyOf(cb);
+    expectedByConfig.set(key, subjects.length * repeats * cb.lensSet.lenses.length);
+    byConfig.set(key, { cb, cases: new Map(), doneCount: 0 });
   }
 
+  const sha = await readGitSha(REPO_ROOT);
+  const generatedAt = new Date().toISOString();
+  await mkdir(resultsDir, { recursive: true });
+  const fileName = `${generatedAt.slice(0, 10)}-${settings.model}.json`;
+  const filePath = join(resultsDir, fileName);
+
   const configurationsOut = [];
-  for (const entry of byConfig.values()) {
+
+  function scoreOneConfiguration(entry) {
     const declaredIds = entry.cb.lensSet.lenses.map((l) => l.id);
     const casesOut = [];
     for (const [caseId, repeatsMap] of entry.cases) {
@@ -841,50 +895,98 @@ async function main() {
       repeatsOut.sort((a, b) => a.repeatIndex - b.repeatIndex);
       casesOut.push({ caseId, repeats: repeatsOut });
     }
-    configurationsOut.push({
+    return {
       practiceCount: entry.cb.practiceCount,
       width: entry.cb.width,
       practiceSubsetSize: entry.cb.practiceSubsetSize,
       lensSet: entry.cb.lensSet,
       cases: casesOut,
-    });
+    };
   }
 
-  const sha = await readGitSha(REPO_ROOT);
-  const generatedAt = new Date().toISOString();
-  const resultsDoc = {
-    measurement: 'eval-sweep',
-    generatedAt,
-    model: settings.model,
-    credentialSource: settings.credential.source,
-    // Recorded explicitly rather than omitted: a results file that cannot
-    // say what produced it is the exact failure this harness exists to
-    // prevent.
-    gitSha: sha ?? null,
-    gitShaObtained: sha !== undefined,
-    concurrencyCap: concurrency,
-    repeats,
-    axes: { widths, practiceCounts },
-    practiceCorpus: { path: practicesFile, totalCount: practicesResult.count },
-    corpus: {
-      dir: corpusDir,
-      caseCount: subjects.length,
-      caseIds: subjects.map((s) => s.id),
-      incomplete: corpusResult.incomplete,
-    },
-    skippedConfigurations: skippedConfigs.map((cb) => ({
-      practiceCount: cb.practiceCount,
-      width: cb.width,
-      reason: cb.error,
-    })),
-    configurations: configurationsOut,
-  };
+  // `partial` plus the completed/planned counts are the elision announcing
+  // itself — the same discipline lensSet.ts applies to its own output: a
+  // results file that has only completed some of its planned configurations
+  // says so plainly, so a crash or an interruption is never read back as a
+  // finished run.
+  function buildResultsDoc(partial) {
+    return {
+      measurement: 'eval-sweep',
+      generatedAt,
+      model: settings.model,
+      credentialSource: settings.credential.source,
+      // Recorded explicitly rather than omitted: a results file that cannot
+      // say what produced it is the exact failure this harness exists to
+      // prevent.
+      gitSha: sha ?? null,
+      gitShaObtained: sha !== undefined,
+      concurrencyCap: concurrency,
+      repeats,
+      axes: { widths, practiceCounts },
+      practiceCorpus: { path: practicesFile, totalCount: practicesResult.count },
+      corpus: {
+        dir: corpusDir,
+        caseCount: subjects.length,
+        caseIds: subjects.map((s) => s.id),
+        incomplete: corpusResult.incomplete,
+      },
+      skippedConfigurations: skippedConfigs.map((cb) => ({
+        practiceCount: cb.practiceCount,
+        width: cb.width,
+        reason: cb.error,
+      })),
+      partial,
+      configurationsCompleted: configurationsOut.length,
+      configurationsPlanned: runConfigs.length,
+      configurations: configurationsOut,
+    };
+  }
 
-  await mkdir(resultsDir, { recursive: true });
-  const fileName = `${generatedAt.slice(0, 10)}-${settings.model}.json`;
-  const filePath = join(resultsDir, fileName);
-  await writeFile(filePath, JSON.stringify(resultsDoc, null, 2), 'utf8');
-  console.log(`Written to ${filePath}`);
+  // Writes are chained, never concurrent: two configurations completing in
+  // the same tick must not race to write the same file — each write waits
+  // for the previous one to land before starting.
+  let writeChain = Promise.resolve();
+  function persist(partial) {
+    const doc = buildResultsDoc(partial);
+    writeChain = writeChain.then(() => writeFile(filePath, JSON.stringify(doc, null, 2), 'utf8'));
+    return writeChain;
+  }
+
+  // Written once before any call resolves, so a crash on the very first call
+  // still leaves a file on disk honestly reporting zero of N configurations
+  // completed, rather than the total silence stage 1's first real run left.
+  await persist(true);
+
+  console.log(`Dispatching ${calls.length} model call(s) at concurrency ${concurrency}...`);
+  await runPool(
+    calls,
+    concurrency,
+    (call) => callOnce(call.lens, call.subject, settings),
+    (call, result) => {
+      const key = configKeyOf(call.cb);
+      const entry = byConfig.get(key);
+      if (!entry.cases.has(call.subject.id)) {
+        entry.cases.set(call.subject.id, new Map());
+      }
+      const caseEntry = entry.cases.get(call.subject.id);
+      if (!caseEntry.has(call.repeatIndex)) {
+        caseEntry.set(call.repeatIndex, []);
+      }
+      caseEntry.get(call.repeatIndex).push(result);
+      entry.doneCount += 1;
+
+      if (entry.doneCount === expectedByConfig.get(key)) {
+        configurationsOut.push(scoreOneConfiguration(entry));
+        const complete = configurationsOut.length === runConfigs.length;
+        persist(!complete);
+      }
+    },
+  );
+
+  await writeChain;
+  console.log(
+    `Written to ${filePath} (${configurationsOut.length} of ${runConfigs.length} configuration(s) completed)`,
+  );
 }
 
 main().catch((cause) => {
