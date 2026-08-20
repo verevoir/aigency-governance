@@ -1,7 +1,7 @@
 // The environment is passed in, so none of this touches `process.env`, and
 // the key file reader is passed in too, so none of this touches a real
-// filesystem — no test can leak configuration, or a real key file on the
-// machine running the suite, into another.
+// filesystem — no test can leak configuration, or a real credential file on
+// the machine running the suite, into another.
 //
 // What is asserted here is mostly the CONTENT of the answer rather than its
 // shape. A configuration failure is read by someone who does not yet know what
@@ -26,8 +26,8 @@ import {
 /**
  * A minimally complete environment. Tests that care about one variable
  * override that one, so a test about `AIGENCY_REVIEW_MAX_TOKENS` is not
- * quietly also a test about a missing key. Overriding with `undefined` removes
- * a variable, which is what an unset one looks like to `process.env`.
+ * quietly also a test about a missing credential. Overriding with `undefined`
+ * removes a variable, which is what an unset one looks like to `process.env`.
  */
 function env(
   overrides: Record<string, string | undefined> = {},
@@ -39,8 +39,8 @@ function env(
   };
 }
 
-/** No file exists anywhere. The default for tests that are not about the
- * file source at all, so they stay tests of one thing. */
+/** No file exists anywhere. The default for tests that are not about a file
+ * source at all, so they stay tests of one thing. */
 const NO_FILES: KeyFileReader = () => Promise.resolve({ kind: 'absent' });
 
 /** A reader backed by a plain map, so a test names the paths it cares about
@@ -110,7 +110,7 @@ describe('resolveSettings, given everything it needs', () => {
 
     // Compared whole, so a field silently dropped or added fails here.
     expect(settings).toEqual({
-      apiKey: 'sk-ant-complete',
+      credential: { source: 'api-key', value: 'sk-ant-complete' },
       model: 'claude-opus-9',
       maxTokens: 8192,
       lensSource: 'https://lenses.test/set.json',
@@ -119,25 +119,27 @@ describe('resolveSettings, given everything it needs', () => {
   });
 });
 
-describe('resolveSettings, given no API key', () => {
+describe('resolveSettings, given no credential at all', () => {
   it('reports it as incomplete, naming the variable and what it is for', async () => {
     const missing = missingOf(
       await resolveSettings(env({ ANTHROPIC_API_KEY: undefined }), NO_FILES),
     );
     const entry = named(missing, 'ANTHROPIC_API_KEY');
 
-    expect(entry.why).toContain('key');
-    // No assertion on `why`. A length threshold passes for any prose of
-    // roughly the right size, including prose that says the wrong thing, and
-    // asserting the exact sentence would pin wording rather than behaviour.
-    // What is checkable is that the field is populated and that the branch was
-    // taken, and the `where` assertions below do that.
+    expect(entry.why).toContain('credential');
+    // No assertion on the rest of `why`. A length threshold passes for any
+    // prose of roughly the right size, including prose that says the wrong
+    // thing, and asserting the exact sentence would pin wording rather than
+    // behaviour. What is checkable is that the field is populated and that
+    // the branch was taken, and the `where` assertions below do that.
   });
 
-  // Two audiences, two answers. A log that gives only the GitHub route leaves
-  // someone reproducing the failure locally with nothing to type, and one that
-  // gives only the export leaves the CI failure unfixed.
-  it('names the GitHub place and both local places to put it', async () => {
+  // Both credentials, both audiences. A log that gives only the GitHub route
+  // leaves someone reproducing the failure locally with nothing to type, and
+  // one that mentions only the API key leaves the whole point of this story —
+  // a free local option — undiscoverable from the one place someone actually
+  // reads when something is missing.
+  it('names the GitHub place, and both local ways to supply an API key', async () => {
     const missing = missingOf(
       await resolveSettings(env({ ANTHROPIC_API_KEY: undefined }), NO_FILES),
     );
@@ -145,17 +147,26 @@ describe('resolveSettings, given no API key', () => {
 
     expect(entry.where).toContain('Secrets and variables');
     expect(entry.where).toContain('export ANTHROPIC_API_KEY=');
-    // The two file sources, so a reader who cannot set a repository secret,
-    // or is not the one exporting the CI variable, still has a way to fix it.
     expect(entry.where).toContain('ANTHROPIC_API_KEY_FILE');
     expect(entry.where).toContain('.config/verevoir/anthropic.key');
+  });
+
+  it('also names both local ways to supply a subscription OAuth token instead', async () => {
+    const missing = missingOf(
+      await resolveSettings(env({ ANTHROPIC_API_KEY: undefined }), NO_FILES),
+    );
+    const entry = named(missing, 'ANTHROPIC_API_KEY');
+
+    expect(entry.where).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(entry.where).toContain('AIGENCY_REVIEW_OAUTH_TOKEN_FILE');
+    expect(entry.where).toContain('.config/verevoir/anthropic-oauth.token');
   });
 
   // This is the real GitHub Actions failure, not a hypothetical one: an unset
   // secret interpolates to '' rather than disappearing, so the empty case is
   // the case that actually reaches production. Asserted as its own test, and
   // then compared against the absent case so the two cannot drift apart.
-  it('treats an empty-string key exactly as an absent one', async () => {
+  it('treats an empty-string API key exactly as an absent one', async () => {
     const result = await resolveSettings(env({ ANTHROPIC_API_KEY: '' }), NO_FILES);
 
     expect(result.kind).toBe('incomplete');
@@ -164,7 +175,7 @@ describe('resolveSettings, given no API key', () => {
     );
   });
 
-  it('treats a whitespace-only key as absent', async () => {
+  it('treats a whitespace-only API key as absent', async () => {
     const result = await resolveSettings(env({ ANTHROPIC_API_KEY: '  \t\n ' }), NO_FILES);
 
     expect(result.kind).toBe('incomplete');
@@ -212,7 +223,7 @@ describe('resolveSettings, resolving the API key from a file', () => {
       ),
     );
 
-    expect(settings.apiKey).toBe('sk-from-env');
+    expect(settings.credential).toEqual({ source: 'api-key', value: 'sk-from-env' });
     // The whole point of the precedence: a file present on disk is never even
     // opened when the environment already answered.
     expect(fs.asked).toEqual([]);
@@ -228,7 +239,7 @@ describe('resolveSettings, resolving the API key from a file', () => {
       ),
     );
 
-    expect(settings.apiKey).toBe('sk-from-file');
+    expect(settings.credential).toEqual({ source: 'api-key', value: 'sk-from-file' });
   });
 
   it('prefers ANTHROPIC_API_KEY_FILE over the default path, when both would supply a key', async () => {
@@ -248,7 +259,7 @@ describe('resolveSettings, resolving the API key from a file', () => {
       ),
     );
 
-    expect(settings.apiKey).toBe('sk-from-explicit-file');
+    expect(settings.credential.value).toBe('sk-from-explicit-file');
   });
 
   it('falls back to the default path when neither the environment nor ANTHROPIC_API_KEY_FILE supply a key', async () => {
@@ -260,7 +271,7 @@ describe('resolveSettings, resolving the API key from a file', () => {
       await resolveSettings(env({ ANTHROPIC_API_KEY: undefined, HOME: '/home/it' }), fs.read),
     );
 
-    expect(settings.apiKey).toBe('sk-from-default-path');
+    expect(settings.credential.value).toBe('sk-from-default-path');
   });
 
   it('reads the default path under XDG_CONFIG_HOME, when it is set', async () => {
@@ -275,7 +286,7 @@ describe('resolveSettings, resolving the API key from a file', () => {
       ),
     );
 
-    expect(settings.apiKey).toBe('sk-from-xdg');
+    expect(settings.credential.value).toBe('sk-from-xdg');
   });
 
   // A missing default path is not an error — it is simply that source
@@ -329,19 +340,20 @@ describe('resolveSettings, resolving the API key from a file', () => {
   // key-leaking implementation. That is the same shape of defect this very
   // change fixed elsewhere, caught here by the panel's first real review.
   //
-  // The honest state of the property "a key's value never reaches a
+  // The honest state of the property "a credential's value never reaches a
   // problem" is that it CANNOT be violated at this layer, and that is worth
   // stating rather than faking a test for. On the unreadable-file path,
-  // `resolveSettings` never has a key value in scope to leak: `apiKey` is
-  // assigned only in the `found` branch (see `resolveSettings` above), and
-  // `KeyFileResult`'s `unreadable` variant carries only `reason` — there is
-  // no `text` field for a reader to have put a key into even by mistake. The
-  // type system is what enforces this, not a runtime check, so no test
-  // belongs here. What CAN leak a key is a reader or a provider client that
-  // reads it successfully and then fails to redact it before it reaches an
-  // error or a log — a different bug, in a different place, and it is
-  // covered where it is real: `redact()` in tests/anthropic.test.ts, tested
-  // against a value that actually is the key.
+  // `resolveSettings` never has a credential value in scope to leak:
+  // `credential` is assigned only in the `found` branch (see
+  // `resolveSettings` above), and `KeyFileResult`'s `unreadable` variant
+  // carries only `reason` — there is no `text` field for a reader to have put
+  // a value into even by mistake. The type system is what enforces this, not
+  // a runtime check, so no test belongs here. What CAN leak a credential is a
+  // reader or a provider client that reads it successfully and then fails to
+  // redact it before it reaches an error or a log — a different bug, in a
+  // different place, and it is covered where it is real:
+  // `redact()`/`headersFor()` in tests/anthropic.test.ts, tested against
+  // values that actually are the credential, for both credential kinds.
 
   it('treats empty file contents as blank, falling through to the next source', async () => {
     const fs = filesystem({
@@ -360,7 +372,7 @@ describe('resolveSettings, resolving the API key from a file', () => {
       ),
     );
 
-    expect(settings.apiKey).toBe('sk-from-default-path');
+    expect(settings.credential.value).toBe('sk-from-default-path');
   });
 
   it('treats whitespace-only file contents as blank, falling through to the next source', async () => {
@@ -380,16 +392,13 @@ describe('resolveSettings, resolving the API key from a file', () => {
       ),
     );
 
-    expect(settings.apiKey).toBe('sk-from-default-path');
+    expect(settings.credential.value).toBe('sk-from-default-path');
   });
 
   // The gap the panel found: falling through past a blank file must not
-  // erase that it WAS blank, if nothing further on ever supplies a key.
-  // Before this fix, this case reported only "ANTHROPIC_API_KEY is not
-  // configured" — identical to a person who had configured nothing at all,
-  // with no trace that the file they specifically pointed at was found and
-  // empty.
-  it('names the blank explicit key file as a problem when nothing else supplies a key either', async () => {
+  // erase that it WAS blank, if nothing further on ever supplies a
+  // credential.
+  it('names the blank explicit key file as a problem when nothing else supplies a credential either', async () => {
     const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: '   \n' } });
 
     const result = await resolveSettings(
@@ -405,7 +414,7 @@ describe('resolveSettings, resolving the API key from a file', () => {
   });
 
   // The same gap, at the default path rather than the explicit one —
-  // resolveApiKey threads blankPaths through both branches, and this proves
+  // resolveChain threads blankPaths through both branches, and this proves
   // the second one independently rather than assuming symmetry.
   it('names the blank default key file as a problem too, when no explicit path was even set', async () => {
     const fs = filesystem({
@@ -426,8 +435,8 @@ describe('resolveSettings, resolving the API key from a file', () => {
   });
 
   // The boundary this fix deliberately does not cross: when the default path
-  // DOES supply a key despite the explicit one being blank, the result is
-  // `ready`, which carries no `problems` field at all — so the blank-file
+  // DOES supply a credential despite the explicit one being blank, the result
+  // is `ready`, which carries no `problems` field at all — so the blank-file
   // information is not, and cannot be, surfaced here. readyOf() itself is the
   // assertion: it throws if the outcome is anything other than a clean ready
   // result with exactly the shape SettingsResult's `ready` variant has.
@@ -448,14 +457,14 @@ describe('resolveSettings, resolving the API key from a file', () => {
       ),
     );
 
-    expect(settings.apiKey).toBe('sk-from-default-path');
+    expect(settings.credential.value).toBe('sk-from-default-path');
   });
 
   // The asymmetry that matters most in this feature: a file is trimmed, the
   // environment is not. Both asserted here, together, so a future edit that
   // "fixes" one to match the other fails immediately rather than passing a
   // suite that only ever checked one direction.
-  it('trims a trailing newline from a key read from a file', async () => {
+  it('trims a trailing newline from an API key read from a file', async () => {
     const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: 'sk-from-file\n' } });
 
     const settings = readyOf(
@@ -465,10 +474,10 @@ describe('resolveSettings, resolving the API key from a file', () => {
       ),
     );
 
-    expect(settings.apiKey).toBe('sk-from-file');
+    expect(settings.credential.value).toBe('sk-from-file');
   });
 
-  it('does not trim whitespace from a key read from the environment', async () => {
+  it('does not trim whitespace from an API key read from the environment', async () => {
     const settings = readyOf(
       await resolveSettings(env({ ANTHROPIC_API_KEY: 'sk-from-env\n' }), NO_FILES),
     );
@@ -477,7 +486,201 @@ describe('resolveSettings, resolving the API key from a file', () => {
     // byte for byte, because whitespace arriving through an env var is a
     // broken pipeline that should fail loudly against the provider rather
     // than be quietly repaired here.
-    expect(settings.apiKey).toBe('sk-from-env\n');
+    expect(settings.credential.value).toBe('sk-from-env\n');
+  });
+});
+
+describe('resolveSettings, resolving the subscription OAuth token', () => {
+  const OAUTH_TOKEN = 'oauth-THE-SUBSCRIPTION-SECRET-VALUE-DO-NOT-LOG';
+
+  it('resolves from the environment variable to a subscription-oauth credential', async () => {
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN }),
+        NO_FILES,
+      ),
+    );
+
+    expect(settings.credential).toEqual({ source: 'subscription-oauth', value: OAUTH_TOKEN });
+  });
+
+  // The deterministic case this story exists to pin down. Both credentials
+  // are genuinely present and would each independently resolve to `ready` —
+  // and the answer must not depend on which happened to be checked first by
+  // accident. OAuth wins, unconditionally, because nothing in this
+  // repository's CI configuration can ever set the OAuth variable (see the
+  // file header), so giving it priority never changes what CI does, and it
+  // is what makes a stray ANTHROPIC_API_KEY left over from some other tool
+  // unable to silently defeat the whole point of this feature.
+  it('prefers the OAuth token over the API key when both are genuinely present', async () => {
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: 'sk-ant-also-present', CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN }),
+        NO_FILES,
+      ),
+    );
+
+    expect(settings.credential).toEqual({ source: 'subscription-oauth', value: OAUTH_TOKEN });
+  });
+
+  it('reads AIGENCY_REVIEW_OAUTH_TOKEN_FILE when the environment variable is unset', async () => {
+    const fs = filesystem({ '/oauth/token': { kind: 'text', text: OAUTH_TOKEN } });
+
+    const settings = readyOf(
+      await resolveSettings(
+        env({
+          ANTHROPIC_API_KEY: undefined,
+          AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/token',
+        }),
+        fs.read,
+      ),
+    );
+
+    expect(settings.credential).toEqual({ source: 'subscription-oauth', value: OAUTH_TOKEN });
+  });
+
+  it('falls back to the default OAuth path when neither the env var nor the explicit file supply one', async () => {
+    const fs = filesystem({
+      '/home/it/.config/verevoir/anthropic-oauth.token': { kind: 'text', text: OAUTH_TOKEN },
+    });
+
+    const settings = readyOf(
+      await resolveSettings(env({ ANTHROPIC_API_KEY: undefined, HOME: '/home/it' }), fs.read),
+    );
+
+    expect(settings.credential).toEqual({ source: 'subscription-oauth', value: OAUTH_TOKEN });
+  });
+
+  it('reads the default OAuth path under XDG_CONFIG_HOME, when it is set', async () => {
+    const fs = filesystem({
+      '/xdg/verevoir/anthropic-oauth.token': { kind: 'text', text: OAUTH_TOKEN },
+    });
+
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: undefined, XDG_CONFIG_HOME: '/xdg', HOME: '/home/it' }),
+        fs.read,
+      ),
+    );
+
+    expect(settings.credential).toEqual({ source: 'subscription-oauth', value: OAUTH_TOKEN });
+  });
+
+  // A blank OAuth env var must not stop at "absent" and stall — it must fall
+  // through to the API key chain exactly as a blank API key source falls
+  // through to its own next source. This is the ordinary blank-is-absent
+  // behaviour, extended across the credential boundary rather than stopping
+  // at it.
+  it('falls through to the API key when the OAuth variable is blank', async () => {
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: 'sk-from-env', CLAUDE_CODE_OAUTH_TOKEN: '   ' }),
+        NO_FILES,
+      ),
+    );
+
+    expect(settings.credential).toEqual({ source: 'api-key', value: 'sk-from-env' });
+  });
+
+  it('falls through to the API key when the OAuth file is blank', async () => {
+    const fs = filesystem({ '/oauth/token': { kind: 'text', text: '\n\t \n' } });
+
+    const settings = readyOf(
+      await resolveSettings(
+        env({
+          ANTHROPIC_API_KEY: 'sk-from-env',
+          AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/token',
+        }),
+        fs.read,
+      ),
+    );
+
+    expect(settings.credential).toEqual({ source: 'api-key', value: 'sk-from-env' });
+  });
+
+  it('names the blank OAuth path as a problem when nothing else supplies a credential either', async () => {
+    const fs = filesystem({ '/oauth/token': { kind: 'text', text: '  \n' } });
+
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/token',
+      }),
+      fs.read,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('/oauth/token'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('blank'))).toBe(true);
+  });
+
+  // The hard-stop case, and the one most worth getting right: a genuinely
+  // broken (present, unreadable) OAuth source must not be silently skipped in
+  // favour of a working API key. Falling through here would spend real money
+  // on a run whose whole configuration exists to avoid spending it, and would
+  // never tell anyone why — exactly the accident the file header argues
+  // against. `unreadable` for OAuth is a hard stop for the WHOLE resolution,
+  // same as `unreadable` already was for the API key chain alone.
+  it('reports an unreadable OAuth file as invalid, and does NOT fall through to a working API key', async () => {
+    const unreadable = filesystem({
+      '/oauth/token': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: 'sk-would-otherwise-have-worked',
+        AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/token',
+      }),
+      unreadable.read,
+    );
+
+    expect(result.kind).toBe('invalid');
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('/oauth/token'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('EACCES'))).toBe(true);
+    // The API key was never even looked at: this is not merely "resolution
+    // ended up invalid", it is "resolution stopped at OAuth and never tried
+    // the fallback that would have worked".
+  });
+
+  it('reads AIGENCY_REVIEW_OAUTH_TOKEN_FILE without ever asking for it when the env var already answered', async () => {
+    const fs = filesystem({ '/oauth/token': { kind: 'text', text: OAUTH_TOKEN } });
+
+    await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN,
+        AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/token',
+      }),
+      fs.read,
+    );
+
+    expect(fs.asked).toEqual([]);
+  });
+
+  // The leak test. Asserting the report was produced is worth less than
+  // asserting the token never rode along in it — a suite that only checks
+  // "and it resolves" would stay green even if a future edit accidentally
+  // echoed the credential into `problems` or `missing`.
+  it('never puts the OAuth token itself anywhere in a rendered missing-settings report', async () => {
+    const fs = filesystem({ '/oauth/token': { kind: 'unreadable', reason: 'EACCES' } });
+
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/token',
+      }),
+      fs.read,
+    );
+
+    // Not reachable via missingOf/problemsOf alone — this walks the whole
+    // rendered text a person actually reads.
+    const rendered =
+      result.kind === 'invalid' || result.kind === 'incomplete'
+        ? renderMissing(result.kind === 'incomplete' ? result.missing : [], result.problems)
+        : '';
+    expect(rendered).not.toContain(OAUTH_TOKEN);
   });
 });
 

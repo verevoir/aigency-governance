@@ -17,11 +17,16 @@ import {
 } from '../src/review/anthropic.js';
 import { NoRoomToAnswerError } from '../src/review/panel.js';
 import type { Prompt } from '../src/review/prompt.js';
+import type { Credential } from '../src/review/settings.js';
 
 const API_KEY = 'sk-ant-api03-THE-SECRET-VALUE-DO-NOT-LOG';
+const OAUTH_TOKEN = 'oauth-THE-SUBSCRIPTION-SECRET-VALUE-DO-NOT-LOG';
+
+const API_KEY_CREDENTIAL: Credential = { source: 'api-key', value: API_KEY };
+const OAUTH_CREDENTIAL: Credential = { source: 'subscription-oauth', value: OAUTH_TOKEN };
 
 const CONFIG: AnthropicConfig = {
-  apiKey: API_KEY,
+  credential: API_KEY_CREDENTIAL,
   model: 'claude-pinned-for-this-test',
   maxTokens: 1234,
 };
@@ -211,16 +216,48 @@ describe('the wire format', () => {
     const reply = await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
     expect(reply).toBe('VERDICT: approved');
   });
+
+  // Same request shape regardless of which credential is wired in — the
+  // whole parity argument in this file's own header, proven rather than only
+  // argued: model, max_tokens, system block, messages and URL are all
+  // unaffected by which credential this reviewer was built with.
+  it('sends an identical body and URL for either credential, differing only in headers', async () => {
+    const apiKeyPost = replying('ok');
+    await anthropicReviewer(CONFIG, apiKeyPost.impl)('honesty', PROMPT);
+
+    const oauthPost = replying('ok');
+    await anthropicReviewer({ ...CONFIG, credential: OAUTH_CREDENTIAL }, oauthPost.impl)(
+      'honesty',
+      PROMPT,
+    );
+
+    expect(only(oauthPost).body).toBe(only(apiKeyPost).body);
+    expect(only(oauthPost).url).toBe(only(apiKeyPost).url);
+    expect(only(oauthPost).headers['content-type']).toBe(only(apiKeyPost).headers['content-type']);
+    expect(only(oauthPost).headers['anthropic-version']).toBe(
+      only(apiKeyPost).headers['anthropic-version'],
+    );
+  });
 });
 
 describe('the api key', () => {
   // The positive control. Without it the two redaction tests below could both
   // pass on a transport that never sent the key anywhere — nothing to leak is
   // not the same property as nothing leaked.
-  it('is sent in the request headers', async () => {
+  it('is sent in the request headers, as x-api-key', async () => {
     const post = replying('ok');
     await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
     expect(only(post).headers['x-api-key']).toBe(API_KEY);
+  });
+
+  // The other half of parity, proven as its own assertion: an api-key
+  // credential must never ALSO carry an authorization header — the two
+  // credentials are mutually exclusive on the wire, not one hiding behind
+  // the other.
+  it('carries no authorization header when the credential is an API key', async () => {
+    const post = replying('ok');
+    await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
+    expect('authorization' in only(post).headers).toBe(false);
   });
 
   it('never reaches the error from a request that threw with the key in its message', async () => {
@@ -246,11 +283,63 @@ describe('the api key', () => {
   // reason the call failed is destroyed.
   it('being empty does not turn an error message into masks', async () => {
     const post = serving(500, 'upstream exploded');
-    const reviewer = anthropicReviewer({ ...CONFIG, apiKey: '' }, post.impl);
+    const reviewer = anthropicReviewer(
+      { ...CONFIG, credential: { source: 'api-key', value: '' } },
+      post.impl,
+    );
     const error = await failureOf(reviewer('honesty', PROMPT));
     expect(error.message).toContain('upstream exploded');
     expect(error.message).not.toContain('***');
   });
+});
+
+describe('the subscription OAuth token', () => {
+  const oauthConfig: AnthropicConfig = { ...CONFIG, credential: OAUTH_CREDENTIAL };
+
+  // The positive control for the second credential, mirroring the API key's
+  // own. Without it, the tests below could pass on a transport that never
+  // sent the token anywhere.
+  it('is sent in the request headers, as a bearer token', async () => {
+    const post = replying('ok');
+    await anthropicReviewer(oauthConfig, post.impl)('honesty', PROMPT);
+    expect(only(post).headers['authorization']).toBe(`Bearer ${OAUTH_TOKEN}`);
+  });
+
+  // The mirror of the API key's own exclusivity test. Two credentials, two
+  // headers, never both — proven from both directions so neither can hide a
+  // regression behind the other's test passing.
+  it('carries no x-api-key header when the credential is a subscription OAuth token', async () => {
+    const post = replying('ok');
+    await anthropicReviewer(oauthConfig, post.impl)('honesty', PROMPT);
+    expect('x-api-key' in only(post).headers).toBe(false);
+  });
+
+  it('never reaches the error from a request that threw with the token in its message', async () => {
+    const post = fakePost(() =>
+      Promise.reject(new Error(`connect failed for token ${OAUTH_TOKEN}`)),
+    );
+    const error = await failureOf(anthropicReviewer(oauthConfig, post.impl)('honesty', PROMPT));
+    expect(error.message).toContain('request failed');
+    expect(error.message).not.toContain(OAUTH_TOKEN);
+    expect(error.message).toContain('***');
+  });
+
+  it('never reaches the error from a non-ok response whose body echoed it back', async () => {
+    const post = serving(401, `{"error":{"message":"invalid token: ${OAUTH_TOKEN}"}}`);
+    const error = await failureOf(anthropicReviewer(oauthConfig, post.impl)('honesty', PROMPT));
+    expect(error.message).toContain('401');
+    expect(error.message).not.toContain(OAUTH_TOKEN);
+    expect(error.message).toContain('***');
+  });
+
+  // Every failure shape below this point in the file already applies to
+  // BOTH credentials, by construction: none of `textFrom`'s branches, the
+  // NoRoomToAnswerError classification, the body-read handling or the
+  // truncated-error-body cap read `config.credential` at all. Re-running
+  // each of them under the OAuth credential would test that fact rather than
+  // add to it — this file's own header explains why that identity is the
+  // point rather than an accident, and the two request-shape tests above
+  // already prove it directly.
 });
 
 describe('failures', () => {

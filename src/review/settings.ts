@@ -16,34 +16,96 @@
 // and pointing at the wrong thing entirely. The person needed to be told they
 // had not added a secret.
 //
-// THE API KEY, SPECIFICALLY, HAS THREE SOURCES, TRIED IN A FIXED ORDER:
+// TWO CREDENTIALS CAN AUTHENTICATE THE SAME CALL, AND THEY ARE RESOLVED AS
+// ONE CHOICE, NOT TWO SETTINGS THAT HAPPEN TO COEXIST:
 //
-//   1. `ANTHROPIC_API_KEY` in the environment, if set and non-blank. This
-//      wins, unconditionally, because it is how GitHub Actions supplies a
+//   An API key (`ANTHROPIC_API_KEY`) is what CI has, and what production
+//   review runs on. It is billed per call.
+//
+//   A subscription OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) is what a laptop
+//   can have instead. NAMED THAT, NOT SOMETHING TIDIER, BECAUSE THAT IS THE
+//   VARIABLE THAT IS ACTUALLY THERE: this is the token Claude Code's own
+//   runtime already sets when this project is being worked on inside it —
+//   this file reads the name a caller already has, rather than inventing an
+//   `AIGENCY_...`-prefixed one and asking every caller to alias it. A
+//   resolver that reads a name of its own choosing instead of the name an
+//   operator actually has is exactly the shape of defect (H87) this codebase
+//   keeps finding elsewhere: a value that is genuinely present and never
+//   arrives, because nothing was listening for its real name. It
+//   authenticates the identical Messages API call — see the header of
+//   anthropic.ts for why that identity is the whole reason this is safe to
+//   add rather than a second, divergent code path — and it is what makes
+//   local diagnosis affordable. Every real diagnosis in this repository's
+//   history so far — a missing key, a token ceiling, a broken build — was
+//   found by running the panel locally against the exact diff, and API rates
+//   are expensive enough to discourage the thing that has been most valuable
+//   about this codebase.
+//
+//   The FILE-based fallback for this credential (`..._FILE` and the default
+//   path) keeps this project's own `AIGENCY_REVIEW_OAUTH_TOKEN_FILE` naming
+//   rather than following suit, deliberately: that mechanism does not come
+//   from any runtime, it is this project's own convention for a laptop not
+//   running inside Claude Code, and it stays named the way the rest of this
+//   project names things it invented.
+//
+// EACH CREDENTIAL HAS ITS OWN THREE-SOURCE CHAIN, THE SAME SHAPE THE API KEY
+// ALREADY HAD, EXTENDED RATHER THAN DUPLICATED (see `resolveChain` and
+// `ChainConfig` below — one function, two configurations):
+//
+//   1. An environment variable, if set and non-blank. Wins unconditionally
+//      within its own chain, because that is how GitHub Actions supplies a
 //      secret and CI must keep working exactly as it does today.
-//   2. Otherwise `ANTHROPIC_API_KEY_FILE`, if set — a path to read the key
-//      from.
-//   3. Otherwise a conventional default path: `$XDG_CONFIG_HOME/verevoir/
-//      anthropic.key`, or `~/.config/verevoir/anthropic.key` when
-//      `XDG_CONFIG_HOME` is unset.
+//   2. Otherwise a `..._FILE` variable naming a path to read from.
+//   3. Otherwise a conventional default path under `$XDG_CONFIG_HOME/
+//      verevoir/` (or `~/.config/verevoir/` when that is unset).
 //
 // A file is not only a fallback for when the environment fails to arrive — it
 // is the better mechanism, and the environment variable stays first for
-// compatibility rather than because it is preferred. A key in the process
-// environment is inherited by every child process the runtime spawns: every
-// declared command in every repository, including `npm install` running a
-// postinstall script fetched off the network a moment earlier. A file read at
-// the point of use is touched only by the code that needs it and nothing
-// else.
+// compatibility rather than because it is preferred. A credential in the
+// process environment is inherited by every child process the runtime spawns:
+// every declared command in every repository, including `npm install`
+// running a postinstall script fetched off the network a moment earlier. A
+// file read at the point of use is touched only by the code that needs it and
+// nothing else.
 //
-// A key read from a file is trimmed of surrounding whitespace, including a
-// trailing newline; a key read from the environment is not. That asymmetry is
-// deliberate and not an oversight: `echo "key" > file` is how almost every
-// key file gets written, and it always ends in a newline, so trimming a file
-// is trimming what every ordinary tool produces. Whitespace arriving through
-// an environment variable is a broken pipeline upstream of this process, and
-// should fail loudly against the provider rather than be quietly repaired
-// here.
+// A credential read from a file is trimmed of surrounding whitespace,
+// including a trailing newline; one read from the environment is not. That
+// asymmetry is deliberate and not an oversight: `echo "key" > file` is how
+// almost every credential file gets written, and it always ends in a newline,
+// so trimming a file is trimming what every ordinary tool produces.
+// Whitespace arriving through an environment variable is a broken pipeline
+// upstream of this process, and should fail loudly against the provider
+// rather than be quietly repaired here.
+//
+// BETWEEN THE TWO CREDENTIALS, THE ORDER IS: OAUTH FIRST, ENTIRELY, THEN THE
+// API KEY. Not the other order, and not "whichever is set" left to accident.
+// The reasoning: nothing anywhere in this repository's CI configuration ever
+// names `CLAUDE_CODE_OAUTH_TOKEN` — not in a workflow's `env:` block, not
+// in a `secrets:` mapping (see `.github/workflows/review.yml`, whose one
+// `Review` step lists every variable it receives, and does not list this
+// one). A GitHub Actions runner starts with none of a contributor's local
+// environment, so the omission there is what keeps it out — a fact about
+// what that step's `env:` names, not a promise anyone has to remember to
+// keep. That makes OAuth-first *safe*: CI can never have it, so giving it top
+// priority never changes what CI does. It is also what makes it *right*: a
+// developer who has deliberately set up a subscription token gets the
+// cheaper path even if `ANTHROPIC_API_KEY` also happens to be lying around
+// from some other tool, which is exactly the case this exists to make free —
+// the alternative (API key wins when both are present) would mean the story
+// this file exists for is defeated by an unrelated export sitting in a shell
+// profile, silently, with nothing to say so.
+//
+// A source that is genuinely broken — present, and unreadable, rather than
+// simply absent — is a hard stop for the WHOLE credential resolution, not a
+// reason to fall through to the other credential. If the OAuth token file is
+// there and cannot be opened, that is real, actionable information someone
+// needs (see the same reasoning below for a broken API key file); silently
+// falling through to a working `ANTHROPIC_API_KEY` at that point would spend
+// real money on a run whose whole configuration exists to avoid spending it,
+// and would never tell anyone why. A blank source is different — see below —
+// because a blank source is not evidence of an attempt gone wrong, and
+// falling through past it is the existing, established behaviour this file
+// extends rather than replaces.
 //
 // Reading a file gets the same three-way care external input gets elsewhere
 // in this codebase (compare `ReadResult` in load.ts): a path that does not
@@ -52,9 +114,13 @@
 // opened — permissions, a directory, anything else — IS distinguishable from
 // one that is absent, because those are different problems for a person: one
 // is "you have not set this up yet", the other is "you tried, and something
-// is wrong with what you set up". And whatever goes wrong, the key's value
-// never appears in an error, a reason, or a log — a failure to read names the
-// path it tried, never the bytes it found or failed to find there.
+// is wrong with what you set up". And whatever goes wrong, a credential's
+// value never appears in an error, a reason, or a log — a failure to read
+// names the path it tried, never the bytes it found or failed to find there.
+// The report a run produces names which credential judged it — see
+// `ReportContext.credentialSource` in report.ts — and names only the KIND,
+// never the value: "via subscription OAuth" or "via API key", nothing that
+// could be redacted because nothing that could leak was ever put there.
 //
 // A PRESENT-AND-BROKEN SOURCE MUST SURVIVE EVEN WHEN SOMETHING ELSE IS ALSO
 // ABSENT. `kind` — `incomplete` vs `invalid` — is decided by whether anything
@@ -62,33 +128,34 @@
 // configured nothing needs the list of what to set before anything else, and
 // that stays the primary message. But absence and brokenness are not
 // mutually exclusive facts about a single run, and choosing one of them to
-// name the `kind` must never mean discarding the other: an unreadable key
-// file is real information whether or not some other setting also happens to
-// be unset. The first version of this file got that wrong — `incomplete` and
-// `invalid` were built as if only one problem could ever be true at once, so
-// whenever a broken key file coincided with any other missing setting, the
-// broken-file message vanished entirely and the person was told only "you
-// haven't set X", with no trace that the file they DID set was the actual
-// problem. So `incomplete` carries `problems` alongside `missing`: nothing
-// collected on the way through `resolveSettings` is ever silently dropped,
-// whichever `kind` ends up describing the run, and `renderMissing` renders
-// both when both are true.
+// name the `kind` must never mean discarding the other: an unreadable
+// credential file is real information whether or not some other setting also
+// happens to be unset. The first version of this file got that wrong —
+// `incomplete` and `invalid` were built as if only one problem could ever be
+// true at once, so whenever a broken key file coincided with any other
+// missing setting, the broken-file message vanished entirely and the person
+// was told only "you haven't set X", with no trace that the file they DID set
+// was the actual problem. So `incomplete` carries `problems` alongside
+// `missing`: nothing collected on the way through `resolveSettings` is ever
+// silently dropped, whichever `kind` ends up describing the run, and
+// `renderMissing` renders both when both are true.
 //
-// THE SAME GAP EXISTED FOR BLANK, NARROWER THAN UNREADABLE. A key file that
-// IS there and reads back empty is deliberately collapsed into `absent`
-// inside `keyFromPath` itself, so resolution keeps trying the next source —
-// matching what `present()` already does for the environment. But collapsing
-// the CONTROL FLOW and collapsing the INFORMATION are two different choices,
-// and an earlier version of this file made only the first one: if every
-// source ultimately came up empty, the report said only "ANTHROPIC_API_KEY is
-// not configured", with no trace that the specific, user-configured
-// `ANTHROPIC_API_KEY_FILE` path was found and was blank — the exact collapse
-// of "you never set this up" and "you set this up and it produced nothing"
-// that `unreadable` was already kept apart from `missing` to prevent, simply
-// missed for `blank` the first time. `resolveApiKey` still falls through past
-// a blank file exactly as before; it now also remembers every path that was
-// blank along the way, and `resolveSettings` names each one in `problems`
-// whenever the key still could not be resolved from any source.
+// THE SAME GAP EXISTED FOR BLANK, NARROWER THAN UNREADABLE. A credential file
+// that IS there and reads back empty is deliberately collapsed into `absent`
+// inside `credentialFromPath` itself, so resolution keeps trying the next
+// source within that chain — matching what `present()` already does for the
+// environment. But collapsing the CONTROL FLOW and collapsing the
+// INFORMATION are two different choices, and an earlier version of this file
+// made only the first one: if every source ultimately came up empty, the
+// report said only "ANTHROPIC_API_KEY is not configured", with no trace that
+// the specific, user-configured `..._FILE` path was found and was blank —
+// the exact collapse of "you never set this up" and "you set this up and it
+// produced nothing" that `unreadable` was already kept apart from `missing`
+// to prevent, simply missed for `blank` the first time. Resolution still
+// falls through past a blank file exactly as before; it now also remembers
+// every path that was blank along the way, across both credential chains, and
+// `resolveSettings` names each one in `problems` whenever nothing ultimately
+// supplied a credential.
 
 /** A setting the run needs and does not have. */
 export interface MissingSetting {
@@ -100,8 +167,28 @@ export interface MissingSetting {
   readonly where: string;
 }
 
+/**
+ * Which credential authenticated a call, never the credential itself. This is
+ * what a report is allowed to carry — see `ReportContext.credentialSource` in
+ * report.ts — precisely because it names a KIND, not a secret: nothing here
+ * could be redacted because nothing here could leak.
+ */
+export type CredentialSource = 'api-key' | 'subscription-oauth';
+
+/**
+ * A resolved credential: which kind it is, and the value to send with it.
+ * `anthropicReviewer` (anthropic.ts) is the only place `value` is ever read
+ * for anything other than comparison or redaction — see that file's header
+ * for the parity argument this type exists to make possible: one transport,
+ * one request shape, a `Credential` deciding only which header carries it.
+ */
+export interface Credential {
+  readonly source: CredentialSource;
+  readonly value: string;
+}
+
 export interface ReviewSettings {
-  readonly apiKey: string;
+  readonly credential: Credential;
   readonly model: string;
   readonly maxTokens: number;
   readonly lensSource: string;
@@ -121,12 +208,14 @@ export type SettingsResult =
   | { readonly kind: 'invalid'; readonly problems: readonly string[] };
 
 /**
- * What reading one candidate key file found. Three answers, for the same
- * reason `ReadResult` in load.ts has three: a file that is not there is the
- * ordinary shape of "this source has nothing to offer", and resolution moves
- * on to try the next one. A file that IS there and could not be opened is a
- * different problem for a different moment — someone already tried to set
- * this up, and `absent` would send them looking for a file that exists.
+ * What reading one candidate file found. Three answers, for the same reason
+ * `ReadResult` in load.ts has three: a file that is not there is the ordinary
+ * shape of "this source has nothing to offer", and resolution moves on to try
+ * the next one. A file that IS there and could not be opened is a different
+ * problem for a different moment — someone already tried to set this up, and
+ * `absent` would send them looking for a file that exists. Shared between the
+ * API key chain and the OAuth chain: this is a statement about reading a
+ * file, and neither credential changes what that means.
  */
 export type KeyFileResult =
   | { readonly kind: 'text'; readonly text: string }
@@ -134,11 +223,13 @@ export type KeyFileResult =
   | { readonly kind: 'unreadable'; readonly reason: string };
 
 /**
- * Reads one candidate path for the API key. Injected so this module never
+ * Reads one candidate path for a credential. Injected so this module never
  * touches `node:fs` itself — the same separation `loadLensSet` keeps from its
  * `SourceReader`, for the same reason: the whole precedence chain below is
  * driven by a test with no disk at all, and the one real implementation lives
- * beside the other real readers, in readers.ts.
+ * beside the other real readers, in readers.ts. One reader, used for both
+ * credentials' file sources: reading a file has no opinion about what the
+ * bytes authenticate.
  */
 export type KeyFileReader = (path: string) => Promise<KeyFileResult>;
 
@@ -180,19 +271,24 @@ function present(value: string | undefined): string | undefined {
   return value === undefined || value.trim() === '' ? undefined : value;
 }
 
-/** Where the conventional key file lives, given what the environment says
- * about a config home — or `undefined` when neither it nor `HOME` is set,
- * which just means this source has nowhere to look. */
-function defaultKeyFilePath(env: Record<string, string | undefined>): string | undefined {
+/** Where a conventional credential file lives, given what the environment
+ * says about a config home — or `undefined` when neither it nor `HOME` is
+ * set, which just means this source has nowhere to look. `fileName` is the
+ * one thing that differs between the two chains — `anthropic.key` versus
+ * `anthropic-oauth.token` — everything else about the path is shared. */
+function defaultCredentialFilePath(
+  env: Record<string, string | undefined>,
+  fileName: string,
+): string | undefined {
   const xdgConfigHome = present(env['XDG_CONFIG_HOME']);
   if (xdgConfigHome !== undefined) {
-    return `${xdgConfigHome}/verevoir/anthropic.key`;
+    return `${xdgConfigHome}/verevoir/${fileName}`;
   }
   const home = present(env['HOME']);
-  return home === undefined ? undefined : `${home}/.config/verevoir/anthropic.key`;
+  return home === undefined ? undefined : `${home}/.config/verevoir/${fileName}`;
 }
 
-type ApiKeyResolution =
+type ChainResolution =
   | { readonly kind: 'found'; readonly value: string }
   | { readonly kind: 'absent' }
   | { readonly kind: 'blank'; readonly path: string }
@@ -201,9 +297,12 @@ type ApiKeyResolution =
 /** Reads and classifies one candidate file: genuinely absent, found, or
  * present but blank — kept apart from absent, unlike a step further up this
  * chain, because the caller needs to know WHICH path was blank if nothing
- * else ends up supplying a key — or a real problem the reader could not get
- * past. */
-async function keyFromPath(path: string, readKeyFile: KeyFileReader): Promise<ApiKeyResolution> {
+ * else ends up supplying a credential — or a real problem the reader could
+ * not get past. */
+async function credentialFromPath(
+  path: string,
+  readKeyFile: KeyFileReader,
+): Promise<ChainResolution> {
   const found = await readKeyFile(path);
   if (found.kind === 'absent') {
     return { kind: 'absent' };
@@ -219,40 +318,66 @@ async function keyFromPath(path: string, readKeyFile: KeyFileReader): Promise<Ap
   return trimmed === '' ? { kind: 'blank', path } : { kind: 'found', value: trimmed };
 }
 
-/**
- * What resolving the API key found: the final resolution the three sources
- * settle on, plus every path along the way that was found but blank —
- * remembered even though a blank source does not stop the search, because it
- * must not be lost if the search comes up empty regardless. See the file
- * header.
- */
-interface ApiKeyLookup {
-  readonly resolution: ApiKeyResolution;
+interface ChainLookup {
+  readonly resolution: ChainResolution;
   readonly blankPaths: readonly string[];
 }
 
-/** The three sources, tried in order, stopping at the first that supplies a
- * value or hits a real problem. `absent` and `blank` — from any source — are
- * both what let resolution try the next one; `unreadable` is not, because it
- * is a problem with a source someone already configured. A `blank` result is
- * never returned as the final resolution — it always either yields to the
- * next source or, having none left, becomes `absent` — but every path found
- * blank along the way is collected in `blankPaths` regardless of how the
- * search ends. */
-async function resolveApiKey(
+/** One credential's three sources, named. `envVar` and `fileEnvVar` are the
+ * two variable names; `defaultFileName` is the one segment that differs in
+ * the conventional path. */
+interface ChainConfig {
+  readonly source: CredentialSource;
+  readonly envVar: string;
+  readonly fileEnvVar: string;
+  readonly defaultFileName: string;
+}
+
+const API_KEY_CHAIN: ChainConfig = {
+  source: 'api-key',
+  envVar: 'ANTHROPIC_API_KEY',
+  fileEnvVar: 'ANTHROPIC_API_KEY_FILE',
+  defaultFileName: 'anthropic.key',
+};
+
+// `envVar` here is `CLAUDE_CODE_OAUTH_TOKEN`, not an `AIGENCY_...`-prefixed
+// name to match its sibling below — see the file header's "NAMED THAT, NOT
+// SOMETHING TIDIER" paragraph for why: this is the name a caller already
+// has, from Claude Code's own runtime, and reading a name of this project's
+// own choosing instead would mean the token that is actually present never
+// resolves.
+const OAUTH_CHAIN: ChainConfig = {
+  source: 'subscription-oauth',
+  envVar: 'CLAUDE_CODE_OAUTH_TOKEN',
+  fileEnvVar: 'AIGENCY_REVIEW_OAUTH_TOKEN_FILE',
+  defaultFileName: 'anthropic-oauth.token',
+};
+
+/** The three sources for ONE credential, tried in order, stopping at the
+ * first that supplies a value or hits a real problem. `absent` and `blank`
+ * are both what let resolution try the next source; `unreadable` is not,
+ * because it is a problem with a source someone already configured. A
+ * `blank` result is never returned as the final resolution — it always
+ * either yields to the next source or, having none left, becomes `absent` —
+ * but every path found blank along the way is collected in `blankPaths`
+ * regardless of how the search ends. Generalised from what used to be named
+ * `resolveApiKey`: the API key chain and the OAuth chain are this same
+ * function, given different names — see `ChainConfig` above. */
+async function resolveChain(
   env: Record<string, string | undefined>,
   readKeyFile: KeyFileReader,
-): Promise<ApiKeyLookup> {
-  const fromEnv = present(env['ANTHROPIC_API_KEY']);
+  chain: ChainConfig,
+): Promise<ChainLookup> {
+  const fromEnv = present(env[chain.envVar]);
   if (fromEnv !== undefined) {
     return { resolution: { kind: 'found', value: fromEnv }, blankPaths: [] };
   }
 
   const blankPaths: string[] = [];
 
-  const explicitPath = present(env['ANTHROPIC_API_KEY_FILE']);
+  const explicitPath = present(env[chain.fileEnvVar]);
   if (explicitPath !== undefined) {
-    const result = await keyFromPath(explicitPath, readKeyFile);
+    const result = await credentialFromPath(explicitPath, readKeyFile);
     if (result.kind === 'blank') {
       blankPaths.push(result.path);
     } else if (result.kind !== 'absent') {
@@ -260,9 +385,9 @@ async function resolveApiKey(
     }
   }
 
-  const defaultPath = defaultKeyFilePath(env);
+  const defaultPath = defaultCredentialFilePath(env, chain.defaultFileName);
   if (defaultPath !== undefined) {
-    const result = await keyFromPath(defaultPath, readKeyFile);
+    const result = await credentialFromPath(defaultPath, readKeyFile);
     if (result.kind === 'blank') {
       blankPaths.push(result.path);
     } else if (result.kind !== 'absent') {
@@ -273,9 +398,74 @@ async function resolveApiKey(
   return { resolution: { kind: 'absent' }, blankPaths };
 }
 
+type CredentialResolution =
+  | { readonly kind: 'found'; readonly credential: Credential }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string };
+
+interface CredentialLookup {
+  readonly resolution: CredentialResolution;
+  /** Every path found blank, across BOTH chains, in the order they were
+   * tried — even the ones from a chain that was not, in the end, the one
+   * that supplied the credential. See the file header: a blank file is real
+   * information that must not vanish just because something else eventually
+   * worked out or came up empty too. */
+  readonly blankPaths: readonly string[];
+}
+
 /**
- * Read the settings out of an environment, plus wherever the API key file
- * source points.
+ * The choice between the two credentials, made once, deterministically. See
+ * the file header for the full argument; the shape of it here is: try OAuth
+ * first, in full — all three of its sources — and only fall through to the
+ * API key chain when OAuth resolved to nothing at all (`absent`). A genuinely
+ * broken OAuth source (`unreadable`) is a hard stop: it is reported and
+ * resolution does not continue on to the API key, because silently spending
+ * a paid credential instead of surfacing a broken free one would be exactly
+ * the kind of accident this function exists to remove.
+ */
+async function resolveCredential(
+  env: Record<string, string | undefined>,
+  readKeyFile: KeyFileReader,
+): Promise<CredentialLookup> {
+  const oauth = await resolveChain(env, readKeyFile, OAUTH_CHAIN);
+
+  if (oauth.resolution.kind === 'found') {
+    return {
+      resolution: {
+        kind: 'found',
+        credential: { source: 'subscription-oauth', value: oauth.resolution.value },
+      },
+      blankPaths: oauth.blankPaths,
+    };
+  }
+  if (oauth.resolution.kind === 'unreadable') {
+    return { resolution: oauth.resolution, blankPaths: oauth.blankPaths };
+  }
+
+  // oauth.resolution.kind === 'absent': OAuth contributed nothing, though it
+  // may have left blank paths behind — carried forward regardless of what
+  // the API key chain does next.
+  const apiKey = await resolveChain(env, readKeyFile, API_KEY_CHAIN);
+  const blankPaths = [...oauth.blankPaths, ...apiKey.blankPaths];
+
+  if (apiKey.resolution.kind === 'found') {
+    return {
+      resolution: {
+        kind: 'found',
+        credential: { source: 'api-key', value: apiKey.resolution.value },
+      },
+      blankPaths,
+    };
+  }
+  if (apiKey.resolution.kind === 'unreadable') {
+    return { resolution: apiKey.resolution, blankPaths };
+  }
+  return { resolution: { kind: 'absent' }, blankPaths };
+}
+
+/**
+ * Read the settings out of an environment, plus wherever the credential file
+ * sources point.
  *
  * Three outcomes, kept apart because they are three different jobs: `ready`,
  * `incomplete` (something is absent — a person must supply it) and `invalid`
@@ -284,10 +474,10 @@ async function resolveApiKey(
  * that they had forgotten to set a value they can see in front of them.
  *
  * `incomplete` wins the `kind` whenever anything is missing — absence stays
- * the primary message — but it carries `problems` too, so a broken key file
- * or a bad `AIGENCY_REVIEW_MAX_TOKENS` found along the way is never silently
- * dropped just because something else also happened to be unset. See the
- * file header for why this matters.
+ * the primary message — but it carries `problems` too, so a broken
+ * credential file or a bad `AIGENCY_REVIEW_MAX_TOKENS` found along the way is
+ * never silently dropped just because something else also happened to be
+ * unset. See the file header for why this matters.
  */
 export async function resolveSettings(
   env: Record<string, string | undefined>,
@@ -296,31 +486,40 @@ export async function resolveSettings(
   const missing: MissingSetting[] = [];
   const problems: string[] = [];
 
-  const apiKeyLookup = await resolveApiKey(env, readKeyFile);
-  const apiKeyResolution = apiKeyLookup.resolution;
-  let apiKey: string | undefined;
-  if (apiKeyResolution.kind === 'found') {
-    apiKey = apiKeyResolution.value;
-  } else if (apiKeyResolution.kind === 'unreadable') {
+  const credentialLookup = await resolveCredential(env, readKeyFile);
+  const credentialResolution = credentialLookup.resolution;
+  let credential: Credential | undefined;
+  if (credentialResolution.kind === 'found') {
+    credential = credentialResolution.credential;
+  } else if (credentialResolution.kind === 'unreadable') {
     problems.push(
-      `the API key file at ${apiKeyResolution.path} could not be read: ` + apiKeyResolution.reason,
+      `the credential file at ${credentialResolution.path} could not be read: ` +
+        credentialResolution.reason,
     );
-    for (const path of apiKeyLookup.blankPaths) {
-      problems.push(`the API key file at ${path} was found but was blank`);
+    for (const path of credentialLookup.blankPaths) {
+      problems.push(`the credential file at ${path} was found but was blank`);
     }
   } else {
     missing.push({
       name: 'ANTHROPIC_API_KEY',
-      why: 'the review calls a model once per lens, and cannot run without a key',
+      why: 'the review calls a model once per lens, and needs a credential to call it with',
       where:
         'GitHub: Settings → Secrets and variables → Actions → New repository secret, ' +
-        'named ANTHROPIC_API_KEY. Locally: export ANTHROPIC_API_KEY=sk-..., or set ' +
-        'ANTHROPIC_API_KEY_FILE to a path holding the key, or place the key at ' +
-        '$XDG_CONFIG_HOME/verevoir/anthropic.key (~/.config/verevoir/anthropic.key ' +
-        'when XDG_CONFIG_HOME is unset).',
+        'named ANTHROPIC_API_KEY. Locally, two independent ways to supply one — see ' +
+        'settings.ts for how they are chosen between when both are set. An API key: ' +
+        'export ANTHROPIC_API_KEY=sk-..., or set ANTHROPIC_API_KEY_FILE to a path ' +
+        'holding it, or place it at $XDG_CONFIG_HOME/verevoir/anthropic.key ' +
+        '(~/.config/verevoir/anthropic.key when XDG_CONFIG_HOME is unset). Or a ' +
+        'subscription, which costs nothing per call: Claude Code already sets ' +
+        'CLAUDE_CODE_OAUTH_TOKEN when this runs inside it, or export it yourself, ' +
+        'or set AIGENCY_REVIEW_OAUTH_TOKEN_FILE to a path holding it, or place it at ' +
+        '$XDG_CONFIG_HOME/verevoir/anthropic-oauth.token ' +
+        '(~/.config/verevoir/anthropic-oauth.token when XDG_CONFIG_HOME is unset). ' +
+        'CI never sets the OAuth variable, so it is the right default for a laptop and ' +
+        'cannot affect a production run.',
     });
-    for (const path of apiKeyLookup.blankPaths) {
-      problems.push(`the API key file at ${path} was found but was blank`);
+    for (const path of credentialLookup.blankPaths) {
+      problems.push(`the credential file at ${path} was found but was blank`);
     }
   }
 
@@ -374,7 +573,7 @@ export async function resolveSettings(
   return {
     kind: 'ready',
     settings: {
-      apiKey: apiKey as string,
+      credential: credential as Credential,
       model,
       maxTokens,
       lensSource,

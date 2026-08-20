@@ -8,13 +8,20 @@
 // transport is reused wholesale below (see `callOnce`) because it was
 // already correct. Its credential-resolution assumption —
 // `settings.credential.{source,value}`, picking x-api-key vs a Bearer
-// header — was NOT reused: it does not match ReviewSettings's real,
-// current contract (src/review/settings.ts: `{ apiKey, model, maxTokens,
-// lensSource, lensToken? }`, nothing else), confirmed by running this file
-// for real and hitting `Cannot read properties of undefined (reading
-// 'source')`. This file sends 'x-api-key': settings.apiKey unconditionally,
-// matching src/review/anthropic.ts — the only header the production request
-// path actually sends. Three other things _diag-hypothesis.mjs got wrong,
+// header — was NOT reused at the time this file was first written: it did
+// not match ReviewSettings's THEN-current contract (`{ apiKey, model,
+// maxTokens, lensSource, lensToken? }`, nothing else), confirmed by running
+// this file for real and hitting `Cannot read properties of undefined
+// (reading 'source')`. That has since changed: the subscription-OAuth
+// credential support originally built on the unmerged
+// s26/subscription-oauth-locally branch has been PORTED onto this branch's
+// src/review/settings.ts and src/review/anthropic.ts — a COPY of work that
+// remains unmerged on s26, not a cherry-pick (no verb on this belt reports a
+// sha or commit ancestry to cherry-pick from — finding H44). Whoever lands
+// s26 onto main will hit a real conflict on those two files; this comment is
+// that notice, left where the next reader will find it. `headersFor` below
+// now mirrors settings.ts's real, credential-aware contract rather than
+// assuming api-key. Three other things _diag-hypothesis.mjs got wrong,
 // fixed here:
 //
 //   1. It fired all 10 calls at once and got ten HTTP 429s back — zero data.
@@ -541,19 +548,30 @@ function printCredentialSources(credentialSources) {
 /**
  * Which credential is actually eligible to serve a call TODAY, given what
  * `describeCredentialSources` observed — decided the same way
- * src/review/settings.ts's own resolution chain would decide, without
- * calling into that file (it remains the subject of the still-open
- * s26/subscription-oauth-locally routing question).
+ * src/review/settings.ts's own resolution chain decides (OAuth first, then
+ * the API key chain — see resolveCredential in settings.ts), without
+ * calling into that file.
  *
- * This branch's settings.ts, as committed, reads only the ANTHROPIC_API_KEY
- * chain — no CLAUDE_CODE_OAUTH_TOKEN resolution exists here at all — so
- * this returns 'api-key' or null, never 'oauth', regardless of whether
- * CLAUDE_CODE_OAUTH_TOKEN is present in the environment. That is not an
- * oversight: it is what makes --credential=oauth refuse honestly today
- * instead of silently billing the API key while claiming to have used the
- * subscription path.
+ * Updated: the OAuth support this depends on has been PORTED onto this
+ * branch's settings.ts and anthropic.ts from the unmerged
+ * s26/subscription-oauth-locally branch — a COPY of work that stays
+ * unmerged there, not a cherry-pick (no verb on this belt reports a sha or
+ * commit ancestry to cherry-pick from — finding H44). Whoever lands s26
+ * will hit a real conflict on those two files.
+ *
+ * Mirrors only what `describeCredentialSources` actually observes: the
+ * CLAUDE_CODE_OAUTH_TOKEN environment variable's presence. settings.ts's
+ * OAuth chain also has file-based fallbacks
+ * (AIGENCY_REVIEW_OAUTH_TOKEN_FILE, the conventional
+ * anthropic-oauth.token path) that this function does not yet check — a
+ * real, narrower gap than before, stated rather than hidden: this can
+ * under-report OAuth eligibility (refuse --credential=oauth when a file
+ * source would in fact have supplied one) but cannot over-report it.
  */
 function credentialActuallyEligible(sources) {
+  if (sources.claudeCodeOauthTokenEnvPresent) {
+    return 'oauth';
+  }
   const apiKeyEligible =
     sources.anthropicApiKeyEnvPresent ||
     (sources.anthropicApiKeyFileEnvPresent && sources.anthropicApiKeyFileExists === true) ||
@@ -640,12 +658,15 @@ async function runPool(items, limit, worker, onItemDone, shouldAbort) {
 // ---------------------------------------------------------------------------
 
 // The real (and only) header this codebase's production request path
-// sends — see src/review/anthropic.ts, which sends 'x-api-key': config.apiKey
-// unconditionally. There is no OAuth-bearer alternative in the settings
-// this file resolves against: ReviewSettings (src/review/settings.ts) is
-// { apiKey, model, maxTokens, lensSource, lensToken? }, nothing else.
+// sends — see src/review/anthropic.ts, which now sends 'x-api-key' for an
+// api-key credential, or a Bearer authorization header for a subscription
+// OAuth one, via its own headersFor(config.credential). The OAuth support
+// was ported from s26/subscription-oauth-locally onto settings.ts and
+// anthropic.ts — see the file header above for the full account.
 function headersFor(settings) {
-  return { 'x-api-key': settings.apiKey };
+  return settings.credential.source === 'api-key'
+    ? { 'x-api-key': settings.credential.value }
+    : { authorization: `Bearer ${settings.credential.value}` };
 }
 
 function sleep(ms) {
@@ -960,7 +981,9 @@ async function runProbe({ spend, practicesResult, partitionModule, subjects }) {
 
   console.log('=== eval/sweep.mjs: PROBE (exactly one call) ===');
   printCredentialSources(await describeCredentialSources(process.env));
-  console.log(`model=${settings.model} credential=api-key lens=${lens.id} subject=${subject.id}`);
+  console.log(
+    `model=${settings.model} credential=${settings.credential.source} lens=${lens.id} subject=${subject.id}`,
+  );
 
   const result = await callOnce(lens, subject, settings);
 
@@ -1217,7 +1240,7 @@ async function main() {
 
   console.log(
     `Spending: model=${settings.model} maxTokens=${settings.maxTokens} ` +
-      `credential=api-key concurrency=${concurrency} ` +
+      `credential=${settings.credential.source} concurrency=${concurrency} ` +
       `total model calls=${summary.totalModelCalls.toLocaleString()}`,
   );
   if (skippedConfigs.length > 0) {
@@ -1340,13 +1363,14 @@ async function main() {
       measurement: 'eval-sweep',
       generatedAt,
       model: settings.model,
-      // A constant, not read off a field that does not exist: ReviewSettings
-      // carries only `apiKey`, and this codebase's production request path
+      // Read off settings.credential.source now that ReviewSettings carries
+      // a Credential (ported from s26/subscription-oauth-locally onto this
+      // branch's settings.ts — see the file header). Was a hardcoded
       // (src/review/anthropic.ts) has exactly one way to send it. Recorded
       // anyway, explicitly, rather than omitted — a results file that
       // cannot say what produced it is the exact failure this harness
       // exists to prevent, even when the value never varies.
-      credentialSource: 'api-key',
+      credentialSource: settings.credential.source,
       // Recorded explicitly rather than omitted: a results file that cannot
       // say what produced it is the exact failure this harness exists to
       // prevent.

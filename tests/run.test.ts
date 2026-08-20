@@ -396,7 +396,7 @@ describe('runReview, wiring the dependencies', () => {
 
     expect(fakes.calls.factory).toBe(1);
     expect(fakes.settingsSeen[0]).toEqual({
-      apiKey: 'sk-ant-test',
+      credential: { source: 'api-key', value: 'sk-ant-test' },
       model: DEFAULT_MODEL,
       maxTokens: DEFAULT_MAX_TOKENS,
       lensSource: DEFAULT_LENS_SOURCE,
