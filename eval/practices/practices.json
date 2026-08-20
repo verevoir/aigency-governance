@@ -4,227 +4,632 @@
     {
       "id": "adr001-events-published-not-pulled",
       "title": "Consumers subscribe; they never read the store",
-      "body": "A downstream service reads a published event stream, never the runtime's own event log or database directly. No code in another service queries the runtime's storage."
+      "body": "A downstream service reads a published event stream, never the runtime's own event log or database directly. No code in another service queries the runtime's storage.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr001-consumer-idempotent",
       "title": "Event consumers are idempotent",
-      "body": "A consumer of a published event is idempotent on (conversationId, sequence), because delivery is at-least-once. Processing the same event twice must not duplicate its effect."
+      "body": "A consumer of a published event is idempotent on (conversationId, sequence), because delivery is at-least-once. Processing the same event twice must not duplicate its effect.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr001-contract-additive",
       "title": "Published contracts change only additively",
-      "body": "A change to a published event schema adds fields; it never removes or repurposes one within a version. A consumer ignores fields it does not recognise and must not break when one is added."
+      "body": "A change to a published event schema adds fields; it never removes or repurposes one within a version. A consumer ignores fields it does not recognise and must not break when one is added.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr001-no-shared-package",
       "title": "No shared type package between services",
-      "body": "Two services agree on a wire contract, not on an imported TypeScript type. A type published as a library between independently deployed services is a dependency wearing a contract's clothes."
+      "body": "Two services agree on a wire contract, not on an imported TypeScript type. A type published as a library between independently deployed services is a dependency wearing a contract's clothes.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr002-envelope-is-reference",
       "title": "An inbound envelope carries a reference, not the work",
-      "body": "A message that starts work names an idempotency key and a resolvable reference to fetch the real work from; it does not carry the work's content directly."
+      "body": "A message that starts work names an idempotency key and a resolvable reference to fetch the real work from; it does not carry the work's content directly.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr002-unknown-envelope-fails-loud",
       "title": "An unrecognised envelope fails loudly",
-      "body": "A trigger path that receives a package it does not recognise reports the failure; it never silently drops the message and continues as if nothing arrived."
+      "body": "A trigger path that receives a package it does not recognise reports the failure; it never silently drops the message and continues as if nothing arrived.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr003-verdict-from-system-not-model",
       "title": "The system produces the verdict, not the model",
-      "body": "A turn that changed source state has its gates run by the system at outcome time; the model does not decide whether to call them or supply a verdict itself."
+      "body": "A turn that changed source state has its gates run by the system at outcome time; the model does not decide whether to call them or supply a verdict itself.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr003-claimed-verdict-matches-system",
       "title": "A claimed verdict must match the recorded one",
-      "body": "If a reply asserts a verdict that differs from the system's own recorded gate result for that turn, the reply is refused rather than recorded."
+      "body": "If a reply asserts a verdict that differs from the system's own recorded gate result for that turn, the reply is refused rather than recorded.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr004-usage-event-fields",
       "title": "Usage events carry the full field set, kept apart",
-      "body": "A usage record on the log carries model, inputTokens, outputTokens, cacheReadTokens and cacheCreationTokens as separate fields, plus port and purpose. They are never pre-summed into one number."
+      "body": "A usage record on the log carries model, inputTokens, outputTokens, cacheReadTokens and cacheCreationTokens as separate fields, plus port and purpose. They are never pre-summed into one number.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr006-span-shape",
       "title": "A span has identity, parent, and three measures",
-      "body": "A span carries an id, a parent reference, a start, an end, and three measures kept apart: duration, tokens (by kind), and cost."
+      "body": "A span carries an id, a parent reference, a start, an end, and three measures kept apart: duration, tokens (by kind), and cost.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr006-span-rollup",
       "title": "Span totals include descendants by fold",
-      "body": "A span's reported total is computed as a fold over its child spans, not tracked as a second, separately maintained running total."
+      "body": "A span's reported total is computed as a fold over its child spans, not tracked as a second, separately maintained running total.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr006-span-three-states",
       "title": "A span is running, finished, or failed",
-      "body": "An in-progress span is reported as running, never rendered as a zero-duration bar identical to one that finished instantly."
+      "body": "An in-progress span is reported as running, never rendered as a zero-duration bar identical to one that finished instantly.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr006-unparented-span-marked",
       "title": "An orphaned span is marked, not hidden",
-      "body": "A span whose parent cannot be determined is attached to the root span and explicitly flagged as unparented, never silently dropped into the tree unmarked."
+      "body": "A span whose parent cannot be determined is attached to the root span and explicitly flagged as unparented, never silently dropped into the tree unmarked.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr007-decorator-not-inline",
       "title": "Cross-cutting behaviour is a decorator, not inline code",
-      "body": "Spans, accounting, error mapping, redaction and retry are applied as higher-order functions wrapping a port at the composition root; the wrapped logic contains none of that bookkeeping itself."
+      "body": "Spans, accounting, error mapping, redaction and retry are applied as higher-order functions wrapping a port at the composition root; the wrapped logic contains none of that bookkeeping itself.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr007-decorator-preserves-outcome",
       "title": "A decorator never changes the outcome",
-      "body": "A decorator observes, maps, or retries a call; it never turns a failure into a success or an absence into a value."
+      "body": "A decorator observes, maps, or retries a call; it never turns a failure into a success or an absence into a value.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr007-error-mapping-preserves-distinction",
       "title": "Error mapping keeps failure kinds apart",
-      "body": "Mapping a transport error to a domain error preserves the distinction between not-found, empty, and broken; it never collapses them into one error type."
+      "body": "Mapping a transport error to a domain error preserves the distinction between not-found, empty, and broken; it never collapses them into one error type.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr008-smoke-test-can-fail",
       "title": "A smoke test can actually fail",
-      "body": "A smoke test exercises the real thread being deployed and asserts something that would break if it were broken; a check that only confirms a 200 from a health endpoint is not sufficient."
+      "body": "A smoke test exercises the real thread being deployed and asserts something that would break if it were broken; a check that only confirms a 200 from a health endpoint is not sufficient.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": false
     },
     {
       "id": "adr009-review-definition-referenced-not-copied",
       "title": "The review definition is referenced, not copied",
-      "body": "The corpus, lenses and synthesis rule a review runs against live in one place. A consuming repository references them (e.g. `uses:`); it never vendors or pastes a local copy."
+      "body": "The corpus, lenses and synthesis rule a review runs against live in one place. A consuming repository references them (e.g. `uses:`); it never vendors or pastes a local copy.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr009-synthesis-favors-findings",
       "title": "Synthesis resolves ambiguity toward more findings",
-      "body": "When lens verdicts are combined, an ambiguous case is resolved by passing the finding through rather than suppressing it to produce a cleaner-looking verdict."
+      "body": "When lens verdicts are combined, an ambiguous case is resolved by passing the finding through rather than suppressing it to produce a cleaner-looking verdict.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr009-three-review-outcomes",
       "title": "A review reports one of three outcomes",
-      "body": "A review reports approved, rejected-with-findings, or could-not-run. A missing key, unreachable corpus, or rate limit is reported as could-not-run — never silently treated as a pass."
+      "body": "A review reports approved, rejected-with-findings, or could-not-run. A missing key, unreachable corpus, or rate limit is reported as could-not-run — never silently treated as a pass.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr010-conversation-serialized",
       "title": "One conversation, one turn at a time",
-      "body": "Two turns belonging to the same conversation never execute concurrently; a conversation's mailbox is drained by exactly one consumer holding its lease."
+      "body": "Two turns belonging to the same conversation never execute concurrently; a conversation's mailbox is drained by exactly one consumer holding its lease.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
     },
     {
       "id": "adr010-lease-not-lock",
       "title": "Claims are leases, not locks",
-      "body": "A conversation (or similar resource) is claimed by an expiring lease that a dead holder eventually loses, never by a lock that stays held forever if its holder crashes."
+      "body": "A conversation (or similar resource) is claimed by an expiring lease that a dead holder eventually loses, never by a lock that stays held forever if its holder crashes.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
     },
     {
       "id": "adr011-install-vs-ci",
       "title": "install prepares; ci verifies",
-      "body": "A tree being changed is prepared with `npm install`, which may reconcile the lockfile. CI installs with `npm ci`, which refuses to reconcile and installs exactly what is locked."
+      "body": "A tree being changed is prepared with `npm install`, which may reconcile the lockfile. CI installs with `npm ci`, which refuses to reconcile and installs exactly what is locked.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr011-audit-blocks-prepare",
       "title": "A failed dependency audit blocks preparation",
-      "body": "A dependency audit runs as a step in preparing a repository, in declared order after install, and a bad result stops preparation rather than only emitting an ignorable report."
+      "body": "A dependency audit runs as a step in preparing a repository, in declared order after install, and a bad result stops preparation rather than only emitting an ignorable report.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
     },
     {
       "id": "adr011-dependency-reason-recorded",
       "title": "A new runtime dependency has a recorded reason",
-      "body": "Adding a package to `dependencies` is accompanied by a stated reason, because its transitive dependencies ship with it into production."
+      "body": "Adding a package to `dependencies` is accompanied by a stated reason, because its transitive dependencies ship with it into production.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr012-cross-repo-dep-pinned-sha",
       "title": "Cross-repo dependencies are pinned to a sha",
-      "body": "A dependency on another repository in this organisation is an npm git dependency pinned to an exact commit sha — never a branch, a tag, or a copied/vendored file."
+      "body": "A dependency on another repository in this organisation is an npm git dependency pinned to an exact commit sha — never a branch, a tag, or a copied/vendored file.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr013-merge-keys-on-declared-gates",
       "title": "Merge keys only on declared blocking gates",
-      "body": "A merge decision reads the repository's own declared blocking gates from its configuration and checks that they are green; it holds no built-in idea of what else counts as good enough."
+      "body": "A merge decision reads the repository's own declared blocking gates from its configuration and checks that they are green; it holds no built-in idea of what else counts as good enough.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr013-costed-gate-never-implicit",
       "title": "A costed gate never runs unnamed",
-      "body": "A gate or release step marked `costed: true` is skipped by any call that omits an explicit name list; it runs only when named explicitly, whatever else is declared blocking."
+      "body": "A gate or release step marked `costed: true` is skipped by any call that omits an explicit name list; it runs only when named explicitly, whatever else is declared blocking.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
     },
     {
       "id": "adr014-worktree-not-clone",
       "title": "Parallel writes use one worktree per stream",
-      "body": "Concurrent write access to one repository is given via `git worktree` — one working tree per stream sharing a single object store — never via a second independent clone."
+      "body": "Concurrent write access to one repository is given via `git worktree` — one working tree per stream sharing a single object store — never via a second independent clone.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr014-worktree-torn-down",
       "title": "Every worktree is torn down after use",
-      "body": "A worktree created for a finished stream is removed. A worktree left behind holds its branch checked out and blocks the next stream that needs it."
+      "body": "A worktree created for a finished stream is removed. A worktree left behind holds its branch checked out and blocks the next stream that needs it.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
     },
     {
       "id": "adr015-mutating-verb-has-observer",
       "title": "Every mutating verb has an observing counterpart",
-      "body": "A verb that changes a repository (checkout, merge, fetch) has a corresponding read-only verb that reports the same fact — current sha, ancestry, diff, checked-out branch — without itself mutating anything."
+      "body": "A verb that changes a repository (checkout, merge, fetch) has a corresponding read-only verb that reports the same fact — current sha, ancestry, diff, checked-out branch — without itself mutating anything.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
     },
     {
       "id": "adr016-bytes-move-by-reference",
       "title": "File content moves by reference, not through the model",
-      "body": "Copying a file's bytes from one ref to a branch is done by a verb that moves the reference directly; it is never read into the model and retyped back out as a write."
+      "body": "Copying a file's bytes from one ref to a branch is done by a verb that moves the reference directly; it is never read into the model and retyped back out as a write.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr016-command-output-captured",
       "title": "Command output is captured, never discarded",
-      "body": "The output of a run command is captured and returned or written somewhere readable. A command that is spawned with its output going nowhere has been paid for and not received."
+      "body": "The output of a run command is captured and returned or written somewhere readable. A command that is spawned with its output going nowhere has been paid for and not received.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr017-command-declares-dependency",
       "title": "A command names what it requires by name",
-      "body": "A declared command that depends on another declared command (e.g. a gate on a build) names that dependency explicitly; it does not rely on array order to imply it runs after."
+      "body": "A declared command that depends on another declared command (e.g. a gate on a build) names that dependency explicitly; it does not rely on array order to imply it runs after.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr017-gate-precondition-not-self-satisfied",
       "title": "A gate never satisfies its own precondition",
-      "body": "If a gate requires a bootstrap step (e.g. a build) that has not run, it refuses and names what is missing rather than silently running the bootstrap as part of the same invocation that judges."
+      "body": "If a gate requires a bootstrap step (e.g. a build) that has not run, it refuses and names what is missing rather than silently running the bootstrap as part of the same invocation that judges.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "adr018-two-build-obligations",
       "title": "Verification build and consumer build are distinct",
-      "body": "A repository meant to be depended on has both a disposable build for its own gate (gitignored output) and a `prepare`-triggered build whose artifact persists for a consumer's `npm install`."
+      "body": "A repository meant to be depended on has both a disposable build for its own gate (gitignored output) and a `prepare`-triggered build whose artifact persists for a consumer's `npm install`.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "constraint-a1-claimed-subset-obtained",
       "title": "A claimed result must be in the tool record",
-      "body": "A verdict token in a reply appears only if that turn's own tool record contains a matching result. claimed is a subset of obtained, else the reply is discarded and refused."
+      "body": "A verdict token in a reply appears only if that turn's own tool record contains a matching result. claimed is a subset of obtained, else the reply is discarded and refused.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "constraint-b2-empty-vs-missing",
       "title": "Empty and missing are different outcomes",
-      "body": "An empty result (found nothing) and a missing endpoint (could not check) are reported as distinguishable outcomes everywhere, at every layer — never collapsed into one."
+      "body": "An empty result (found nothing) and a missing endpoint (could not check) are reported as distinguishable outcomes everywhere, at every layer — never collapsed into one.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "constraint-c1-mutation-proves-behaviour",
       "title": "Changed behaviour is proven by mutation",
-      "body": "A test claiming to cover new or changed behaviour is shown breaking when that behaviour is mutated, then restored — a test never watched failing is not evidence."
+      "body": "A test claiming to cover new or changed behaviour is shown breaking when that behaviour is mutated, then restored — a test never watched failing is not evidence.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": false
     },
     {
       "id": "constraint-c4-gates-declared-not-from-claim",
       "title": "Gates are declared by the repository, never by a claim",
-      "body": "The set of gates run against a change is read from the repository's own declaration; a caller- or claim-supplied gate list is never accepted or executed."
+      "body": "The set of gates run against a change is read from the repository's own declaration; a caller- or claim-supplied gate list is never accepted or executed.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "constraint-f1-credentials-absence-fails",
       "title": "Absent credentials fail, never fall back",
-      "body": "When a required credential cannot be resolved, resolution fails outright. It never silently falls back to a default, a cached value, or an alternate source."
+      "body": "When a required credential cannot be resolved, resolution fails outright. It never silently falls back to a default, a cached value, or an alternate source.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "constraint-f2-no-secret-in-output",
       "title": "No secret reaches an output surface",
-      "body": "A credential value never appears in a tool result, a log line, a span attribute, or a published event — checked as a property of the actual output, not assumed from a character cap."
+      "body": "A credential value never appears in a tool result, a log line, a span attribute, or a published event — checked as a property of the actual output, not assumed from a character cap.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
     },
     {
       "id": "wa-stage-by-path",
       "title": "Commits stage explicit paths, not a sweep",
-      "body": "A commit names the files it stages explicitly; it does not use a blanket git add -A that could sweep in a collaborator's concurrent, unrelated changes."
+      "body": "A commit names the files it stages explicitly; it does not use a blanket git add -A that could sweep in a collaborator's concurrent, unrelated changes.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
     },
     {
       "id": "wa-negative-claims-verified",
       "title": "A negative claim is verified before it is acted on",
-      "body": "A claim of the form 'this does not exist' or 'there is no test for X' is backed by an actual check performed in this change, not asserted from memory or absence of a quick look."
+      "body": "A claim of the form 'this does not exist' or 'there is no test for X' is backed by an actual check performed in this change, not asserted from memory or absence of a quick look.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
     },
     {
       "id": "wa-comment-no-false-property",
       "title": "A comment does not claim an untested property",
-      "body": "A comment describing a guarantee the code has (e.g. 'best-effort, never fails the caller') is only kept if the code actually enforces that guarantee at every call site."
+      "body": "A comment describing a guarantee the code has (e.g. 'best-effort, never fails the caller') is only kept if the code actually enforces that guarantee at every call site.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "threat-config-fails-closed",
+      "title": "A permissive default on a security-relevant setting is refused",
+      "body": "A configuration value that decides isolation or access is not given a permissive default; an unset value causes the feature to fail closed rather than silently behave as if configured safely. An unconfigured case must never be a working case.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "threat-scope-checked-against-caller",
+      "title": "A resource argument is checked against the caller's own scope",
+      "body": "A path, repository, or resource argument supplied to an operation is validated against the calling context's own project or conversation before use; it is never trusted at face value just because it resolves to something real.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "threat-no-cross-tenant-context",
+      "title": "Material from two tenants is never combined in one prompt or query",
+      "body": "Context assembled for a single model call or retrieval draws from one project or conversation only. Combining material from two happens upstream of the model, inside its own reasoning, and no downstream storage or credential control can undo a combination that already happened there.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "threat-minimal-command-environment",
+      "title": "A declared command's environment is built from an allow-list, not inherited",
+      "body": "The environment given to a declared command is constructed from nothing plus an explicit list of permitted names; it is never the parent process's own environment with extra values appended, because that leaves every ambient credential reachable to a script that never asked for it by name.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "threat-scope-checks-are-logged",
+      "title": "A scope check and its refusal are recorded, not just enforced",
+      "body": "Every check that grants or denies access across a project or conversation boundary appends an event to the log, whichever way it decides — so a bypass is discoverable by reading the record rather than merely being improbable.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "contracts-no-silent-version-substitution",
+      "title": "A request for a specific version is answered exactly or refused",
+      "body": "An endpoint or function addressed to a specific version, id, or resource either returns that exact one or reports that it does not exist; it never silently substitutes a nearby one the caller did not ask for, because a caller told the wrong thing cannot tell the difference.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "contracts-fault-names-no-internals",
+      "title": "A server fault is reported without internal detail",
+      "body": "A genuine unexpected failure is surfaced as a fault — clearly distinct from a missing or empty result — and its message states that something failed without naming internal file paths, stack detail, or implementation structure.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "contracts-argv-is-array-not-shell-string",
+      "title": "Command arguments are a bounded array, never a shell string",
+      "body": "A command's arguments are passed as a fixed argv array; they are never concatenated into a single shell string, because a shell string is exactly the surface an injected value turns into arbitrary execution.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "contracts-shim-forwards-verbatim",
+      "title": "A thin pass-through layer does not interpret what it forwards",
+      "body": "A shim standing between a caller and an underlying result forwards that result as given — errors surface verbatim — and confines itself to metadata about the call (timing, a stamp) rather than reading or summarising the result's content.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "constraint-b1-failure-visible-in-conversation",
+      "title": "A failed turn says so in its own conversation",
+      "body": "A turn that fails partway leaves a marker in the conversation it was working in, rather than only logging server-side — otherwise a caller polling for a reply cannot tell a dead turn from a slow one.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "constraint-b3-empty-deliverable-is-not-success",
+      "title": "A run that produced nothing does not report success",
+      "body": "A process that exhausts its budget or completes without producing the deliverable it was asked for reports that outcome plainly; it never reports the green/passing status that a completed, successful run would carry.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "constraint-b4-empty-search-states-its-scope",
+      "title": "A search that finds nothing states what it searched",
+      "body": "An empty search result names the source and how much was considered — 'no matches across 47 messages', not bare emptiness — because a silent empty result is indistinguishable from a search that never actually ran.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "constraint-b5-unloadable-rubric-is-not-a-rejection",
+      "title": "A lens that cannot load its rubric never reports a rejection",
+      "body": "If a lens's own bar cannot be fetched or parsed, it reports that it could not run — never a rejection with zero findings, because zero findings and 'I could not check' must remain distinguishable outcomes.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "constraint-c2-reviewer-claims-are-grounded",
+      "title": "A reviewer's claim is backed by a search it actually performed",
+      "body": "A review asserting something like 'no test references X' or 'this pattern appears nowhere else' is backed by a search actually carried out in that review, with its scope stated; an assertion made from memory or a partial look is not distinguishable from one, and is exactly the defect a review exists to catch.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "constraint-c3-verify-layer-catches-fabrication",
+      "title": "A verify layer rejects a manufactured finding",
+      "body": "A finding manufactured from absence of evidence rather than a real defect is caught and rejected before it becomes a blocking verdict — a second, independent pass exists specifically to catch the first pass inventing a problem.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "constraint-d1-collateral-follows-meaning-not-contract",
+      "title": "Collateral search follows a field's meaning, not just its type contract",
+      "body": "When a change alters what a field means (not just its type), collateral search looks for every reader of that field's value, not only for other implementers of the same interface — a caller can read a field without implementing anything.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "constraint-e-size-flags-a-question-not-a-verdict",
+      "title": "An oversized change states its reason rather than being blocked",
+      "body": "A change past roughly 1,000-1,500 lines states, on the change itself, why it is one concern rather than several; the size is a trigger to ask whether it should be split, never itself grounds for a verdict — a genuinely single-concern large change is allowed to stay large.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "constraint-g1-cache-hit-is-measured",
+      "title": "Whether a cache prefix was actually shared is measured, not asserted",
+      "body": "A claim that a shared prompt prefix produced a cache hit is backed by the actual reported cache-read/cache-write token split for that call, not stated as an assumption about how the code should behave.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "constraint-g4-billing-port-is-announced",
+      "title": "Which port bills a call is stated up front",
+      "body": "Whether a model call is metered or subscription is declared at the point it is made, not left to be discovered afterwards by whoever reconciles the bill — the two have different economics behind one constant.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "constraint-m1-edit-not-whole-file-rewrite",
+      "title": "A change to an existing file is an edit, not a full retyping",
+      "body": "A diff to a file that already exists modifies the specific lines that changed; it does not re-transcribe the whole file, because re-transcription is exactly how a tab silently becomes four spaces or a brace becomes a bracket with nothing catching it.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "constraint-m2-target-comes-from-the-call",
+      "title": "A verb's target is taken from its call, not fixed at construction",
+      "body": "An operation that acts on a named repository, tree, or resource takes that name as a parameter to the call itself; it does not resolve it once at wiring time and reuse a fixed reference, because that is how a turn ends up reading one target and verifying another.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h52-bounded-read-needs-a-write-counterpart",
+      "title": "A size-bounded read has a matching way to move the same data",
+      "body": "When a read path refuses content over a size bound and writes it to disk instead, there is also a way to move that content onward (copy, upload, reference) — otherwise the bound has made that data reachable by nothing, which is worse than the size limit it was meant to enforce.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "h55-supplied-id-checked-for-collision",
+      "title": "A caller-supplied identifier is checked for collision before use",
+      "body": "When a create operation accepts a caller-chosen id, the id is checked against what already exists before being accepted — a readable, human-chosen id is exactly the kind most likely to collide by convention rather than by malice.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h61-refusal-states-cause-and-remedy",
+      "title": "A refusal message states what caused it and what would satisfy it",
+      "body": "An operation that refuses names the specific condition that triggered the refusal and what the caller would need to do or provide to succeed — not a generic 'refused' with no path forward.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h70-clean-with-upstream-is-not-published",
+      "title": "'No divergence from upstream' and 'successfully published' are different facts",
+      "body": "A branch that is level with its remote tracking ref is not necessarily one whose latest work has actually been pushed — the two are reported as distinct outcomes, because a caller who conflates them believes work is shared when it is only locally consistent.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h73-destructive-op-names-what-is-at-risk",
+      "title": "An operation that could overwrite uncommitted work refuses and names it",
+      "body": "An action that would discard or overwrite existing changes refuses rather than proceeding, and its refusal names exactly which files are at risk — not a generic warning that something might be lost.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h77-truncation-states-both-sizes",
+      "title": "Truncated output states the original size, the kept size, and that it happened",
+      "body": "When output is cut to fit a bound, the result carries a flag saying truncation occurred plus both the full and the kept size — never a silently shortened result that reads as complete.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h78-partial-commit-names-what-it-left-out",
+      "title": "A partial commit states what was not committed",
+      "body": "When a commit operation cannot stage everything it was asked to, it reports which files were left out, by name — not just that the ones it could commit succeeded.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h79-verify-on-a-clean-prepared-tree",
+      "title": "A gate is run against a freshly prepared tree, not one carrying residue",
+      "body": "Verification runs after preparation on a tree with no leftover state from a previous run — a gate that passes locally because of stale artifacts and fails in CI on the identical commit is residue, not drift, and the fix is a clean tree, not a mystery.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "h81-outcome-kind-is-visible-not-just-pass-fail",
+      "title": "A merge or gate check surfaces which outcome occurred, not only pass or fail",
+      "body": "A caller reading a gate's result can tell a genuine rejection apart from 'could not run' — both fail a binary pass check identically, so the kind of failure is exposed as its own field, not left to be inferred from a report file.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h83-ambiguous-verdict-is-refused",
+      "title": "A reply carrying two conflicting verdict markers is refused, not resolved by guessing",
+      "body": "If a reply's own text contains more than one verdict token that disagree, the reply is discarded and refused rather than the system picking one — resolving an internal contradiction by picking a side manufactures certainty that was not actually there.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h85-overstated-safeguard-worse-than-understated-progress",
+      "title": "Claiming a safeguard exists when it does not is worse than admitting slow progress",
+      "body": "A comment, doc, or reply asserting that a control or safeguard is in place is checked against whether it is actually built and enforced — an honest 'not done yet' is a lesser defect than a confident claim that something protects against a risk it does not.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h88-limit-states-its-source",
+      "title": "A reported limit or warning names where its number came from",
+      "body": "A message stating a cap, threshold, or warning value cites where that number was set — a config file, a measured percentile, a named constant — because a limit with no stated source is indistinguishable from one nobody actually configured.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h90-claim-checked-against-the-system",
+      "title": "A claim about current behaviour is checked against the system, not a document describing it",
+      "body": "A statement about what currently happens is verified by observing the running system or the current code, not by citing a document describing it — a document is accurate as of when it was written and goes stale the moment the thing it describes changes.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "h93-diagnostic-reports-on-success-too",
+      "title": "A diagnostic step reports what it found on success, not only on failure",
+      "body": "A step whose purpose is to check or diagnose something reports its findings when it passes as well as when it fails — a step that stays silent on success can only ever communicate what went wrong, never what it confirmed.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "adr001-publication-never-blocks-turn",
+      "title": "A failed event publication never fails the turn that produced it",
+      "body": "Publishing an event to a downstream subscriber is failure-tolerant: a subscriber that is down, slow, or absent does not affect the turn whose work generated the event — publication is a decorator around the real work, not a precondition for it succeeding.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "adr002-idempotency-key-survives-redelivery",
+      "title": "An idempotency key is derived to survive redelivery, not merely recorded",
+      "body": "The key used to deduplicate a redelivered message is computed deterministically from the message's own stable content wherever possible, rather than depending on state a cold restart could lose — a key that requires state to enforce is a key that fails exactly when the system is least trustworthy.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "adr003-changed-state-is-a-successful-write",
+      "title": "'Changed source state' means a write the belt reports succeeded",
+      "body": "The trigger for running verification gates is a write, through the system's own write path, that the system itself reports as having succeeded — not a dirty working tree (someone else's edit) and not a model's own narration that it wrote something.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "adr004-accounting-never-fails-a-turn",
+      "title": "A failure to record usage never fails the turn it was measuring",
+      "body": "Appending a usage or cost event is treated the same as any other append: failure-tolerant, applied as a decorator around the real work — a metrics or accounting sink being unavailable never causes the underlying turn to fail.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "adr006-span-recording-never-fails-a-turn",
+      "title": "A span that cannot be recorded is a lost measurement, not a lost turn",
+      "body": "Opening or closing a span around a model call, tool call, or gate run must be cheap and must never cause that call to fail — if the bookkeeping cannot be recorded, the underlying work still completes and only the measurement is missing.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "adr007-decorator-order-stated-at-wiring-site",
+      "title": "Decorator order is documented where the decorators are composed",
+      "body": "When two decorators could compose either order (e.g. tracing outside retry vs. retry outside tracing) and each produces a different, defensible picture, the wiring site states which was chosen and why — the difference is invisible at the call site and only shows up much later in whichever chart or log depends on it.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "adr008-additive-during-the-canary-window",
+      "title": "A change to a published contract stays additive for the length of a canary release",
+      "body": "Because two revisions serve traffic simultaneously during a canary shift, a change to a published event schema or HTTP surface adds fields rather than removing or repurposing them for the whole duration of that overlap — an old and a new revision must both be able to read what the other produces.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": true
+    },
+    {
+      "id": "h60-guard-refusal-does-not-discard-good-work",
+      "title": "A guard's false positive does not discard an otherwise-good result",
+      "body": "When a guard incorrectly refuses part of a reply, it is scoped to refuse only the specific claim it distrusts — a false-positive guard must not destroy or discard an entire report or result that was otherwise correct and usable.",
+      "appliesTo": "diff",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "h68-narration-matches-the-actual-artifact",
+      "title": "A tool's narration of what it did matches what it actually produced",
+      "body": "The prose a tool call returns describing its own action names the same files, branch, or run that its actual output reflects — a description of a different run than the one whose artifacts were produced is a mismatch a reviewer should be able to catch by comparing the two.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
+    },
+    {
+      "id": "h84-defect-class-fix-covers-every-instance",
+      "title": "Fixing a defect class means finding every instance of that shape, not just the one found",
+      "body": "When a defect is identified as an instance of a general shape (not a one-off), the fix is accompanied by a search for other places the same shape occurs in the codebase — a class-level defect fixed in one file and left in two others is the same defect, found and then re-shipped.",
+      "appliesTo": "process",
+      "mechanicallyCheckable": false
     }
   ]
 }
