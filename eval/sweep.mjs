@@ -4,9 +4,17 @@
 // practice corpus does. Kept, committed, and re-runnable: this is a
 // measurement, not a diagnostic thrown away after use.
 //
-// This replaces `scripts/_diag-hypothesis.mjs`, whose credential resolution
-// and retry-with-backoff transport are reused wholesale below (see
-// `callOnce`) because they were already correct. Three things it got wrong,
+// This replaces `scripts/_diag-hypothesis.mjs`, whose retry-with-backoff
+// transport is reused wholesale below (see `callOnce`) because it was
+// already correct. Its credential-resolution assumption —
+// `settings.credential.{source,value}`, picking x-api-key vs a Bearer
+// header — was NOT reused: it does not match ReviewSettings's real,
+// current contract (src/review/settings.ts: `{ apiKey, model, maxTokens,
+// lensSource, lensToken? }`, nothing else), confirmed by running this file
+// for real and hitting `Cannot read properties of undefined (reading
+// 'source')`. This file sends 'x-api-key': settings.apiKey unconditionally,
+// matching src/review/anthropic.ts — the only header the production request
+// path actually sends. Three other things _diag-hypothesis.mjs got wrong,
 // fixed here:
 //
 //   1. It fired all 10 calls at once and got ten HTTP 429s back — zero data.
@@ -55,6 +63,14 @@ import { parseReply } from '../dist/review/parseReply.js';
 import { aggregate } from '../dist/review/verdict.js';
 import { resolveSettings, renderMissing } from '../dist/review/settings.js';
 import { keyFileReader } from '../dist/review/readers.js';
+import {
+  classifyWidth,
+  CRITERION_RULE,
+  CATCH_THRESHOLD_OF_3,
+  REJECT_THRESHOLD_OF_3,
+  MIN_USABLE_REPEATS_OF_3,
+  CORRECT_REJECTION_CASE_ID,
+} from './criterion.mjs';
 
 // resolveSettings requires AIGENCY_REVIEW_LENSES_TOKEN whenever
 // AIGENCY_REVIEW_LENSES resolves to its default (a private-repo HTTPS URL) -
@@ -427,11 +443,92 @@ function buildLensSetForConfig(config, practicesResult, partitionModule) {
 
 // ---------------------------------------------------------------------------
 // Git sha, read from `.git` directly rather than spawning `git`: this
-// command's declared env allow-list carries only CLAUDE_CODE_OAUTH_TOKEN
-// (finding H87 — an env var not on the list does not reach the process), so
-// PATH is not guaranteed to be there for a spawned child to find a `git`
-// binary with. Reading the ref file needs no PATH at all.
+// command's declared env allow-list carries only ANTHROPIC_API_KEY,
+// ANTHROPIC_API_KEY_FILE, XDG_CONFIG_HOME and HOME (finding H87 — an env
+// var not on the list does not reach the process), so PATH is not
+// guaranteed to be there for a spawned child to find a `git` binary with.
+// Reading the ref file needs no PATH at all.
 // ---------------------------------------------------------------------------
+
+/**
+ * Which credential source was even ELIGIBLE to serve a call, observed from
+ * the environment exactly as src/review/settings.ts resolves it — without
+ * modifying that file, which is the subject of the still-open
+ * s26/subscription-oauth-locally routing question. `defaultKeyFilePath`'s
+ * fallback (XDG_CONFIG_HOME/verevoir/anthropic.key, else
+ * HOME/.config/verevoir/anthropic.key) is mirrored exactly, not guessed.
+ * Presence and existence ONLY: never a secret's value, a prefix, or a
+ * length. This is printed by --probe and recorded in every results file's
+ * provenance block, because a results file that records what a run cost is
+ * incomplete if it cannot say what paid for it.
+ */
+async function describeCredentialSources(env) {
+  const present = (value) => typeof value === 'string' && value.trim() !== '';
+
+  const apiKeyEnvPresent = present(env.ANTHROPIC_API_KEY);
+  const apiKeyFileEnvPresent = present(env.ANTHROPIC_API_KEY_FILE);
+  const apiKeyFilePath = apiKeyFileEnvPresent ? env.ANTHROPIC_API_KEY_FILE : null;
+  const apiKeyFileExists = apiKeyFilePath === null ? null : await pathExists(apiKeyFilePath);
+
+  const xdgConfigHome = present(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : undefined;
+  const home = present(env.HOME) ? env.HOME : undefined;
+  const conventionalKeyFilePath =
+    xdgConfigHome !== undefined
+      ? `${xdgConfigHome}/verevoir/anthropic.key`
+      : home !== undefined
+        ? `${home}/.config/verevoir/anthropic.key`
+        : null;
+  const conventionalKeyFileExists =
+    conventionalKeyFilePath === null ? null : await pathExists(conventionalKeyFilePath);
+
+  const claudeCodeOauthTokenEnvPresent = present(env.CLAUDE_CODE_OAUTH_TOKEN);
+
+  return {
+    anthropicApiKeyEnvPresent: apiKeyEnvPresent,
+    anthropicApiKeyFileEnvPresent: apiKeyFileEnvPresent,
+    anthropicApiKeyFilePath: apiKeyFilePath,
+    anthropicApiKeyFileExists: apiKeyFileExists,
+    conventionalKeyFilePath,
+    conventionalKeyFileExists,
+    claudeCodeOauthTokenEnvPresent,
+  };
+}
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function printCredentialSources(credentialSources) {
+  console.log('Credential sources observed (presence/existence only, never a secret value):');
+  console.log(
+    `  ANTHROPIC_API_KEY present: ${String(credentialSources.anthropicApiKeyEnvPresent)}`,
+  );
+  console.log(
+    `  ANTHROPIC_API_KEY_FILE present: ${String(credentialSources.anthropicApiKeyFileEnvPresent)}`,
+  );
+  if (credentialSources.anthropicApiKeyFilePath !== null) {
+    console.log(
+      `    -> ${credentialSources.anthropicApiKeyFilePath} exists: ${String(credentialSources.anthropicApiKeyFileExists)}`,
+    );
+  }
+  if (credentialSources.conventionalKeyFilePath !== null) {
+    console.log(
+      `  conventional key file ${credentialSources.conventionalKeyFilePath} exists: ${String(credentialSources.conventionalKeyFileExists)}`,
+    );
+  } else {
+    console.log(
+      '  conventional key file: neither XDG_CONFIG_HOME nor HOME is set, nowhere to look',
+    );
+  }
+  console.log(
+    `  CLAUDE_CODE_OAUTH_TOKEN present: ${String(credentialSources.claudeCodeOauthTokenEnvPresent)}`,
+  );
+}
 
 async function readGitSha(repoRoot) {
   try {
@@ -511,10 +608,13 @@ async function runPool(items, limit, worker, onItemDone, shouldAbort) {
 // only the caller around it (the concurrency-capped pool above) changes.
 // ---------------------------------------------------------------------------
 
-function headersFor(credential) {
-  return credential.source === 'api-key'
-    ? { 'x-api-key': credential.value }
-    : { authorization: `Bearer ${credential.value}` };
+// The real (and only) header this codebase's production request path
+// sends — see src/review/anthropic.ts, which sends 'x-api-key': config.apiKey
+// unconditionally. There is no OAuth-bearer alternative in the settings
+// this file resolves against: ReviewSettings (src/review/settings.ts) is
+// { apiKey, model, maxTokens, lensSource, lensToken? }, nothing else.
+function headersFor(settings) {
+  return { 'x-api-key': settings.apiKey };
 }
 
 function sleep(ms) {
@@ -556,7 +656,7 @@ async function callOnce(lens, subject, settings) {
         headers: {
           'content-type': 'application/json',
           'anthropic-version': '2023-06-01',
-          ...headersFor(settings.credential),
+          ...headersFor(settings),
         },
         body,
       });
@@ -828,10 +928,8 @@ async function runProbe({ spend, practicesResult, partitionModule, subjects }) {
   const subject = subjects[0];
 
   console.log('=== eval/sweep.mjs: PROBE (exactly one call) ===');
-  console.log(
-    `model=${settings.model} credential=${settings.credential.source} ` +
-      `lens=${lens.id} subject=${subject.id}`,
-  );
+  printCredentialSources(await describeCredentialSources(process.env));
+  console.log(`model=${settings.model} credential=api-key lens=${lens.id} subject=${subject.id}`);
 
   const result = await callOnce(lens, subject, settings);
 
@@ -1059,7 +1157,7 @@ async function main() {
 
   console.log(
     `Spending: model=${settings.model} maxTokens=${settings.maxTokens} ` +
-      `credential=${settings.credential.source} concurrency=${concurrency} ` +
+      `credential=api-key concurrency=${concurrency} ` +
       `total model calls=${summary.totalModelCalls.toLocaleString()}`,
   );
   if (skippedConfigs.length > 0) {
@@ -1100,6 +1198,7 @@ async function main() {
   }
 
   const sha = await readGitSha(REPO_ROOT);
+  const credentialSources = await describeCredentialSources(process.env);
   const generatedAt = new Date().toISOString();
   await mkdir(resultsDir, { recursive: true });
   const fileName = `${generatedAt.slice(0, 10)}-${settings.model}.json`;
@@ -1107,8 +1206,13 @@ async function main() {
 
   // Seeded with whatever a resumed run already completed, so the file this
   // session writes is one coherent, complete-so-far record — not a second
-  // file that only makes sense read alongside the first.
-  const configurationsOut = [...alreadyDone.values()];
+  // file that only makes sense read alongside the first. A resumed file
+  // from before the bracket verdict existed would carry configurations with
+  // no `bracket` field — computed defensively here rather than left absent,
+  // so every configuration in THIS file's output carries one.
+  const configurationsOut = [...alreadyDone.values()].map((cfg) =>
+    cfg.bracket ? cfg : { ...cfg, bracket: classifyWidth(cfg) },
+  );
 
   function scoreOneConfiguration(entry) {
     const declaredIds = entry.cb.lensSet.lenses.map((l) => l.id);
@@ -1143,13 +1247,19 @@ async function main() {
       repeatsOut.sort((a, b) => a.repeatIndex - b.repeatIndex);
       casesOut.push({ caseId, repeats: repeatsOut });
     }
-    return {
+    const configResult = {
       practiceCount: entry.cb.practiceCount,
       width: entry.cb.width,
       practiceSubsetSize: entry.cb.practiceSubsetSize,
       lensSet: entry.cb.lensSet,
       cases: casesOut,
     };
+    // The bracket verdict, not a rank: see eval/criterion.mjs. Computed here
+    // so it is always present alongside the raw scores that produced it —
+    // never a number a reader has to re-derive by re-running classifyWidth
+    // against the raw results by hand.
+    configResult.bracket = classifyWidth(configResult);
+    return configResult;
   }
 
   // Consecutive-429 abort tracking — see MAX_CONSECUTIVE_429's own comment
@@ -1170,13 +1280,20 @@ async function main() {
       measurement: 'eval-sweep',
       generatedAt,
       model: settings.model,
-      credentialSource: settings.credential.source,
+      // A constant, not read off a field that does not exist: ReviewSettings
+      // carries only `apiKey`, and this codebase's production request path
+      // (src/review/anthropic.ts) has exactly one way to send it. Recorded
+      // anyway, explicitly, rather than omitted — a results file that
+      // cannot say what produced it is the exact failure this harness
+      // exists to prevent, even when the value never varies.
+      credentialSource: 'api-key',
       // Recorded explicitly rather than omitted: a results file that cannot
       // say what produced it is the exact failure this harness exists to
       // prevent.
       gitSha: sha ?? null,
       gitShaObtained: sha !== undefined,
       concurrencyCap: concurrency,
+      credentialSources,
       repeats,
       axes: { widths, practiceCounts },
       practiceCorpus: { path: practicesFile, totalCount: practicesResult.count },
@@ -1191,6 +1308,18 @@ async function main() {
         width: cb.width,
         reason: cb.error,
       })),
+      // Stated here, not just in eval/criterion.mjs's source comments — a
+      // good/bad verdict with no stated criterion is exactly as unfounded
+      // as a precise number with no derivation, so a reader of THIS file
+      // never has to go find the source to know what a run's `bracket`
+      // verdicts meant.
+      criterion: {
+        catchThresholdOf3: CATCH_THRESHOLD_OF_3,
+        rejectThresholdOf3: REJECT_THRESHOLD_OF_3,
+        minUsableRepeatsOf3: MIN_USABLE_REPEATS_OF_3,
+        correctRejectionCaseId: CORRECT_REJECTION_CASE_ID,
+        rule: CRITERION_RULE,
+      },
       resumedFrom: options.resume ?? null,
       abortReason,
       partial,
@@ -1257,7 +1386,12 @@ async function main() {
       entry.doneCount += 1;
 
       if (entry.doneCount === expectedByConfig.get(key)) {
-        configurationsOut.push(scoreOneConfiguration(entry));
+        const scored = scoreOneConfiguration(entry);
+        configurationsOut.push(scored);
+        console.log(
+          `  configuration width=${entry.cb.width} practiceCount=${entry.cb.practiceCount}: ` +
+            `bracket=${scored.bracket.verdict}`,
+        );
         persist(configurationsOut.length < runConfigs.length);
       }
     },
@@ -1266,6 +1400,17 @@ async function main() {
 
   await persist(configurationsOut.length < runConfigs.length || aborted);
   await writeChain;
+
+  if (configurationsOut.length > 0) {
+    console.log(
+      'Bracket verdicts (good/bad/indistinguishable — not a ranking; see criterion.mjs):',
+    );
+    for (const cfg of configurationsOut) {
+      console.log(
+        `  width=${cfg.width} practiceCount=${cfg.practiceCount}: ${cfg.bracket.verdict}`,
+      );
+    }
+  }
 
   if (aborted) {
     console.error(
