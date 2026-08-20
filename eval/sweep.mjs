@@ -22,6 +22,20 @@
 //      kept, re-runnable measurement, because run-to-run stability is one of
 //      the headline metrics and a single sample can never show it.
 //
+// Stage 2 additions, made after this file's own first real run (72 calls,
+// 49 minutes, zero successes, all HTTP 429 - see eval/README.md's
+// Measurements section):
+//
+//   4. --probe makes exactly ONE model call and reports success, HTTP 429,
+//      or a transport failure - "is the quota serving right now" now costs
+//      a rounding error instead of the full retry ladder.
+//   5. MAX_CONSECUTIVE_429 aborts a sweep after a sustained run of 429s
+//      instead of grinding to the end of the retry ladder for every
+//      remaining call the way that first run did.
+//   6. --resume continues an aborted or interrupted run from its own
+//      partial results file, without re-spending on configurations it
+//      already completed.
+//
 // This file imports rather than reimplements the pieces owned by sibling
 // work: `./partition.mjs` (splits a practice corpus into a width-lens
 // `LensSet`), `./score.mjs` (scores findings against a case's labelled
@@ -63,6 +77,28 @@ const DEFAULT_WIDTHS = [1, 2, 3, 5, 8, 13, 21, 34];
 const DEFAULT_PRACTICE_COUNTS = ['full', 'half'];
 const DEFAULT_REPEATS = 3;
 const DEFAULT_CONCURRENCY = 4;
+
+// Fail fast on a sustained rate-limit wall rather than grinding through the
+// full retry ladder for every remaining call the way this file's first real
+// run did (49 minutes, 72 calls, zero successes, to learn what --probe now
+// answers in one). Counted at the level of FINISHED calls, not raw HTTP
+// attempts: each call's own retry ladder (MAX_ATTEMPTS in callOnce) already
+// exists to ride out a short transient blip, so counting every individual
+// attempt here would double-count that and risk aborting on the exact kind
+// of blip the retry ladder is designed to survive.
+//
+// 20 is a judgement call, not a measured optimum, and the trade is named
+// rather than hidden: set it too low and a run that would have recovered on
+// its own gets aborted for nothing, wasting the calls already spent and
+// requiring a --resume to finish; set it too high and a genuinely dead
+// quota still costs most of an hour to discover, which is the exact
+// experience this constant exists to prevent. At concurrency 4, 20
+// consecutive whole-call 429s is on the order of 5 full rounds of the
+// concurrency window failing outright — a threshold that reports a dead
+// quota within minutes rather than an hour, while still tolerating a
+// handful of stray 429s during an otherwise-working run.
+const MAX_CONSECUTIVE_429 = 20;
+
 const VALID_PRACTICE_COUNTS = new Set(['full', 'half']);
 
 // ---------------------------------------------------------------------------
@@ -90,6 +126,7 @@ const VALUE_FLAGS = new Set([
   'practices-file',
   'corpus-dir',
   'results-dir',
+  'resume',
 ]);
 
 function applyOption(options, key, value) {
@@ -122,6 +159,9 @@ function applyOption(options, key, value) {
     case 'results-dir':
       options.resultsDir = value;
       break;
+    case 'resume':
+      options.resume = value;
+      break;
     default:
       throw new Error(`unknown option: --${key}`);
   }
@@ -133,6 +173,10 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === '--spend') {
       options.spend = true;
+      continue;
+    }
+    if (arg === '--probe') {
+      options.probe = true;
       continue;
     }
     if (arg === '--help' || arg === '-h') {
@@ -178,9 +222,14 @@ function printHelp() {
       '  --practices-file PATH    Override eval/practices/practices.json.',
       '  --corpus-dir PATH        Override eval/corpus.',
       '  --results-dir PATH       Override eval/results.',
+      '  --probe                  Make exactly ONE model call and report success/429/transport-failure. Requires --spend.',
+      `  --resume PATH            Continue an aborted/partial --spend run from its results file; adopts that file's own axes and --repeats, and does not re-spend on configurations it already completed.`,
       '  --help                   This message.',
       '',
       'Every value-taking flag above also accepts --flag=value, e.g. --widths=1,3,8,21.',
+      `A --spend run aborts automatically after ${MAX_CONSECUTIVE_429} consecutive HTTP 429 responses`,
+      'with no success in between (see MAX_CONSECUTIVE_429 in the source for why), writing a partial',
+      'results file rather than grinding through the rest of the retry ladder for every remaining call.',
     ].join('\n'),
   );
 }
@@ -423,11 +472,20 @@ async function readGitSha(repoRoot) {
 // progress incrementally rather than only after every call in the sweep is
 // done. Optional and additive: a caller that only wants the final array is
 // unaffected.
-async function runPool(items, limit, worker, onItemDone) {
+//
+// `shouldAbort`, when given, is checked before a runner pulls its NEXT item —
+// never mid-call — so a caller can stop dispatching new work (a sustained
+// 429 wall, say) without cancelling requests already in flight. Items never
+// dispatched are left `undefined` in the returned array; the caller's own
+// bookkeeping (`onItemDone`) is the source of truth for what actually ran.
+async function runPool(items, limit, worker, onItemDone, shouldAbort) {
   const results = new Array(items.length);
   let next = 0;
   async function runner() {
     for (;;) {
+      if (shouldAbort && shouldAbort()) {
+        return;
+      }
       const i = next;
       next += 1;
       if (i >= items.length) {
@@ -708,6 +766,94 @@ function printDryRunReport(ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Probe: exactly one model call, so "is the quota serving right now" costs a
+// rounding error and takes as long as one request, instead of grinding
+// through --spend's full retry ladder across every remaining call to find
+// out. Reports success, HTTP 429, or a transport throw, and exits non-zero
+// on anything but a real reply, so a caller — a human, or a release step
+// gated on this one — can decide whether to proceed without reading prose.
+// ---------------------------------------------------------------------------
+
+async function runProbe({ spend, practicesResult, partitionModule, subjects }) {
+  if (!spend) {
+    console.error('--probe requires --spend (it makes exactly one real, billed model call).');
+    process.exitCode = 1;
+    return;
+  }
+  if (!practicesResult.found) {
+    console.error(
+      `Cannot probe: practices corpus missing at ${practicesResult.path} (${practicesResult.reason})`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (!partitionModule.found) {
+    console.error(`Cannot probe: eval/partition.mjs not available — ${partitionModule.error}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (subjects.length === 0) {
+    console.error('Cannot probe: no usable corpus case found.');
+    process.exitCode = 1;
+    return;
+  }
+
+  // The smallest possible real call: width=1 against the full corpus is one
+  // lens, one prompt. The probe exists to answer "is the transport working",
+  // not to sample any particular configuration.
+  const built = buildLensSetForConfig(
+    { practiceCount: 'full', width: 1 },
+    practicesResult,
+    partitionModule,
+  );
+  if (!built.lensSet) {
+    console.error(`Cannot probe: ${built.error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const settingsResult = await resolveSettings(process.env, keyFileReader());
+  if (settingsResult.kind === 'incomplete') {
+    console.error(renderMissing(settingsResult.missing, settingsResult.problems));
+    process.exitCode = 1;
+    return;
+  }
+  if (settingsResult.kind === 'invalid') {
+    console.error(`Settings invalid:\n${settingsResult.problems.join('\n')}`);
+    process.exitCode = 1;
+    return;
+  }
+  const settings = settingsResult.settings;
+  const lens = built.lensSet.lenses[0];
+  const subject = subjects[0];
+
+  console.log('=== eval/sweep.mjs: PROBE (exactly one call) ===');
+  console.log(
+    `model=${settings.model} credential=${settings.credential.source} ` +
+      `lens=${lens.id} subject=${subject.id}`,
+  );
+
+  const result = await callOnce(lens, subject, settings);
+
+  console.log(`outcome: ${result.outcome}`);
+  if (result.reason) {
+    console.log(`reason:  ${result.reason}`);
+  }
+  console.log(`elapsedMs: ${result.elapsedMs ?? 'n/a'}  attempts: ${result.attempts ?? 'n/a'}`);
+  if (result.usage) {
+    console.log(`usage: ${JSON.stringify(result.usage)}`);
+  }
+
+  if (result.outcome === 'could_not_run') {
+    console.error('Probe did not get a usable reply. Do not proceed to a real spend.');
+    process.exitCode = 1;
+  } else {
+    console.log('Probe got a usable reply. The transport is working right now.');
+    process.exitCode = 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -718,9 +864,9 @@ async function main() {
     return;
   }
 
-  const widths = options.widths ?? DEFAULT_WIDTHS;
-  const practiceCounts = options.practiceCounts ?? DEFAULT_PRACTICE_COUNTS;
-  const repeats = options.repeats ?? DEFAULT_REPEATS;
+  let widths = options.widths ?? DEFAULT_WIDTHS;
+  let practiceCounts = options.practiceCounts ?? DEFAULT_PRACTICE_COUNTS;
+  let repeats = options.repeats ?? DEFAULT_REPEATS;
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   const spend = options.spend === true;
 
@@ -742,6 +888,94 @@ async function main() {
     const loaded = await loadCases(corpusResult.cases);
     subjects = loaded.subjects;
     subjectErrors = loaded.errors;
+  }
+
+  if (options.probe) {
+    await runProbe({ spend, practicesResult, partitionModule, subjects });
+    return;
+  }
+
+  // --resume: a run that hit MAX_CONSECUTIVE_429 (or crashed, or was killed)
+  // left a partial results file behind. Resuming means finishing THAT sweep,
+  // not starting a differently-scoped one — so its own axes and repeat count
+  // are adopted here rather than whatever this command line separately
+  // asked for, and anything it already completed is carried over rather
+  // than re-spent on. Refuses rather than silently mixing results when the
+  // corpus this run sees does not match the one the file was produced
+  // against — comparing across two different corpora would not be comparing
+  // the same thing.
+  let alreadyDone = new Map();
+  if (options.resume) {
+    let raw;
+    try {
+      raw = await readFile(options.resume, 'utf8');
+    } catch (cause) {
+      console.error(`Cannot resume: could not read ${options.resume}: ${cause.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    let resumeDoc;
+    try {
+      resumeDoc = JSON.parse(raw);
+    } catch (cause) {
+      console.error(`Cannot resume: ${options.resume} is not valid JSON: ${cause.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (resumeDoc?.measurement !== 'eval-sweep' || !Array.isArray(resumeDoc.configurations)) {
+      console.error(
+        `Cannot resume: ${options.resume} does not look like an eval-sweep results file.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const resumedCaseIds = [...(resumeDoc.corpus?.caseIds ?? [])].sort();
+    const currentCaseIds = [...subjects.map((s) => s.id)].sort();
+    const caseIdsMatch =
+      resumedCaseIds.length === currentCaseIds.length &&
+      resumedCaseIds.every((id, i) => id === currentCaseIds[i]);
+    if (!caseIdsMatch) {
+      console.error(
+        `Cannot resume: ${options.resume} ran against corpus cases [${resumedCaseIds.join(', ')}]; ` +
+          `the current corpus has [${currentCaseIds.join(', ')}]. Refusing to mix results from a different corpus.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (resumeDoc.practiceCorpus?.totalCount !== practicesResult.count) {
+      console.error(
+        `Cannot resume: ${options.resume} ran against ${resumeDoc.practiceCorpus?.totalCount} practices; ` +
+          `the current corpus has ${practicesResult.count}. Refusing to mix results from a different practice corpus.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (resumeDoc.repeats !== repeats) {
+      console.error(
+        `Cannot resume: ${options.resume} used --repeats ${resumeDoc.repeats}; this run asked for ${repeats}. ` +
+          `Resume requires the same repeat count as the run being resumed.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (options.widths || options.practiceCounts) {
+      console.log(
+        `--resume ${options.resume}: ignoring --widths/--practice-counts on this command line ` +
+          `and using the resumed file's own axes instead — a resume finishes the same sweep, ` +
+          `it does not start a differently-scoped one.`,
+      );
+    }
+    widths = resumeDoc.axes?.widths ?? widths;
+    practiceCounts = resumeDoc.axes?.practiceCounts ?? practiceCounts;
+    for (const cfg of resumeDoc.configurations) {
+      alreadyDone.set(`${cfg.practiceCount}:${cfg.width}`, cfg);
+    }
+    console.log(
+      `Resuming from ${options.resume}: ${alreadyDone.size} configuration(s) already completed ` +
+        `and carried over as-is; this run will not re-spend on them. NOTE: resume verifies the ` +
+        `corpus case set, the practice-corpus size, and --repeats match — it does not verify the ` +
+        `model or credential used are the same as the resumed file's.`,
+    );
   }
 
   const summary = await computeSummary({
@@ -817,6 +1051,12 @@ async function main() {
   const runConfigs = configBuilds.filter((cb) => cb.lensSet);
   const skippedConfigs = configBuilds.filter((cb) => !cb.lensSet);
 
+  const configKeyOf = (cb) => `${cb.practiceCount}:${cb.width}`;
+  // Configurations a resumed run already completed are not re-executed, but
+  // still count toward runConfigs.length (the planned total) — they are
+  // seeded straight into configurationsOut below instead.
+  const remainingConfigs = runConfigs.filter((cb) => !alreadyDone.has(configKeyOf(cb)));
+
   console.log(
     `Spending: model=${settings.model} maxTokens=${settings.maxTokens} ` +
       `credential=${settings.credential.source} concurrency=${concurrency} ` +
@@ -828,9 +1068,15 @@ async function main() {
       console.log(`  width=${cb.width} practiceCount=${cb.practiceCount}: ${cb.error}`);
     }
   }
+  if (alreadyDone.size > 0) {
+    console.log(
+      `${alreadyDone.size} configuration(s) carried over from the resumed file; ` +
+        `${remainingConfigs.length} configuration(s) remain to run this session.`,
+    );
+  }
 
   const calls = [];
-  for (const cb of runConfigs) {
+  for (const cb of remainingConfigs) {
     for (const subject of subjects) {
       for (let repeatIndex = 0; repeatIndex < repeats; repeatIndex += 1) {
         for (const lens of cb.lensSet.lenses) {
@@ -845,10 +1091,9 @@ async function main() {
   // configuration's own calls are all in, so a crash partway through the
   // sweep loses only the configurations still in flight, never the ones
   // already finished.
-  const configKeyOf = (cb) => `${cb.practiceCount}:${cb.width}`;
   const expectedByConfig = new Map();
   const byConfig = new Map();
-  for (const cb of runConfigs) {
+  for (const cb of remainingConfigs) {
     const key = configKeyOf(cb);
     expectedByConfig.set(key, subjects.length * repeats * cb.lensSet.lenses.length);
     byConfig.set(key, { cb, cases: new Map(), doneCount: 0 });
@@ -860,7 +1105,10 @@ async function main() {
   const fileName = `${generatedAt.slice(0, 10)}-${settings.model}.json`;
   const filePath = join(resultsDir, fileName);
 
-  const configurationsOut = [];
+  // Seeded with whatever a resumed run already completed, so the file this
+  // session writes is one coherent, complete-so-far record — not a second
+  // file that only makes sense read alongside the first.
+  const configurationsOut = [...alreadyDone.values()];
 
   function scoreOneConfiguration(entry) {
     const declaredIds = entry.cb.lensSet.lenses.map((l) => l.id);
@@ -904,11 +1152,19 @@ async function main() {
     };
   }
 
+  // Consecutive-429 abort tracking — see MAX_CONSECUTIVE_429's own comment
+  // for the threshold and the trade it makes. Reset by anything that is NOT
+  // a 429 (a success, a different failure — anything), because the claim
+  // being tested is specifically "the last N calls, in a row, came back 429".
+  let consecutive429 = 0;
+  let aborted = false;
+  let abortReason = null;
+
   // `partial` plus the completed/planned counts are the elision announcing
   // itself — the same discipline lensSet.ts applies to its own output: a
   // results file that has only completed some of its planned configurations
-  // says so plainly, so a crash or an interruption is never read back as a
-  // finished run.
+  // says so plainly, so a crash, an abort, or an interruption is never read
+  // back as a finished run.
   function buildResultsDoc(partial) {
     return {
       measurement: 'eval-sweep',
@@ -935,6 +1191,8 @@ async function main() {
         width: cb.width,
         reason: cb.error,
       })),
+      resumedFrom: options.resume ?? null,
+      abortReason,
       partial,
       configurationsCompleted: configurationsOut.length,
       configurationsPlanned: runConfigs.length,
@@ -944,18 +1202,23 @@ async function main() {
 
   // Writes are chained, never concurrent: two configurations completing in
   // the same tick must not race to write the same file — each write waits
-  // for the previous one to land before starting.
+  // for the previous one to land before starting. Trailing newline because
+  // prettier expects one at EOF, and this is a tracked, committed file lint
+  // actually checks.
   let writeChain = Promise.resolve();
   function persist(partial) {
     const doc = buildResultsDoc(partial);
-    writeChain = writeChain.then(() => writeFile(filePath, JSON.stringify(doc, null, 2), 'utf8'));
+    writeChain = writeChain.then(() =>
+      writeFile(filePath, `${JSON.stringify(doc, null, 2)}\n`, 'utf8'),
+    );
     return writeChain;
   }
 
   // Written once before any call resolves, so a crash on the very first call
-  // still leaves a file on disk honestly reporting zero of N configurations
-  // completed, rather than the total silence stage 1's first real run left.
-  await persist(true);
+  // still leaves a file on disk honestly reporting what a resumed run
+  // already had (or zero of N, on a fresh run) — never the total silence
+  // stage 1's first real run left.
+  await persist(configurationsOut.length < runConfigs.length);
 
   console.log(`Dispatching ${calls.length} model call(s) at concurrency ${concurrency}...`);
   await runPool(
@@ -963,6 +1226,24 @@ async function main() {
     concurrency,
     (call) => callOnce(call.lens, call.subject, settings),
     (call, result) => {
+      const is429 =
+        result.outcome === 'could_not_run' &&
+        typeof result.reason === 'string' &&
+        result.reason.startsWith('HTTP 429:');
+      if (is429) {
+        consecutive429 += 1;
+        if (consecutive429 >= MAX_CONSECUTIVE_429 && !aborted) {
+          aborted = true;
+          abortReason =
+            `${consecutive429} consecutive HTTP 429 responses with no success in between ` +
+            `(threshold MAX_CONSECUTIVE_429=${MAX_CONSECUTIVE_429}) — stopping rather than ` +
+            `grinding through the rest of the retry ladder for every remaining call.`;
+          console.error(`ABORTING: ${abortReason}`);
+        }
+      } else {
+        consecutive429 = 0;
+      }
+
       const key = configKeyOf(call.cb);
       const entry = byConfig.get(key);
       if (!entry.cases.has(call.subject.id)) {
@@ -977,16 +1258,27 @@ async function main() {
 
       if (entry.doneCount === expectedByConfig.get(key)) {
         configurationsOut.push(scoreOneConfiguration(entry));
-        const complete = configurationsOut.length === runConfigs.length;
-        persist(!complete);
+        persist(configurationsOut.length < runConfigs.length);
       }
     },
+    () => aborted,
   );
 
+  await persist(configurationsOut.length < runConfigs.length || aborted);
   await writeChain;
-  console.log(
-    `Written to ${filePath} (${configurationsOut.length} of ${runConfigs.length} configuration(s) completed)`,
-  );
+
+  if (aborted) {
+    console.error(
+      `Sweep aborted: ${abortReason}\n` +
+        `${configurationsOut.length} of ${runConfigs.length} configuration(s) completed before the abort; ` +
+        `partial results written to ${filePath}. Resume with --resume ${filePath} once the quota recovers.`,
+    );
+    process.exitCode = 1;
+  } else {
+    console.log(
+      `Written to ${filePath} (${configurationsOut.length} of ${runConfigs.length} configuration(s) completed)`,
+    );
+  }
 }
 
 main().catch((cause) => {

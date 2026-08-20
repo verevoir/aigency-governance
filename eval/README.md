@@ -76,6 +76,42 @@ default `1,2,3,5,8,13,21,34`), `--practice-counts full,half`, `--repeats 3`,
 `--practices-file PATH`, `--corpus-dir PATH`, `--results-dir PATH`.
 `node eval/sweep.mjs --help` prints all of them.
 
+**Before a real run, check the quota first — it costs a rounding error:**
+
+```
+node eval/sweep.mjs --probe --spend
+```
+
+Makes exactly **one** model call and reports success, HTTP 429, or a
+transport failure, then exits 0 or 1 to match. This exists because stage 1's
+first real run spent 49 minutes and 72 calls to learn what one call now
+answers immediately — see Measurements below. Declared as the release
+command `eval-sweep-probe`; run it before any real `--spend` run, and stop
+if it comes back red.
+
+**A real run also aborts itself on a sustained wall.** If 20 consecutive
+calls (across the whole sweep, not per configuration) come back HTTP 429
+with no success in between, the run stops dispatching new calls, writes the
+partial results file with an explicit `abortReason`, and exits non-zero,
+rather than grinding through the rest of the retry ladder for every
+remaining call. The threshold is `MAX_CONSECUTIVE_429` in `eval/sweep.mjs`,
+with its own comment stating why 20 and what the trade is.
+
+**A run that aborted, crashed, or was interrupted can be finished, not
+restarted:**
+
+```
+node eval/sweep.mjs --spend --resume eval/results/<the-partial-file>.json
+```
+
+Adopts that file's own `axes` and `--repeats` (a resume finishes the same
+sweep; it does not start a differently-scoped one) and skips configurations
+it already completed rather than re-spending on them. Refuses rather than
+silently mixing results if the current corpus's case set or practice-corpus
+size do not match what the file was produced against. **Known limitation:**
+resume does not verify the model or credential match the resumed file's —
+only the corpus signature, the practice-corpus size, and `--repeats`.
+
 **`--widths` exists precisely so a first real run can be scoped from the
 command line rather than by editing this file.** The default sweep is 8
 widths × 2 corpus sizes × 3 repeats — well over a thousand calls — and a
@@ -187,3 +223,18 @@ produced a fan-width number** — recall, confirmed false positives,
 run-to-run stability and cost all remain unmeasured. Quota is not something
 this file can fix; the next real run is a decision for whoever holds the
 credential, not a retry loop.
+
+**2026-08-20 — stage 2 probe, quota still down, stage 2 not run.** Before
+spending on the authorised stage 2 sweep (widths 8, 21, both corpus arms,
+522 calls), `eval-sweep-probe` (one call) was run to check the quota first
+instead of finding out 49 minutes in again. First call: a bare **transport
+failure** (`transport failed: fetch failed`, one attempt — a network-level
+exception, not a reply from the API at all, and not retried since only an
+HTTP 429 triggers this file's retry ladder). Run a second time immediately
+after to tell a network blip from a persistent problem: this one reached the
+API and came back a confirmed **HTTP 429** after exhausting its own retry
+ladder — `{"type":"rate_limit_error","message":"Error"}` with a real
+`request_id`, not a guess. Combined, the wall identified in stage 1 is
+still up. Per the operator's own decision rule (probe 429s → stop, do not
+spend on the sweep), **stage 2 was not run.** `eval-sweep-stage2` remains
+declared and ready to run once `eval-sweep-probe` comes back green.

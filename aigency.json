@@ -82,6 +82,22 @@
       "description": "SPENDS MONEY — a scoped smoke run of eval-sweep at --widths 1,3 only (72 calls), never the full default sweep. Exists because a declared release step's arguments are fixed at declaration time (nothing calling this step can pass extra argv through), so a first, deliberately small real run needs its own name rather than a flag on the everyday command. The general-purpose `eval-sweep` step stays argument-free and dry-run by default on purpose — a command that spends whenever anyone runs it is exactly the shape of thing that gets run by mistake. Run this once the transport is trusted at this scale; widen the swept axes only by editing this step's baked-in --widths or by running eval/sweep.mjs directly with --spend and explicit flags.",
       "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
       "timeoutMs": 3600000
+    },
+    {
+      "name": "eval-sweep-probe",
+      "kind": "release",
+      "command": ["node", "eval/sweep.mjs", "--probe", "--spend"],
+      "description": "SPENDS A ROUNDING ERROR — exactly one real model call, made to answer \"is the quota serving right now\" before committing to a real spend. Run this before eval-sweep-smoke or eval-sweep-stage2 (or any real --spend run): a red result here means stop, the wall this harness's own first run hit for 49 minutes is still up, and no wider run will do anything but wait through the same wall for longer. A green result means the transport answered for real and a scoped real run is worth trying.",
+      "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
+      "timeoutMs": 300000
+    },
+    {
+      "name": "eval-sweep-stage2",
+      "kind": "release",
+      "command": ["node", "eval/sweep.mjs", "--spend", "--widths", "8,21"],
+      "description": "SPENDS MONEY — the authorised stage 2 sweep: widths 8 and 21, both corpus arms (full and half), default 3 repeats — 522 model calls. Run eval-sweep-probe first; do not run this if the probe came back red. Named for exactly what it spends on, same reasoning as eval-sweep-smoke: a declared release step's arguments are fixed at declaration time, so a scoped real run needs its own name rather than a flag on the argument-free, dry-run-by-default eval-sweep command that would otherwise get run by mistake. Aborts on its own after 20 consecutive HTTP 429 responses (MAX_CONSECUTIVE_429 in eval/sweep.mjs) rather than grinding through the whole sweep into a wall; a resulting partial results file can be finished later with --resume.",
+      "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
+      "timeoutMs": 10800000
     }
   ]
 }
