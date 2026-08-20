@@ -86,7 +86,7 @@
     {
       "name": "eval-sweep-probe",
       "kind": "release",
-      "command": ["node", "eval/sweep.mjs", "--probe", "--spend"],
+      "command": ["node", "eval/sweep.mjs", "--probe", "--spend", "--credential", "oauth"],
       "description": "SPENDS A ROUNDING ERROR — exactly one real model call, made to answer \"is the quota serving right now\" before committing to a real spend. Run this before eval-sweep-smoke or eval-sweep-stage2 (or any real --spend run): a red result here means stop, the wall this harness's own first run hit for 49 minutes is still up, and no wider run will do anything but wait through the same wall for longer. A green result means the transport answered for real and a scoped real run is worth trying.",
       "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
       "timeoutMs": 300000
