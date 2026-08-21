@@ -348,33 +348,33 @@ sources describe belt behaviour and working method almost by definition,
 while ADR "Decision" sections and `recon/constraints.md`'s A/B/C/F letters
 state product-code rules almost by construction.
 
-## Where the tags live, and a real limitation: `parseCorpus` drops them
+## Where the tags live — `parseCorpus` now carries them through (fixed)
 
-Read directly from `src/practices/provision.ts`, `parseCorpus`'s validation
-loop returns a **freshly constructed object**, not the raw parsed entry:
+**This was a real, confirmed bug, now fixed.** `parseCorpus`'s validation
+loop (`src/practices/provision.ts`) used to return a freshly constructed
+`{ id, title, body }` object, discarding every other key on the raw entry —
+including `appliesTo` and `mechanicallyCheckable`, present on every entry in
+`practices.json`. Anything obtained through `parseCorpus`, `provision`, or
+`enact` silently lost both tags, even though the raw file always had them.
 
-```ts
-return {
-  id,
-  title: requireString(fields['title'], `${where}.title`),
-  body: requireString(fields['body'], `${where}.body`),
-};
-```
+That mattered beyond the missing data: `eval/sweep.mjs`'s diff-applicable
+filter selects on `appliesTo`, which is exactly the shape of the beed7d4
+near-miss — a filter reading a field the parser drops, passing every dry
+run that happened to read the working tree while the committed corpus (or,
+here, the committed parser) would have selected zero.
 
-It reads only `fields['id']`, `fields['title']` and `fields['body']` off
-each raw JSON object. Any other key — including `appliesTo` and
-`mechanicallyCheckable`, now present on every entry in `practices.json` —
-is present in the raw file and **silently absent** from anything obtained
-through `parseCorpus`, `provision`, or `enact`. This does not break
-validation (unknown keys are simply never read, not rejected), so the file
-still parses cleanly and any existing width-partitioning logic built on top
-of `parseCorpus`/`provision` is unaffected by the new fields. But **any
-code that wants to filter or group by these tags must read `practices.json`
-as raw JSON**, not by going through the corpus/practice plumbing this
-repository ships — that plumbing is deliberately narrow to the three fields
-a prompt actually needs, and the tags were never going to survive it.
-Reported rather than assumed, per the instruction — the tags are additive,
-safe, and currently inert to everything except a reader of the raw file.
+**Fixed:** `Practice` now declares `appliesTo?: 'diff' | 'process'` and
+`mechanicallyCheckable?: boolean` as optional fields. `parseCorpus` reads
+both off the raw entry, validates them when present (a present-but-wrong
+value still fails loudly — a typo'd `appliesTo` is not silently accepted),
+and carries them onto the parsed `Practice` when the raw entry has them.
+Optional, not required: a corpus that predates the tags (every hand-written
+fixture in this repository's own tests) is still a valid corpus and parses
+exactly as it did before. `tests/provision.test.ts` asserts on the **parsed
+output** of the real committed `practices.json` — not the file, which
+`tests/eval-practices-corpus.test.mjs` already guards — checking that the
+diff-applicable and mechanically-checkable counts computed after parsing
+match the counts computed from the raw JSON.
 
 ## My reading: should the `process` practices stay in the corpus?
 

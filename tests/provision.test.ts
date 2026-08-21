@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -8,6 +12,13 @@ import {
   type Practice,
 } from '../src/practices/provision.js';
 import type { ReadResult, SourceReader } from '../src/review/load.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// The real committed corpus, read as raw text -- same file
+// tests/eval-practices-corpus.test.mjs guards, same reasoning: this is what
+// a fresh clone of this branch actually gets, not a fixture standing in for
+// it.
+const REAL_CORPUS_PATH = join(__dirname, '..', 'eval', 'practices', 'practices.json');
 
 // A bound large enough to be a no-op for tests that are not about bounding
 // at all — chosen far above anything a small fixture corpus could produce.
@@ -66,6 +77,68 @@ describe('parseCorpus', () => {
       ],
     });
     expect(() => parseCorpus(dup)).toThrow('is declared more than once');
+  });
+});
+
+describe('parseCorpus, against the real committed practice corpus', () => {
+  // The guard tests/eval-practices-corpus.test.mjs runs check the raw FILE
+  // (deliberately -- see that file's header on why it cannot go through
+  // parseCorpus). Nothing else asserts on what parseCorpus itself hands
+  // back for appliesTo/mechanicallyCheckable, which is exactly the gap that
+  // let parseCorpus silently drop both fields: every existing test either
+  // read the file directly or used fixtures that never carried the tags in
+  // the first place, so a parser that dropped them passed everything.
+  //
+  // This asserts on the PARSED OUTPUT, not the file: it counts
+  // diff-applicable and mechanically-checkable practices twice, once from
+  // the raw JSON and once from what parseCorpus returns, and requires them
+  // to agree. Before the fix, parseCorpus returns practices with no
+  // appliesTo/mechanicallyCheckable at all, so both parsed counts come back
+  // 0 while the raw counts are 60 and 69 respectively -- a loud mismatch,
+  // not a silent pass. This is the shape of the beed7d4 near-miss: a filter
+  // reading appliesTo off a parsed practice would have selected zero, while
+  // every dry run that read the raw file directly kept passing.
+  const rawText = readFileSync(REAL_CORPUS_PATH, 'utf8');
+  const raw = JSON.parse(rawText) as { practices: Array<Record<string, unknown>> };
+
+  it('parses the real corpus at all', () => {
+    const corpus = parseCorpus(rawText);
+    expect(corpus.practices.length).toBe(raw.practices.length);
+  });
+
+  it('keeps appliesTo on every parsed practice that carries it in the file', () => {
+    const corpus = parseCorpus(rawText);
+    const rawAppliesTo = new Map(raw.practices.map((p) => [p['id'], p['appliesTo']]));
+    for (const practice of corpus.practices) {
+      expect(practice.appliesTo).toBe(rawAppliesTo.get(practice.id));
+    }
+  });
+
+  it('keeps mechanicallyCheckable on every parsed practice that carries it in the file', () => {
+    const corpus = parseCorpus(rawText);
+    const rawCheckable = new Map(raw.practices.map((p) => [p['id'], p['mechanicallyCheckable']]));
+    for (const practice of corpus.practices) {
+      expect(practice.mechanicallyCheckable).toBe(rawCheckable.get(practice.id));
+    }
+  });
+
+  it('gives the same diff-applicable count parsed as in the raw file', () => {
+    const corpus = parseCorpus(rawText);
+    const rawDiffApplicable = raw.practices.filter((p) => p['appliesTo'] === 'diff').length;
+    const parsedDiffApplicable = corpus.practices.filter((p) => p.appliesTo === 'diff').length;
+    expect(parsedDiffApplicable).toBe(rawDiffApplicable);
+    // Not a vacuous comparison of two zeroes -- pin the real number down too,
+    // per eval/practices/README.md's own cross-tabulation (60 of 90).
+    expect(rawDiffApplicable).toBe(60);
+  });
+
+  it('gives the same mechanically-checkable count parsed as in the raw file', () => {
+    const corpus = parseCorpus(rawText);
+    const rawCheckable = raw.practices.filter((p) => p['mechanicallyCheckable'] === true).length;
+    const parsedCheckable = corpus.practices.filter((p) => p.mechanicallyCheckable === true).length;
+    expect(parsedCheckable).toBe(rawCheckable);
+    // Per eval/practices/README.md's own cross-tabulation (69 of 90).
+    expect(rawCheckable).toBe(69);
   });
 });
 

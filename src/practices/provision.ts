@@ -96,6 +96,13 @@ export interface Practice {
   readonly id: string;
   readonly title: string;
   readonly body: string;
+  // Additive, optional tags -- see eval/practices/README.md's "A third axis"
+  // and "Where the tags live" sections. Optional because a corpus that
+  // predates them (every hand-written fixture in this repo's own tests) is
+  // still a valid corpus; validated when present rather than defaulted, so
+  // a typo'd value fails loudly instead of silently becoming `undefined`.
+  readonly appliesTo?: 'diff' | 'process';
+  readonly mechanicallyCheckable?: boolean;
 }
 
 export interface Corpus {
@@ -121,6 +128,30 @@ function fail(message: string): never {
 function requireString(value: unknown, where: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
     fail(`${where} must be a non-empty string`);
+  }
+  return value;
+}
+
+// Both helpers below return `undefined` for an ABSENT field (a corpus that
+// predates the tags), but fail loudly for a PRESENT, wrongly-shaped one --
+// the same "absent is fine, wrong is not" distinction `requireString` draws
+// for the required fields, just not requiring presence.
+function optionalAppliesTo(value: unknown, where: string): 'diff' | 'process' | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value !== 'diff' && value !== 'process') {
+    fail(`${where} must be "diff" or "process" when present, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function optionalBoolean(value: unknown, where: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'boolean') {
+    fail(`${where} must be a boolean when present, got ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -182,10 +213,22 @@ export function parseCorpus(text: string): Corpus {
     }
     seen.add(id);
 
+    const appliesTo = optionalAppliesTo(fields['appliesTo'], `${where}.appliesTo`);
+    const mechanicallyCheckable = optionalBoolean(
+      fields['mechanicallyCheckable'],
+      `${where}.mechanicallyCheckable`,
+    );
+
     return {
       id,
       title: requireString(fields['title'], `${where}.title`),
       body: requireString(fields['body'], `${where}.body`),
+      // Spread rather than assigned directly: exactOptionalPropertyTypes
+      // refuses `appliesTo: undefined` as distinct from the key being
+      // absent, and absent (not present-but-undefined) is what a corpus
+      // that never had the field should produce.
+      ...(appliesTo !== undefined ? { appliesTo } : {}),
+      ...(mechanicallyCheckable !== undefined ? { mechanicallyCheckable } : {}),
     };
   });
 
