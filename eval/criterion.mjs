@@ -64,10 +64,22 @@
 // never silently excluded from the total" - a repeat whose truth loaded
 // and whose score() succeeded still carries a usable score even if some
 // lenses inside it never ran.
+//
+// CORRECT_REJECTION_CASE_ID names the corpus's sharpest not-a-defect case
+// for eval/README.md's prose ("the corpus's sharpest such case") and for
+// the results file's `criterion` metadata (sweep.mjs:1542,
+// `correctRejectionCaseId: CORRECT_REJECTION_CASE_ID` — reporting only,
+// alongside CRITERION_RULE and the thresholds). classifyWidth below never
+// reads it: every not-a-defect entry in `configResult` is scored by the
+// same loop, against the same REJECT_THRESHOLD_OF_3, with no per-entry
+// exemption. Value confirmed against eval/corpus/ on disk (not the
+// README, which has already named one module that never existed): the
+// directory is literally named practices-not-dead-code.
 
 export const CATCH_THRESHOLD_OF_3 = 2;
 export const REJECT_THRESHOLD_OF_3 = 2;
 export const MIN_USABLE_REPEATS_OF_3 = 2;
+export const CORRECT_REJECTION_CASE_ID = 'practices-not-dead-code';
 
 export const CRITERION_RULE =
   'A width is **good** if, across the repeats, every `defect` corpus entry is caught ' +
