@@ -61,9 +61,18 @@ describe('classifyWidth', () => {
       {
         caseId: 'c1',
         repeats: [
-          repeat(0, usableScore([perEntry('d1', 'defect', true), perEntry('n1', 'not-a-defect', false)])),
-          repeat(1, usableScore([perEntry('d1', 'defect', true), perEntry('n1', 'not-a-defect', false)])),
-          repeat(2, usableScore([perEntry('d1', 'defect', false), perEntry('n1', 'not-a-defect', true)])),
+          repeat(
+            0,
+            usableScore([perEntry('d1', 'defect', true), perEntry('n1', 'not-a-defect', false)]),
+          ),
+          repeat(
+            1,
+            usableScore([perEntry('d1', 'defect', true), perEntry('n1', 'not-a-defect', false)]),
+          ),
+          repeat(
+            2,
+            usableScore([perEntry('d1', 'defect', false), perEntry('n1', 'not-a-defect', true)]),
+          ),
         ],
       },
     ]);
@@ -90,9 +99,18 @@ describe('classifyWidth', () => {
       {
         caseId: 'c1',
         repeats: [
-          repeat(0, usableScore([perEntry('d1', 'defect', true), perEntry('n1', 'not-a-defect', true)])),
-          repeat(1, usableScore([perEntry('d1', 'defect', true), perEntry('n1', 'not-a-defect', true)])),
-          repeat(2, usableScore([perEntry('d1', 'defect', true), perEntry('n1', 'not-a-defect', true)])),
+          repeat(
+            0,
+            usableScore([perEntry('d1', 'defect', true), perEntry('n1', 'not-a-defect', true)]),
+          ),
+          repeat(
+            1,
+            usableScore([perEntry('d1', 'defect', true), perEntry('n1', 'not-a-defect', true)]),
+          ),
+          repeat(
+            2,
+            usableScore([perEntry('d1', 'defect', true), perEntry('n1', 'not-a-defect', true)]),
+          ),
         ],
       },
     ]);
@@ -104,9 +122,27 @@ describe('classifyWidth', () => {
       {
         caseId: 'c1',
         repeats: [
-          repeat(0, usableScore([perEntry('n1', 'not-a-defect', false), perEntry('n2', 'not-a-defect', true)])),
-          repeat(1, usableScore([perEntry('n1', 'not-a-defect', false), perEntry('n2', 'not-a-defect', true)])),
-          repeat(2, usableScore([perEntry('n1', 'not-a-defect', false), perEntry('n2', 'not-a-defect', false)])),
+          repeat(
+            0,
+            usableScore([
+              perEntry('n1', 'not-a-defect', false),
+              perEntry('n2', 'not-a-defect', true),
+            ]),
+          ),
+          repeat(
+            1,
+            usableScore([
+              perEntry('n1', 'not-a-defect', false),
+              perEntry('n2', 'not-a-defect', true),
+            ]),
+          ),
+          repeat(
+            2,
+            usableScore([
+              perEntry('n1', 'not-a-defect', false),
+              perEntry('n2', 'not-a-defect', false),
+            ]),
+          ),
         ],
       },
     ]);
@@ -132,7 +168,11 @@ describe('classifyWidth', () => {
     const config = configOf([
       {
         caseId: 'c1',
-        repeats: [repeat(0, unusableScore('x')), repeat(1, unusableScore('x')), repeat(2, unusableScore('x'))],
+        repeats: [
+          repeat(0, unusableScore('x')),
+          repeat(1, unusableScore('x')),
+          repeat(2, unusableScore('x')),
+        ],
       },
     ]);
     expect(classifyWidth(config).verdict).toBe('indistinguishable');
