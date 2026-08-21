@@ -2,3 +2,7 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+
+# Rewritten on every free eval-sweep dry run (not a --spend measurement,
+# which eval/results/ otherwise keeps committed — see eval/README.md).
+eval/results/dry-run-latest.json

@@ -895,6 +895,28 @@ async function callOnce(lens, subject, settings) {
 // Dry run: prints the cost of a real run without spending anything.
 // ---------------------------------------------------------------------------
 
+/**
+ * The fixed-shape object written to eval/results/dry-run-latest.json on
+ * every non-`--spend` run. Exists because run_release_step surfaces no
+ * stdout on a clean exit, so a dry run's own console.log report
+ * (printDryRunReport, below) is otherwise unobservable after the fact —
+ * every prior figure reported about a dry run in this project's history
+ * was computed rather than seen. Exported so a test can assert on this
+ * shape directly, without capturing stdout or spawning a subprocess.
+ */
+export function buildDryRunSummary({ widths, practiceCounts, practicesResult, summary }) {
+  return {
+    generatedAt: new Date().toISOString(),
+    widths,
+    practiceCounts,
+    configurationCount: summary.configurations.length,
+    caseCount: summary.casesCount,
+    practicesLoaded: practicesResult.practices.length,
+    diffApplicableCount: diffApplicablePractices(practicesResult.practices).length,
+    totalModelCalls: summary.totalModelCalls,
+  };
+}
+
 async function computeSummary({
   widths,
   practiceCounts,
@@ -1291,6 +1313,13 @@ async function main() {
   });
 
   if (!spend) {
+    const dryRunSummary = buildDryRunSummary({ widths, practiceCounts, practicesResult, summary });
+    await mkdir(resultsDir, { recursive: true });
+    await writeFile(
+      join(resultsDir, 'dry-run-latest.json'),
+      JSON.stringify(dryRunSummary, null, 2) + '\n',
+    );
+
     printDryRunReport({
       widths,
       practiceCounts,
