@@ -61,7 +61,7 @@
 
 import { access, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 import console from 'node:console';
 
@@ -1649,7 +1649,12 @@ async function main() {
   }
 }
 
-main().catch((cause) => {
-  console.error(cause?.stack ?? String(cause));
-  process.exitCode = 1;
-});
+const isMainModule =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMainModule) {
+  main().catch((cause) => {
+    console.error(cause?.stack ?? String(cause));
+    process.exitCode = 1;
+  });
+}
