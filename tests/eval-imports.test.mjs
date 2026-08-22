@@ -26,19 +26,23 @@ import { describe, expect, it } from 'vitest';
 //
 // THE ENUMERATION RULE, STATED EXPLICITLY RATHER THAN LEFT IMPLICIT: only
 // the FILES DIRECTLY INSIDE eval/ whose name ends in `.mjs` — not a
-// recursive walk, and not a filename blocklist. This is not merely a
-// convenience. eval/corpus/make-diffs.mjs (checked directly, by reading it,
-// before writing this rule) runs real side effects — it spawns `git` and
-// writes diff.txt files — at the TOP LEVEL of the module, via a top-level
-// `await readdir(...)` immediately followed by real git/filesystem work,
-// with NO main-guard gating any of it. A recursive enumeration would
-// `import()` that module during every `verify` run and shell out as a side
-// effect of loading it — exactly the "something other than free" failure
-// mode this whole test exists to avoid introducing. Non-recursive
-// enumeration excludes it by construction, so that exclusion is load-
-// bearing, not incidental. eval/practices/ and eval/results/ hold no .mjs
-// files at all as of this writing, so nothing else is presently excluded
-// by this rule — the rule is what matters, not today's directory contents.
+// recursive walk, and not a filename blocklist. This rule was first added
+// because eval/corpus/make-diffs.mjs (checked directly, by reading it) ran
+// real side effects — it spawned `git` and wrote diff.txt files — at the
+// TOP LEVEL of the module, with no main-guard gating any of it, so a
+// recursive enumeration would have `import()`ed it during every `verify`
+// run and shelled out as a side effect of loading it. THAT MODULE IS NOW
+// GUARDED (isMainModule, same idiom as eval/sweep.mjs below) — its own
+// side effects no longer run on import, from this test or from anything
+// else. The rule stays anyway: it is about the class of thing (a script
+// living in a subdirectory of eval/, not audited by this enumeration),
+// not about that one file, and a future subdirectory script could just as
+// easily be added without a guard. Non-recursive enumeration excludes the
+// whole class by construction, which is what makes the exclusion load-
+// bearing rather than incidental. eval/practices/ and eval/results/ hold
+// no .mjs files at all as of this writing, so nothing else is presently
+// excluded by this rule — the rule is what matters, not today's directory
+// contents.
 //
 // SIDE-EFFECT CHECK, PER FILE THE ENUMERATION ACTUALLY PICKS UP (re-done
 // against the enumeration, not just against the formerly-hardcoded five):
