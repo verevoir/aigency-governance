@@ -5,6 +5,7 @@ import {
   APPROVED_WORD,
   CANNOT_RUN_WORD,
   FINDING_MARKER,
+  OUT_OF_SCOPE_WORD,
   REASON_MARKER,
   REJECTED_WORD,
   REPLY_CONTRACT,
@@ -17,7 +18,7 @@ function parse(...lines: string[]): ReturnType<typeof parseReply> {
   return parseReply(LENS, lines.join('\n'));
 }
 
-describe('parseReply — the three answers it can give', () => {
+describe('parseReply — the four answers it can give', () => {
   it('reads a clean approval', () => {
     const result = parse('Looks fine to me.', '', `${VERDICT_MARKER} ${APPROVED_WORD}`);
     expect(result).toEqual({ lens: LENS, outcome: 'approved', findings: [] });
@@ -53,6 +54,29 @@ describe('parseReply — the three answers it can give', () => {
   it('falls back when the REASON: line is present but empty', () => {
     const result = parse(`${VERDICT_MARKER} ${CANNOT_RUN_WORD}`, REASON_MARKER);
     expect(result.reason).toBe('reviewer gave no reason');
+  });
+
+  // The fourth answer, read structurally like could_not_run — a word, then a
+  // reason — but landing on a different outcome. See replyContract.ts's
+  // header for why the two are not interchangeable.
+  it('reads a declared out_of_scope and takes its reason', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${OUT_OF_SCOPE_WORD}`,
+      `${REASON_MARKER} this diff touches only workflow YAML, nothing test-covered to judge`,
+    );
+    expect(result.outcome).toBe('out_of_scope');
+    expect(result.reason).toBe(
+      'this diff touches only workflow YAML, nothing test-covered to judge',
+    );
+  });
+
+  it('supplies a reason when an out_of_scope gives none', () => {
+    const result = parse(`${VERDICT_MARKER} ${OUT_OF_SCOPE_WORD}`);
+    expect(result.reason).toBe('reviewer gave no reason');
+  });
+
+  it('accepts the out_of_scope word in any case, matching the other verdict words', () => {
+    expect(parse(`${VERDICT_MARKER} OUT_OF_SCOPE`).outcome).toBe('out_of_scope');
   });
 });
 
@@ -156,8 +180,9 @@ describe('parseReply — replies it cannot read', () => {
     expect(result.outcome).toBe('could_not_run');
     // Pinned to the reason, not just the colour. Without this the test passes
     // against a parser broken in almost any direction, since could_not_run is
-    // what this parser returns whenever it is unsure.
-    expect(result.reason).toContain(`3 ${VERDICT_MARKER} lines`);
+    // what this parser returns whenever it is unsure. Four now, not three:
+    // the contract lists four verdict words, out_of_scope included.
+    expect(result.reason).toContain(`4 ${VERDICT_MARKER} lines`);
   });
 });
 
@@ -225,6 +250,10 @@ describe('the contract round-trips', () => {
         .outcome,
     ).toBe('rejected');
     expect(parseReply(LENS, `${VERDICT_MARKER} ${CANNOT_RUN_WORD}`).outcome).toBe('could_not_run');
+    expect(
+      parseReply(LENS, `${VERDICT_MARKER} ${OUT_OF_SCOPE_WORD}\n${REASON_MARKER} no material here`)
+        .outcome,
+    ).toBe('out_of_scope');
   });
 
   // DORMANT, deliberately. `REPLY_CONTRACT` is built by interpolating these
@@ -239,7 +268,7 @@ describe('the contract round-trips', () => {
     for (const marker of [VERDICT_MARKER, FINDING_MARKER, REASON_MARKER]) {
       expect(REPLY_CONTRACT).toContain(marker);
     }
-    for (const word of [APPROVED_WORD, REJECTED_WORD, CANNOT_RUN_WORD]) {
+    for (const word of [APPROVED_WORD, REJECTED_WORD, CANNOT_RUN_WORD, OUT_OF_SCOPE_WORD]) {
       expect(REPLY_CONTRACT).toContain(word);
     }
   });

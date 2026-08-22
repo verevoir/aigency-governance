@@ -54,13 +54,21 @@ uselessly as "the review could not run: HTTP 401".
 
 ## What comes back
 
-Three outcomes. **Two of them are red.**
+Four outcomes. **Three of them are red.**
 
-| Outcome       | Exit | What it means                                                                                                                                                                   |
-| ------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| approved      | 0    | Every lens reviewed, and none had a finding.                                                                                                                                    |
-| rejected      | 1    | At least one lens found something. The report says what, grouped by lens.                                                                                                       |
-| could not run | 1    | The review did not happen. Red **on purpose**: a green badge over a review that never ran is worse than a red one over a review that failed, because nobody investigates green. |
+| Outcome          | Exit | What it means                                                                                                                                                                                                                                                                                                                                    |
+| ---------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| approved         | 0    | Every lens that had something in scope reviewed it, and none had a finding.                                                                                                                                                                                                                                                                      |
+| rejected         | 1    | At least one lens found something. The report says what, grouped by lens.                                                                                                                                                                                                                                                                        |
+| could not run    | 1    | The review did not happen. Red **on purpose**: a green badge over a review that never ran is worse than a red one over a review that failed, because nobody investigates green.                                                                                                                                                                  |
+| nothing in scope | 1    | Every declared lens looked at the change and found nothing within its own dimension — a CI-only or docs-only diff, say, reviewed by a lens whose whole mandate is judging tests. A completed review, not a failed one; red by operator policy, not by necessity, because a change nothing evaluated should not read the same as one that passed. |
+
+A single lens can report it had nothing in scope without the whole panel doing
+so — the report names it and its reason, above the findings, the same way an
+unrun lens is named, but it does not count as incomplete. Only when **every**
+declared lens says so does the panel-level outcome become `nothing in scope`
+rather than `approved` — see `aggregate` in `src/review/verdict.ts` for the one
+line that decision lives on.
 
 The report goes to the job summary, and the verdict also appears on the Checks
 tab as an annotation. It is not posted as a pull request comment, deliberately —

@@ -13,6 +13,9 @@ function rejected(lens: string, summary: string): LensResult {
 function couldNotRun(lens: string, reason: string): LensResult {
   return { lens, outcome: 'could_not_run', findings: [], reason };
 }
+function outOfScope(lens: string, reason: string): LensResult {
+  return { lens, outcome: 'out_of_scope', findings: [], reason };
+}
 
 describe('aggregate', () => {
   it('approves only when every declared lens approved', () => {
@@ -106,5 +109,81 @@ describe('aggregate', () => {
     expect(() =>
       aggregate(DECLARED, [approved('correctness'), rejected('correctness', 'x')]),
     ).toThrow(PanelMismatchError);
+  });
+});
+
+// PR #38 (aigency-runtime-v2): a lens that reviewed and found nothing in its
+// scope is not the same fact as a lens that did not review at all, and the
+// two must not collapse into the same outcome.
+describe('aggregate, when a lens has nothing in its scope', () => {
+  it('still approves when the rest reviewed normally and one lens had nothing in scope', () => {
+    const verdict = aggregate(DECLARED, [
+      approved('correctness'),
+      approved('honesty'),
+      outOfScope(
+        'blast-radius',
+        'diff touches only workflow YAML, nothing about credential scope here',
+      ),
+    ]);
+    expect(verdict.outcome).toBe('approved');
+    expect(verdict.outOfScope).toEqual([
+      {
+        lens: 'blast-radius',
+        reason: 'diff touches only workflow YAML, nothing about credential scope here',
+      },
+    ]);
+  });
+
+  // The collapse this story exists to undo: out_of_scope must not join
+  // `unran` and must not, by itself, hold up the panel the way an unrun lens
+  // does.
+  it('keeps out_of_scope out of unran — it did not fail to review', () => {
+    const verdict = aggregate(DECLARED, [
+      approved('correctness'),
+      approved('honesty'),
+      outOfScope('blast-radius', 'nothing to judge'),
+    ]);
+    expect(verdict.unran).toEqual([]);
+  });
+
+  // S25's ordering, unchanged: a genuine could_not_run still outranks a
+  // rejected, even with a third lens reporting out_of_scope alongside them.
+  it('still lets could_not_run outrank rejected, with a third lens out_of_scope (S25 unchanged)', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'a real finding'),
+      couldNotRun('honesty', 'model returned no content'),
+      outOfScope('blast-radius', 'nothing to judge'),
+    ]);
+    expect(verdict.outcome).toBe('could_not_run');
+  });
+
+  // out_of_scope must not outrank a rejection either — a lens skimming its
+  // way to a cheap opt-out must not be able to bury a real finding.
+  it('lets a rejection stand even when every other lens is out_of_scope', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'a real finding'),
+      outOfScope('honesty', 'nothing to judge'),
+      outOfScope('blast-radius', 'nothing to judge'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+  });
+
+  // The operator-decision branch, built as specified: all lenses out of scope
+  // reads as its own non-green outcome, not as an approval.
+  it('reports its own outcome, not approved, when every declared lens is out_of_scope', () => {
+    const verdict = aggregate(
+      DECLARED,
+      DECLARED.map((lens) => outOfScope(lens, 'nothing to judge')),
+    );
+    expect(verdict.outcome).toBe('out_of_scope');
+    expect(verdict.outOfScope).toHaveLength(3);
+  });
+
+  it('supplies a reason for an out_of_scope that gave none', () => {
+    const verdict = aggregate(
+      ['correctness'],
+      [{ lens: 'correctness', outcome: 'out_of_scope', findings: [] }],
+    );
+    expect(verdict.outOfScope).toEqual([{ lens: 'correctness', reason: 'no reason given' }]);
   });
 });

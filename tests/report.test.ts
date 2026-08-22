@@ -15,6 +15,9 @@ function rejected(lens: string, ...summaries: string[]): LensResult {
 function couldNotRun(lens: string, reason: string): LensResult {
   return { lens, outcome: 'could_not_run', findings: [], reason };
 }
+function outOfScope(lens: string, reason: string): LensResult {
+  return { lens, outcome: 'out_of_scope', findings: [], reason };
+}
 
 describe('exitCodeFor', () => {
   // Named for what it checks. The universal — that ONLY an approval is zero —
@@ -33,6 +36,12 @@ describe('exitCodeFor', () => {
   // must not be the same colour as one that happened and approved.
   it('is non-zero for could_not_run', () => {
     expect(exitCodeFor('could_not_run')).toBe(1);
+  });
+
+  // The operator decision (verdict.ts, aggregate): a change nothing actually
+  // evaluated is not reported the same colour as one that passed.
+  it('is non-zero for out_of_scope', () => {
+    expect(exitCodeFor('out_of_scope')).toBe(1);
   });
 });
 
@@ -54,7 +63,11 @@ describe('renderReport', () => {
   // Both non-approving outcomes, not just one. A `could_not_run` heading
   // reading "Approved with gaps" would have passed the previous version.
   it('never puts the word Approved in a heading that is not an approval', () => {
-    for (const results of [[rejected('correctness', 'x')], [approved('correctness')]]) {
+    for (const results of [
+      [rejected('correctness', 'x')],
+      [approved('correctness')],
+      DECLARED.map((lens) => outOfScope(lens, 'nothing to judge')),
+    ]) {
       const report = renderReport(aggregate(DECLARED, results), CONTEXT);
       expect(report.split('\n')[0]).not.toContain('Approved');
     }
@@ -174,5 +187,63 @@ describe('renderReport', () => {
   it('claims nothing about completeness when it did not approve', () => {
     const report = renderReport(aggregate(DECLARED, [approved('correctness')]), CONTEXT);
     expect(report).not.toContain('Every lens reviewed');
+  });
+});
+
+// PR #38 (aigency-runtime-v2): a lens that reviewed and found nothing in its
+// scope is named — by lens and reason — the same way an unrun lens is, but
+// must not be mistaken for one, and must not make an approval overclaim.
+describe('renderReport, when a lens has nothing in its scope', () => {
+  it('states "Nothing in scope" in the first line when every lens is out of scope', () => {
+    const report = renderReport(
+      aggregate(
+        DECLARED,
+        DECLARED.map((lens) => outOfScope(lens, 'nothing to judge')),
+      ),
+      CONTEXT,
+    );
+    expect(report.split('\n')[0]).toContain('Nothing in scope');
+  });
+
+  it('names a lens that had nothing in scope, with its reason, before any findings', () => {
+    const verdict = aggregate(DECLARED, [
+      approved('correctness'),
+      rejected('honesty', 'a real finding'),
+      outOfScope('blast-radius', 'workflow YAML only, nothing about credential scope here'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report).toContain(
+      '- **blast-radius** — workflow YAML only, nothing about credential scope here',
+    );
+    expect(report.indexOf('nothing in scope')).toBeGreaterThan(-1);
+    expect(report.indexOf('nothing in scope')).toBeLessThan(report.indexOf('finding(s)'));
+  });
+
+  // The collapse this story exists to undo, at the report layer: one lens
+  // opting out must not read as an incomplete review.
+  it('still reads Approved, not Could not run, when only one lens is out_of_scope and the rest approve', () => {
+    const report = renderReport(
+      aggregate(DECLARED, [
+        approved('correctness'),
+        approved('honesty'),
+        outOfScope('blast-radius', 'nothing to judge'),
+      ]),
+      CONTEXT,
+    );
+    expect(report.split('\n')[0]).toContain('Approved');
+  });
+
+  // The overclaim this story exists to fix: "every lens reviewed" is false
+  // the moment one of them reported nothing in scope instead.
+  it('does not claim every lens reviewed when approving with a lens out of scope', () => {
+    const report = renderReport(
+      aggregate(DECLARED, [
+        approved('correctness'),
+        approved('honesty'),
+        outOfScope('blast-radius', 'nothing to judge'),
+      ]),
+      CONTEXT,
+    );
+    expect(report).not.toContain('Every lens reviewed and none had a finding');
   });
 });

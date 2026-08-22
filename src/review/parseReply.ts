@@ -25,6 +25,7 @@ import {
   APPROVED_WORD,
   CANNOT_RUN_WORD,
   FINDING_MARKER,
+  OUT_OF_SCOPE_WORD,
   REASON_MARKER,
   REJECTED_WORD,
   VERDICT_MARKER,
@@ -52,6 +53,15 @@ function taggedLines(lines: readonly string[], marker: string): string[] {
 
 function cannotRun(lens: string, reason: string): LensResult {
   return { lens, outcome: 'could_not_run', findings: [], reason };
+}
+
+// Structurally identical to cannotRun, and deliberately a separate function
+// rather than a shared helper with a parameter: the two outcomes read the
+// same reply shape (a word, then a REASON: line) but mean different things —
+// see replyContract.ts's header — and a caller here should never have to
+// pass an outcome literal to get the right one.
+function outOfScope(lens: string, reason: string): LensResult {
+  return { lens, outcome: 'out_of_scope', findings: [], reason };
 }
 
 /**
@@ -128,6 +138,15 @@ export function parseReply(lens: string, text: string): LensResult {
   if (verdict === CANNOT_RUN_WORD) {
     const reasons = taggedLines(lines, REASON_MARKER).filter((reason) => reason !== '');
     return cannotRun(lens, reasons[0] ?? 'reviewer gave no reason');
+  }
+
+  if (verdict === OUT_OF_SCOPE_WORD) {
+    // Read only when the reviewer wrote exactly this word — matching how
+    // CANNOT_RUN_WORD is read just above. Neither is this parser's default
+    // for an ambiguous reply; every ambiguity still resolves to could_not_run,
+    // per the file header. This is the model's own explicit, honest signal.
+    const reasons = taggedLines(lines, REASON_MARKER).filter((reason) => reason !== '');
+    return outOfScope(lens, reasons[0] ?? 'reviewer gave no reason');
   }
 
   return cannotRun(lens, `reply carried an unrecognised verdict ${JSON.stringify(verdict)}`);
