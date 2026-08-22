@@ -95,6 +95,37 @@
 // this file exists for is defeated by an unrelated export sitting in a shell
 // profile, silently, with nothing to say so.
 //
+// LOCAL RUNS CAN BE MADE TO REFUSE RATHER THAN FALL BACK, AND THAT IS A
+// SEPARATE KNOB FROM THE ORDERING ABOVE. The ordering makes OAuth-first safe
+// and right; it does not, by itself, ENFORCE that a local run never reaches
+// `ANTHROPIC_API_KEY` — if the OAuth token is misconfigured in a way that
+// resolves to `absent` (a blank environment variable, or an explicit
+// `..._FILE` path pointing at nothing), resolution would otherwise fall
+// through to a working API key and spend real credits, silently, on the one
+// run that exists specifically to avoid spending them. `allowApiKeyFallback`
+// on `resolveCredential`/`resolveSettings` is that enforcement: when false,
+// an `absent` OAuth resolution is reported directly, as a refusal naming
+// which OAuth signal (if any) was attempted, and the API key chain is never
+// even tried. `scripts/review-head.mjs` — the only local entry point — passes
+// this as false, unconditionally, via `AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK`
+// (see cli/review.ts). Nothing in `.github/workflows/review.yml` sets that
+// variable, so CI's own resolution is completely unaffected by it: CI never
+// passes through this branch at all, the same way it never sets
+// `CLAUDE_CODE_OAUTH_TOKEN` in the first place.
+//
+// BLANK-ENV AND MISSING-EXPLICIT-PATH ARE TRACKED FOR THE SAME REASON A BLANK
+// FILE ALREADY WAS. `resolveChain` already told a blank *file* apart from an
+// absent one, for the ordinary case (see `blankPaths` below) — a genuine
+// attempt that produced nothing is different information from never having
+// tried. The same gap existed, unnoticed, for the environment variable and
+// for an explicit `*_FILE` path naming a file that is not there: both
+// collapsed into plain `absent`, indistinguishable from "OAuth was never
+// mentioned". That is harmless while resolution is allowed to fall through —
+// the distinction only matters once refusing is the alternative to spending
+// money, which is exactly when it is surfaced: `blankEnvVar` and
+// `missingExplicitPath` on `ChainLookup` exist to be read by the refusal path
+// in `resolveCredential`, below, and nowhere else.
+//
 // A source that is genuinely broken — present, and unreadable, rather than
 // simply absent — is a hard stop for the WHOLE credential resolution, not a
 // reason to fall through to the other credential. If the OAuth token file is
@@ -321,6 +352,18 @@ async function credentialFromPath(
 interface ChainLookup {
   readonly resolution: ChainResolution;
   readonly blankPaths: readonly string[];
+  /** True when this chain's environment variable was set but blank — a
+   * signal that someone attempted to configure this credential through the
+   * environment and it arrived empty, as distinct from never having
+   * mentioned it at all. Read only by the refusal path in
+   * `resolveCredential` — see the file header. */
+  readonly blankEnvVar: boolean;
+  /** The `*_FILE` path, when the corresponding env var named one but no file
+   * was found there — a signal that someone attempted to point this
+   * credential at a file, as distinct from never having set the `*_FILE`
+   * variable at all. `undefined` when no such attempt was made. Read only by
+   * the refusal path in `resolveCredential` — see the file header. */
+  readonly missingExplicitPath?: string;
 }
 
 /** One credential's three sources, named. `envVar` and `fileEnvVar` are the
@@ -368,20 +411,31 @@ async function resolveChain(
   readKeyFile: KeyFileReader,
   chain: ChainConfig,
 ): Promise<ChainLookup> {
-  const fromEnv = present(env[chain.envVar]);
+  const rawEnv = env[chain.envVar];
+  const fromEnv = present(rawEnv);
   if (fromEnv !== undefined) {
-    return { resolution: { kind: 'found', value: fromEnv }, blankPaths: [] };
+    return { resolution: { kind: 'found', value: fromEnv }, blankPaths: [], blankEnvVar: false };
   }
+  // Set but blank is a real attempt, distinct from never having mentioned
+  // the variable at all — see the file header. Recorded even though this
+  // ordinary (fallback-allowed) path does nothing with it; only the refusal
+  // path in `resolveCredential` reads it.
+  const blankEnvVar = rawEnv !== undefined && rawEnv.trim() === '';
 
   const blankPaths: string[] = [];
+  let missingExplicitPath: string | undefined;
 
   const explicitPath = present(env[chain.fileEnvVar]);
   if (explicitPath !== undefined) {
     const result = await credentialFromPath(explicitPath, readKeyFile);
     if (result.kind === 'blank') {
       blankPaths.push(result.path);
-    } else if (result.kind !== 'absent') {
-      return { resolution: result, blankPaths };
+    } else if (result.kind === 'absent') {
+      // Attempted and not there — different from the *_FILE variable never
+      // having been set. See the file header.
+      missingExplicitPath = explicitPath;
+    } else {
+      return { resolution: result, blankPaths, blankEnvVar };
     }
   }
 
@@ -391,17 +445,35 @@ async function resolveChain(
     if (result.kind === 'blank') {
       blankPaths.push(result.path);
     } else if (result.kind !== 'absent') {
-      return { resolution: result, blankPaths };
+      return {
+        resolution: result,
+        blankPaths,
+        blankEnvVar,
+        ...(missingExplicitPath !== undefined ? { missingExplicitPath } : {}),
+      };
     }
   }
 
-  return { resolution: { kind: 'absent' }, blankPaths };
+  return {
+    resolution: { kind: 'absent' },
+    blankPaths,
+    blankEnvVar,
+    ...(missingExplicitPath !== undefined ? { missingExplicitPath } : {}),
+  };
 }
 
 type CredentialResolution =
   | { readonly kind: 'found'; readonly credential: Credential }
   | { readonly kind: 'absent' }
-  | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string };
+  | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string }
+  | {
+      /** OAuth resolved to nothing and `allowApiKeyFallback` was false, so
+       * the API key chain was never tried. See the file header. */
+      readonly kind: 'oauth-required';
+      /** What was actually attempted for OAuth, in the order tried — empty
+       * when OAuth was never mentioned at all. */
+      readonly attempted: readonly string[];
+    };
 
 interface CredentialLookup {
   readonly resolution: CredentialResolution;
@@ -422,10 +494,17 @@ interface CredentialLookup {
  * resolution does not continue on to the API key, because silently spending
  * a paid credential instead of surfacing a broken free one would be exactly
  * the kind of accident this function exists to remove.
+ *
+ * `allowApiKeyFallback` is a second, independent hard stop: when false, an
+ * `absent` OAuth resolution is reported directly as `oauth-required`, naming
+ * whatever OAuth signal was actually attempted, and the API key chain is
+ * never called at all — not tried and rejected, never invoked. See the file
+ * header for why this exists apart from the ordering above.
  */
 async function resolveCredential(
   env: Record<string, string | undefined>,
   readKeyFile: KeyFileReader,
+  allowApiKeyFallback: boolean,
 ): Promise<CredentialLookup> {
   const oauth = await resolveChain(env, readKeyFile, OAUTH_CHAIN);
 
@@ -442,9 +521,25 @@ async function resolveCredential(
     return { resolution: oauth.resolution, blankPaths: oauth.blankPaths };
   }
 
-  // oauth.resolution.kind === 'absent': OAuth contributed nothing, though it
-  // may have left blank paths behind — carried forward regardless of what
-  // the API key chain does next.
+  // oauth.resolution.kind === 'absent'.
+  if (!allowApiKeyFallback) {
+    const attempted: string[] = [];
+    if (oauth.blankEnvVar) {
+      attempted.push(`${OAUTH_CHAIN.envVar} is set but blank`);
+    }
+    if (oauth.missingExplicitPath !== undefined) {
+      attempted.push(
+        `${OAUTH_CHAIN.fileEnvVar} names ${oauth.missingExplicitPath}, but no file exists there`,
+      );
+    }
+    for (const path of oauth.blankPaths) {
+      attempted.push(`the credential file at ${path} was found but was blank`);
+    }
+    return { resolution: { kind: 'oauth-required', attempted }, blankPaths: oauth.blankPaths };
+  }
+
+  // OAuth contributed nothing, though it may have left blank paths behind —
+  // carried forward regardless of what the API key chain does next.
   const apiKey = await resolveChain(env, readKeyFile, API_KEY_CHAIN);
   const blankPaths = [...oauth.blankPaths, ...apiKey.blankPaths];
 
@@ -482,11 +577,12 @@ async function resolveCredential(
 export async function resolveSettings(
   env: Record<string, string | undefined>,
   readKeyFile: KeyFileReader,
+  allowApiKeyFallback = true,
 ): Promise<SettingsResult> {
   const missing: MissingSetting[] = [];
   const problems: string[] = [];
 
-  const credentialLookup = await resolveCredential(env, readKeyFile);
+  const credentialLookup = await resolveCredential(env, readKeyFile, allowApiKeyFallback);
   const credentialResolution = credentialLookup.resolution;
   let credential: Credential | undefined;
   if (credentialResolution.kind === 'found') {
@@ -498,6 +594,26 @@ export async function resolveSettings(
     );
     for (const path of credentialLookup.blankPaths) {
       problems.push(`the credential file at ${path} was found but was blank`);
+    }
+  } else if (credentialResolution.kind === 'oauth-required') {
+    // allowApiKeyFallback was false and OAuth resolved to nothing: the API
+    // key was never tried, so ANTHROPIC_API_KEY is not the missing setting
+    // here — CLAUDE_CODE_OAUTH_TOKEN is. See the file header.
+    missing.push({
+      name: 'CLAUDE_CODE_OAUTH_TOKEN',
+      why:
+        'this is a local run, and local runs are restricted to the subscription so that ' +
+        'purchased API credits are spent only by GitHub Actions',
+      where:
+        'Claude Code already sets this when this runs inside it, or export it yourself, ' +
+        'or set AIGENCY_REVIEW_OAUTH_TOKEN_FILE to a path holding it, or place it at ' +
+        '$XDG_CONFIG_HOME/verevoir/anthropic-oauth.token ' +
+        '(~/.config/verevoir/anthropic-oauth.token when XDG_CONFIG_HOME is unset). ' +
+        'ANTHROPIC_API_KEY is not offered as an alternative for a local run: purchased ' +
+        'credits are for GitHub Actions only.',
+    });
+    for (const detail of credentialResolution.attempted) {
+      problems.push(detail);
     }
   } else {
     missing.push({

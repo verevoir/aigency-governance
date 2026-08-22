@@ -30,6 +30,14 @@ async function main(): Promise<number> {
   const title = process.argv[2] ?? 'this change';
   const diff = await readAll(stdin);
 
+  // Absent means true — CI's own behaviour, exactly as it always was, since
+  // .github/workflows/review.yml never sets this variable. Only
+  // scripts/review-head.mjs, the local entry point, sets it to the literal
+  // string 'false'. See settings.ts's header for why a local run must be able
+  // to refuse a fallback to a purchased credential rather than spend it
+  // silently.
+  const allowApiKeyFallback = process.env['AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK'] !== 'false';
+
   const outcome = await runReview(
     process.env,
     { title, description: '', diff },
@@ -51,6 +59,7 @@ async function main(): Promise<number> {
     // is tested with fakes and touches no real filesystem unless this is the
     // one place that hands it one.
     keyFileReader(),
+    allowApiKeyFallback,
   );
 
   process.stdout.write(`${outcome.report}\n`);

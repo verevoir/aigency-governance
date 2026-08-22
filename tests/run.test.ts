@@ -530,3 +530,57 @@ describe('runReview, choosing a credential', () => {
     expect(outcome.report).not.toContain('sk-ant-test');
   });
 });
+
+// The fifth argument, end to end through the same real settings resolution
+// the describe block above drives — not a settings.ts test wearing a
+// runReview hat: what only runReview itself can answer is whether the flag
+// actually reaches resolveSettings, and whether refusing still costs nothing
+// (no client constructed), the same guarantee every other configuration
+// failure in this file already has.
+describe('runReview, given a local run that must not fall back to the API key', () => {
+  const OAUTH_TOKEN = 'oauth-THE-SUBSCRIPTION-SECRET-VALUE-DO-NOT-LOG';
+
+  it('spends nothing when OAuth is unconfigured and fallback is disallowed, even though a working API key is present', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(env(), SUBJECT, fakes.deps, undefined, false);
+
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.report).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(outcome.report).not.toContain('sk-ant-test');
+    // The assertion this whole file exists for: no client was ever built, so
+    // the working API key present in the environment was never spent.
+    expect(fakes.calls.factory).toBe(0);
+  });
+
+  it('still reviews with the OAuth credential, end to end, when fallback is disallowed but OAuth is present', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(
+      env({ CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN }),
+      SUBJECT,
+      fakes.deps,
+      undefined,
+      false,
+    );
+
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.report).toContain('via subscription OAuth');
+    expect(fakes.settingsSeen[0]?.credential).toEqual({
+      source: 'subscription-oauth',
+      value: OAUTH_TOKEN,
+    });
+  });
+
+  // The shape CI is actually in: nobody passes a fifth argument at all, so
+  // this proves the default rather than assuming it from settings.ts's own
+  // default parameter.
+  it('defaults to allowing the fallback when the fifth argument is omitted, matching every existing caller', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.report).toContain('via API key');
+  });
+});

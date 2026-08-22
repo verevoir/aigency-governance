@@ -83,14 +83,21 @@ function couldNotRun(subject: string, source: string, reason: string): ReviewOut
  * It is also what makes the most important assertion in the suite possible:
  * the factory is not called at all when the configuration is incomplete, so a
  * run that cannot be configured cannot spend money.
+ *
+ * `allowApiKeyFallback` defaults to true, matching every existing caller and
+ * CI's own behaviour exactly — the only caller that passes false is the local
+ * entry point (cli/review.ts, driven by scripts/review-head.mjs). See
+ * settings.ts's header for why a local run must be able to refuse rather than
+ * silently spend a purchased credential it was never supposed to reach.
  */
 export async function runReview(
   env: Record<string, string | undefined>,
   subject: Subject,
   deps: (settings: ReviewSettings) => ReviewDeps,
   readKeyFile: KeyFileReader = noKeyFile,
+  allowApiKeyFallback = true,
 ): Promise<ReviewOutcome> {
-  const resolved = await resolveSettings(env, readKeyFile);
+  const resolved = await resolveSettings(env, readKeyFile, allowApiKeyFallback);
 
   if (resolved.kind === 'incomplete') {
     return { report: renderMissing(resolved.missing, resolved.problems), exitCode: 1 };

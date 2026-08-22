@@ -9,6 +9,13 @@
 // thousands of lines and there is no diff cap anywhere yet. One commit is a
 // real subject, small enough to be affordable, and the first honest test of
 // whether the panel finds anything.
+//
+// This is a LOCAL run, and by operator policy, a local run spends the
+// subscription only — never purchased API credits. See the
+// AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK override in `capture` below for the
+// enforcement, and settings.ts's header for the full reasoning: an
+// unconfigured or misconfigured CLAUDE_CODE_OAUTH_TOKEN refuses here rather
+// than silently falling through to ANTHROPIC_API_KEY.
 
 import { spawn } from 'node:child_process';
 import console from 'node:console';
@@ -22,6 +29,15 @@ function capture(command, args, input) {
         // The checked-out definition, not the published one: no token needed,
         // and the runner and the lens set are then the same revision.
         AIGENCY_REVIEW_LENSES: './review/lenses.json',
+        // Operator policy: the subscription is for local runs, purchased API
+        // credits are for GitHub Actions only. Applied unconditionally, to the
+        // only invocation of the review binary this script makes — see
+        // settings.ts's header for what this actually enforces: a
+        // misconfigured OAuth token refuses rather than silently falling
+        // through to a working ANTHROPIC_API_KEY and spending it. Harmless on
+        // the two `git` calls this same function also makes; nothing but the
+        // review binary reads this variable.
+        AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK: 'false',
         // No override here any more. This used to raise the ceiling to 16384
         // "for this run only", on the reasoning that the evidence rather than
         // the guess should decide the default. The evidence came in: PR #1's

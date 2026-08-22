@@ -684,6 +684,119 @@ describe('resolveSettings, resolving the subscription OAuth token', () => {
   });
 });
 
+describe('resolveSettings, when a local run must not fall back to the API key', () => {
+  const OAUTH_TOKEN = 'oauth-THE-SUBSCRIPTION-SECRET-VALUE-DO-NOT-LOG';
+
+  it('still resolves to the OAuth credential when OAuth is genuinely present', async () => {
+    const settings = readyOf(
+      await resolveSettings(env({ CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN }), NO_FILES, false),
+    );
+
+    expect(settings.credential).toEqual({ source: 'subscription-oauth', value: OAUTH_TOKEN });
+  });
+
+  // Never configured at all: refuses, names CLAUDE_CODE_OAUTH_TOKEN rather
+  // than ANTHROPIC_API_KEY, and — because nothing was actually attempted —
+  // carries no spurious problems.
+  it('refuses when OAuth was never configured, naming CLAUDE_CODE_OAUTH_TOKEN rather than ANTHROPIC_API_KEY', async () => {
+    const result = await resolveSettings(env(), NO_FILES, false);
+
+    expect(result.kind).toBe('incomplete');
+    expect(missingOf(result).map((setting) => setting.name)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN']);
+    expect(problemsOf(result)).toEqual([]);
+  });
+
+  // The gap this story exists to close: a blank env var must not read the
+  // same as "never mentioned" once refusing is the alternative to spending
+  // money.
+  it('refuses when the OAuth env var is set but blank, and names the attempt', async () => {
+    const result = await resolveSettings(env({ CLAUDE_CODE_OAUTH_TOKEN: '   ' }), NO_FILES, false);
+
+    expect(result.kind).toBe('incomplete');
+    expect(missingOf(result).map((setting) => setting.name)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN']);
+    const problems = problemsOf(result);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(problems[0]).toContain('blank');
+  });
+
+  // The second half of the same gap: an explicit *_FILE path naming a file
+  // that is not there is a real, distinguishable attempt, not silence.
+  it('refuses when AIGENCY_REVIEW_OAUTH_TOKEN_FILE names a path that does not exist, and names the attempt', async () => {
+    const result = await resolveSettings(
+      env({ AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/missing' }),
+      NO_FILES,
+      false,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(missingOf(result).map((setting) => setting.name)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN']);
+    const problems = problemsOf(result);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('AIGENCY_REVIEW_OAUTH_TOKEN_FILE');
+    expect(problems[0]).toContain('/oauth/missing');
+  });
+
+  // The API key chain is never even tried when refusing — proven by handing a
+  // key that would otherwise have worked and asserting the file backing it
+  // was never asked for.
+  it('never asks for the API key at all when refusing to fall back', async () => {
+    const fs = filesystem({});
+
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+      fs.read,
+      false,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(fs.asked).toEqual([]);
+  });
+
+  // A genuinely broken (present, unreadable) OAuth source stays a hard stop
+  // regardless of this parameter — unaffected by whether fallback would
+  // otherwise have been allowed.
+  it('still reports an unreadable OAuth file as invalid, unaffected by this parameter', async () => {
+    const unreadable = filesystem({
+      '/oauth/token': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      env({ AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/token' }),
+      unreadable.read,
+      false,
+    );
+
+    expect(result.kind).toBe('invalid');
+    expect(problemsOf(result).some((problem) => problem.includes('EACCES'))).toBe(true);
+  });
+
+  // Passing true explicitly proves the parameter itself toggles behaviour,
+  // not merely that omitting it preserves the default — the two are different
+  // claims and only one is proven by every other test in this file, which
+  // never passes a third argument at all.
+  it('falls back to a working API key when explicitly allowed, even with the same blank OAuth env var', async () => {
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: 'sk-from-env', CLAUDE_CODE_OAUTH_TOKEN: '   ' }),
+        NO_FILES,
+        true,
+      ),
+    );
+
+    expect(settings.credential).toEqual({ source: 'api-key', value: 'sk-from-env' });
+  });
+
+  // The shape CI is actually in: no OAuth variable ever mentioned, fallback
+  // allowed (CI's implicit default, since review.yml never passes a third
+  // argument at all) — the API key still resolves exactly as it always has.
+  it('resolves the API key normally when OAuth was never mentioned and fallback is allowed — the shape CI is in', async () => {
+    const settings = readyOf(await resolveSettings(env(), NO_FILES));
+
+    expect(settings.credential).toEqual({ source: 'api-key', value: 'sk-ant-test' });
+  });
+});
+
 describe('resolveSettings, when a problem and a missing setting are both true', () => {
   // The exact shape the panel's first real review caught: an unreadable key
   // file (a problem) coinciding with an unset lens token (a missing
