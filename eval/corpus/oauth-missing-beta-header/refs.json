@@ -1,0 +1,6 @@
+{
+  "base": "main",
+  "head": "s26/subscription-oauth-locally",
+  "paths": ["src/review/anthropic.ts"],
+  "note": "Real branch names, confirmed present on origin in this pass (verevoir/aigency-governance#5). Scoped to src/review/anthropic.ts, the one file this case concerns. make-diffs.mjs's `origin/<ref>` form can only address a branch tip, not an arbitrary historical sha — so this diffs main against the branch's CURRENT tip (979bf81d841ee32ea50826a85b5aa8e8b33c98b4 at the time this case was built), not the exact byte-identical pass-1 (624ef6c09b201b98a4d963942726a2652cfb5ba3) / pass-3 (87101960f98abf2ed29c946c20929f1ec964b56c) snapshots the original two review passes saw. This is disclosed rather than hidden because it matters: verified directly in the same pass that built this case, headersFor in src/review/anthropic.ts is unchanged, byte-for-byte, all the way from 624ef6c through the current tip — the omission this case tests for is present at every one of those points, so the substitution does not change what the diff demonstrates, only which exact commit it is pinned to."
+}

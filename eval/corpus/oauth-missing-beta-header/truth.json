@@ -1,0 +1,13 @@
+[
+  {
+    "lens": "correctness",
+    "summary": "headersFor sends only an `authorization: Bearer <token>` header for a subscription-OAuth credential and adds no other header, contradicting this same file's own claim of full parity between the API-key and OAuth request paths ('same request shape, same response envelope, same failure shapes... nothing downstream of headersFor had to learn a second way to fail'). Anthropic's Messages API requires an additional anthropic-beta header to accept an OAuth bearer token at all, so a request built this way is not actually the parity the file's header comment claims — and, per the same original finding, a header alone may not be sufficient in any case, since subscription tokens may be restricted server-side to callers identifying as Claude Code.",
+    "evidence": {
+      "kind": "quote",
+      "text": ": { authorization: `Bearer ${credential.value}` };"
+    },
+    "detail": "Confirmed directly in this pass: grep for 'anthropic-beta' across the entire s26/subscription-oauth-locally branch and separately across main returns zero matches in either — the header is never sent and never mentioned anywhere in this codebase. src/review/anthropic.ts read directly at 624ef6c09b201b98a4d963942726a2652cfb5ba3, 87101960f98abf2ed29c946c20929f1ec964b56c, and the branch's current tip 979bf81d841ee32ea50826a85b5aa8e8b33c98b4: headersFor is byte-for-byte identical at all three points — the omission is not a stale snapshot, it is the code as it stands.",
+    "verdict": "defect",
+    "provenance": "split, deliberately, across two different claims bundled in this finding — see subject.md's Provenance section for the full breakdown. verified-directly: the code sends no anthropic-beta header anywhere on this branch (grep, this pass) and headersFor is unchanged from the pass-1 head through the current tip (three-point byte comparison, this pass). reported, not independently re-verified in this pass: (a) that Anthropic's Messages API actually requires this header for an OAuth bearer token to be accepted — an external fact about a third-party API, carried from the original correctness-lens finding via design/tuned-constants-and-eval-harness.md, not checked against Anthropic's own documentation here; (b) that this exact finding was raised by pass 1 (check run 97084904599) and absent from pass 3 (check run 97590054942) — no tool available in this pass retrieves a historic check run's content by id, so this history is carried from the design doc's own account, itself already flagged there as reported rather than re-read."
+  }
+]
