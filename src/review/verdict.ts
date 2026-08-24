@@ -8,15 +8,21 @@
 //
 // A LENS THAT REVIEWED AND FOUND NOTHING IN ITS SCOPE IS NOT THE SAME FACT AS
 // A LENS THAT DID NOT REVIEW, AND COLLAPSING THEM WAS A REAL DEFECT, NOT A
-// HYPOTHETICAL ONE. aigency-runtime-v2's PR #38 changed only GitHub Actions
-// workflow YAML; its `verification` lens — whose whole mandate is judging
-// changed tests — correctly found no test-covered code to judge, said so
-// honestly, and the panel reported the entire review as incomplete for a
-// lens that had, in fact, finished. `out_of_scope` holds that fact apart from
-// a genuine failure: it does not hold up the panel the way an unrun lens
-// does. Whether an ALL-out-of-scope panel counts as approved or as its own
-// separate non-green result is a policy decision, not a technical one, and it
-// is isolated to one line in `aggregate` below — see the comment there.
+// HYPOTHETICAL ONE. verevoir/aigency-runtime-v2#38
+// (https://github.com/verevoir/aigency-runtime-v2/pull/38) changed only
+// GitHub Actions workflow YAML — no test-covered code at all — and its own
+// `review / review` check run (id 97088772135) still concluded could_not_run,
+// annotated "nothing was reviewed", for a diff where the `verification`
+// lens's declared mandate (review/lenses.json: judging changed tests) had
+// nothing to attach to. The per-lens breakdown lives only in that run's job
+// summary, which has no API and is not re-quoted here as confirmed fact — the
+// PR content and the run's own could_not_run conclusion are what a reader can
+// check, and that alone shows the collapse this word exists to fix.
+// `out_of_scope` holds that fact apart from a genuine failure: it does not
+// hold up the panel the way an unrun lens does. Whether an ALL-out-of-scope
+// panel counts as approved or as its own separate non-green result is a
+// policy decision, not a technical one, and it is isolated to one line in
+// `aggregate` below — see the comment there.
 
 export type Outcome = 'approved' | 'rejected' | 'could_not_run' | 'out_of_scope';
 

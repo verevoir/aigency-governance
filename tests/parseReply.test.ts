@@ -18,15 +18,6 @@ function parse(...lines: string[]): ReturnType<typeof parseReply> {
   return parseReply(LENS, lines.join('\n'));
 }
 
-// Counted from the contract itself, not typed as a literal: the number of
-// VERDICT: lines the contract advertises is a fact about replyContract.ts,
-// and a test that hardcodes it can go stale silently when that file gains a
-// fifth verdict word. Counting it here ties the two together in code instead
-// of in a comment.
-const EXPECTED_VERDICT_LINES_IN_CONTRACT = REPLY_CONTRACT.split('\n').filter((line) =>
-  line.trim().startsWith(VERDICT_MARKER),
-).length;
-
 describe('parseReply — the four answers it can give', () => {
   it('reads a clean approval', () => {
     const result = parse('Looks fine to me.', '', `${VERDICT_MARKER} ${APPROVED_WORD}`);
@@ -181,21 +172,25 @@ describe('parseReply — replies it cannot read', () => {
     expect(result.reason).toContain('named nothing');
   });
 
-  // A reviewer that quotes the instructions back produces three indented
-  // verdict lines. Same family as the marker-on-its-own-line habit, and the
-  // safe direction is the same one.
+  // A reviewer that quotes the instructions back produces one indented
+  // VERDICT: line per verdict word the contract advertises. Same family as
+  // the marker-on-its-own-line habit, and the safe direction is the same one.
   it('refuses a reply that quotes the contract back', () => {
-    const result = parseReply(LENS, `Here is what you asked for:\n\n${REPLY_CONTRACT}`);
+    const reply = `Here is what you asked for:\n\n${REPLY_CONTRACT}`;
+    // Counted from `reply` itself -- the exact string handed to the parser
+    // two lines below -- not from REPLY_CONTRACT read separately. That
+    // separation was mistaken twice for a hardcoded literal disconnected
+    // from its input; deriving the expectation from the same variable the
+    // parser sees makes that mistake structurally impossible to repeat.
+    const verdictLinesInReply = reply
+      .split('\n')
+      .filter((line) => line.trim().startsWith(VERDICT_MARKER)).length;
+    const result = parseReply(LENS, reply);
     expect(result.outcome).toBe('could_not_run');
     // Pinned to the reason, not just the colour. Without this the test passes
     // against a parser broken in almost any direction, since could_not_run is
-    // what this parser returns whenever it is unsure. Derived from the
-    // contract rather than typed as a literal (see
-    // EXPECTED_VERDICT_LINES_IN_CONTRACT above), so this stays correct when
-    // replyContract.ts gains another verdict word.
-    expect(result.reason).toContain(
-      `${EXPECTED_VERDICT_LINES_IN_CONTRACT} ${VERDICT_MARKER} lines`,
-    );
+    // what this parser returns whenever it is unsure.
+    expect(result.reason).toContain(`${verdictLinesInReply} ${VERDICT_MARKER} lines`);
   });
 });
 
