@@ -114,17 +114,28 @@
 // `CLAUDE_CODE_OAUTH_TOKEN` in the first place.
 //
 // BLANK-ENV AND MISSING-EXPLICIT-PATH ARE TRACKED FOR THE SAME REASON A BLANK
-// FILE ALREADY WAS. `resolveChain` already told a blank *file* apart from an
-// absent one, for the ordinary case (see `blankPaths` below) — a genuine
-// attempt that produced nothing is different information from never having
-// tried. The same gap existed, unnoticed, for the environment variable and
-// for an explicit `*_FILE` path naming a file that is not there: both
-// collapsed into plain `absent`, indistinguishable from "OAuth was never
-// mentioned". That is harmless while resolution is allowed to fall through —
-// the distinction only matters once refusing is the alternative to spending
-// money, which is exactly when it is surfaced: `blankEnvVar` and
-// `missingExplicitPath` on `ChainLookup` exist to be read by the refusal path
-// in `resolveCredential`, below, and nowhere else.
+// FILE ALREADY WAS, AND THAT TRACKING MUST SURVIVE WHICHEVER PATH REACHES IT.
+// `resolveChain` already told a blank *file* apart from an absent one, for
+// the ordinary case (see `blankPaths` below) — a genuine attempt that
+// produced nothing is different information from never having tried. The
+// same gap existed, unnoticed, for the environment variable and for an
+// explicit `*_FILE` path naming a file that is not there: both collapsed
+// into plain `absent`, indistinguishable from "OAuth was never mentioned".
+// That is harmless while resolution is allowed to fall through — the
+// distinction only matters once refusing is the alternative to spending
+// money, which is when the refusal path (`!allowApiKeyFallback`) surfaces
+// it: `blankEnvVar` and `missingExplicitPath` on `ChainLookup` exist for
+// that path. The panel's review of this file's first version found that the
+// SAME two signals were silently discarded on the *other*, ordinary
+// fallback-allowed path too — the one CI and every default caller actually
+// takes — whenever the API key chain was tried next and also came up empty:
+// a blank `CLAUDE_CODE_OAUTH_TOKEN` or a missing explicit OAuth file path
+// was a genuine attempt exactly as much there as on the refusal path, and
+// reported identically to OAuth never having been mentioned at all.
+// `CredentialLookup.oauthAttempted` (see `resolveCredential` below) is the
+// fix: the same two signals, computed the same way, surfaced wherever
+// nothing ultimately supplies a credential — not only when fallback was
+// refused.
 //
 // A source that is genuinely broken — present, and unreadable, rather than
 // simply absent — is a hard stop for the WHOLE credential resolution, not a
@@ -355,14 +366,16 @@ interface ChainLookup {
   /** True when this chain's environment variable was set but blank — a
    * signal that someone attempted to configure this credential through the
    * environment and it arrived empty, as distinct from never having
-   * mentioned it at all. Read only by the refusal path in
-   * `resolveCredential` — see the file header. */
+   * mentioned it at all. Read by the refusal path in `resolveCredential`
+   * and, via `oauthAttemptSignals`, by the ordinary fallback-allowed path
+   * too — see the file header. */
   readonly blankEnvVar: boolean;
   /** The `*_FILE` path, when the corresponding env var named one but no file
    * was found there — a signal that someone attempted to point this
    * credential at a file, as distinct from never having set the `*_FILE`
-   * variable at all. `undefined` when no such attempt was made. Read only by
-   * the refusal path in `resolveCredential` — see the file header. */
+   * variable at all. `undefined` when no such attempt was made. Read by the
+   * refusal path in `resolveCredential` and, via `oauthAttemptSignals`, by
+   * the ordinary fallback-allowed path too — see the file header. */
   readonly missingExplicitPath?: string;
 }
 
@@ -483,6 +496,44 @@ interface CredentialLookup {
    * information that must not vanish just because something else eventually
    * worked out or came up empty too. */
   readonly blankPaths: readonly string[];
+  /**
+   * A genuine OAuth attempt that produced nothing — a blank
+   * `CLAUDE_CODE_OAUTH_TOKEN`, or an `AIGENCY_REVIEW_OAUTH_TOKEN_FILE`
+   * naming a path that does not exist — carried forward whenever nothing
+   * ultimately supplies a credential, regardless of WHY nothing did:
+   * whether OAuth was required and refused (`oauth-required` builds and
+   * reports this same information itself, so it stays empty here for that
+   * branch) or whether fallback was allowed and the API key chain was tried
+   * next and also came up empty (the ordinary path CI and every default
+   * caller take). The panel's review of this file's first version found
+   * that this second case discarded both signals entirely — see the file
+   * header's "BLANK-ENV AND MISSING-EXPLICIT-PATH" section. Deliberately
+   * excludes blank OAuth *files*: those are already carried in `blankPaths`
+   * above and rendered from there, so repeating them here would report the
+   * same fact under two different names. Empty whenever a credential was
+   * found or the failure was `unreadable` — a value that could be reported
+   * only meaningfully alongside a genuine "nothing at all" outcome.
+   */
+  readonly oauthAttempted: readonly string[];
+}
+
+/** The two OAuth signals a blank source and a missing explicit path leave
+ * behind, independent of the blank-FILE case already tracked in
+ * `blankPaths` — see `ChainLookup` and `CredentialLookup.oauthAttempted`
+ * above. Used both by the refusal path (`oauth-required`, which appends its
+ * own blank-file messages on top) and by the ordinary fallback-allowed path
+ * when nothing at all ends up supplying a credential. */
+function oauthAttemptSignals(oauth: ChainLookup): string[] {
+  const attempted: string[] = [];
+  if (oauth.blankEnvVar) {
+    attempted.push(`${OAUTH_CHAIN.envVar} is set but blank`);
+  }
+  if (oauth.missingExplicitPath !== undefined) {
+    attempted.push(
+      `${OAUTH_CHAIN.fileEnvVar} names ${oauth.missingExplicitPath}, but no file exists there`,
+    );
+  }
+  return attempted;
 }
 
 /**
@@ -515,27 +566,24 @@ async function resolveCredential(
         credential: { source: 'subscription-oauth', value: oauth.resolution.value },
       },
       blankPaths: oauth.blankPaths,
+      oauthAttempted: [],
     };
   }
   if (oauth.resolution.kind === 'unreadable') {
-    return { resolution: oauth.resolution, blankPaths: oauth.blankPaths };
+    return { resolution: oauth.resolution, blankPaths: oauth.blankPaths, oauthAttempted: [] };
   }
 
   // oauth.resolution.kind === 'absent'.
   if (!allowApiKeyFallback) {
-    const attempted: string[] = [];
-    if (oauth.blankEnvVar) {
-      attempted.push(`${OAUTH_CHAIN.envVar} is set but blank`);
-    }
-    if (oauth.missingExplicitPath !== undefined) {
-      attempted.push(
-        `${OAUTH_CHAIN.fileEnvVar} names ${oauth.missingExplicitPath}, but no file exists there`,
-      );
-    }
+    const attempted = oauthAttemptSignals(oauth);
     for (const path of oauth.blankPaths) {
       attempted.push(`the credential file at ${path} was found but was blank`);
     }
-    return { resolution: { kind: 'oauth-required', attempted }, blankPaths: oauth.blankPaths };
+    return {
+      resolution: { kind: 'oauth-required', attempted },
+      blankPaths: oauth.blankPaths,
+      oauthAttempted: [],
+    };
   }
 
   // OAuth contributed nothing, though it may have left blank paths behind —
@@ -550,12 +598,23 @@ async function resolveCredential(
         credential: { source: 'api-key', value: apiKey.resolution.value },
       },
       blankPaths,
+      oauthAttempted: [],
     };
   }
   if (apiKey.resolution.kind === 'unreadable') {
-    return { resolution: apiKey.resolution, blankPaths };
+    return { resolution: apiKey.resolution, blankPaths, oauthAttempted: [] };
   }
-  return { resolution: { kind: 'absent' }, blankPaths };
+  // Nothing at all supplied a credential, on either chain. The blank-FILE
+  // signal is already folded into `blankPaths` above; the two signals that
+  // previously vanished here — a blank OAuth env var, or an explicit OAuth
+  // `*_FILE` path naming nothing — are surfaced now too, exactly as
+  // `oauth-required` already surfaces them when fallback is refused instead
+  // of allowed. See the file header and `CredentialLookup.oauthAttempted`.
+  return {
+    resolution: { kind: 'absent' },
+    blankPaths,
+    oauthAttempted: oauthAttemptSignals(oauth),
+  };
 }
 
 /**
@@ -636,6 +695,14 @@ export async function resolveSettings(
     });
     for (const path of credentialLookup.blankPaths) {
       problems.push(`the credential file at ${path} was found but was blank`);
+    }
+    // The gap the panel's review found: a blank CLAUDE_CODE_OAUTH_TOKEN, or
+    // an AIGENCY_REVIEW_OAUTH_TOKEN_FILE naming a path that is not there, is
+    // a genuine attempt exactly as much here — the ordinary fallback-allowed
+    // path — as it already was on the refusal path above. See the file
+    // header and CredentialLookup.oauthAttempted.
+    for (const detail of credentialLookup.oauthAttempted) {
+      problems.push(detail);
     }
   }
 

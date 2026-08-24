@@ -659,28 +659,76 @@ describe('resolveSettings, resolving the subscription OAuth token', () => {
     expect(fs.asked).toEqual([]);
   });
 
-  // The leak test. Asserting the report was produced is worth less than
-  // asserting the token never rode along in it — a suite that only checks
-  // "and it resolves" would stay green even if a future edit accidentally
-  // echoed the credential into `problems` or `missing`.
-  it('never puts the OAuth token itself anywhere in a rendered missing-settings report', async () => {
-    const fs = filesystem({ '/oauth/token': { kind: 'unreadable', reason: 'EACCES' } });
-
+  // The leak test, rewritten. The earlier version of this test never put
+  // OAUTH_TOKEN anywhere in the environment, the file map, or any other
+  // input to `resolveSettings` — it supplied only an unrelated
+  // `reason: 'EACCES'` for the unreadable file, so `not.toContain(OAUTH_TOKEN)`
+  // held unconditionally and could not have caught a real leak. This version
+  // resolves the OAuth credential SUCCESSFULLY, so the literal token value is
+  // genuinely held in memory (`credential.value`, inside `resolveSettings`),
+  // while the lens token is separately missing — so `kind` is still
+  // `incomplete` and a report is still rendered. If `credential.value` ever
+  // rode along into `missing` or `problems` (the fields `renderMissing`
+  // actually reads), this is what would catch it, the same way
+  // tests/anthropic.test.ts's leak tests embed the real secret in a thrown
+  // error or response body before asserting its absence.
+  it('never puts a genuinely-resolved OAuth token in a rendered report, even when something else is missing', async () => {
     const result = await resolveSettings(
-      env({
+      {
         ANTHROPIC_API_KEY: undefined,
-        AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/token',
-      }),
-      fs.read,
+        CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN,
+        AIGENCY_REVIEW_LENSES_TOKEN: undefined,
+      },
+      NO_FILES,
     );
 
-    // Not reachable via missingOf/problemsOf alone — this walks the whole
-    // rendered text a person actually reads.
-    const rendered =
-      result.kind === 'invalid' || result.kind === 'incomplete'
-        ? renderMissing(result.kind === 'incomplete' ? result.missing : [], result.problems)
-        : '';
+    // The credential itself resolved fine — this is `incomplete` only
+    // because the lens token is separately unset, which is what proves
+    // OAUTH_TOKEN was genuinely in scope while the report was assembled.
+    expect(missingOf(result).map((setting) => setting.name)).toEqual([
+      'AIGENCY_REVIEW_LENSES_TOKEN',
+    ]);
+
+    const rendered = renderMissing(missingOf(result), problemsOf(result));
     expect(rendered).not.toContain(OAUTH_TOKEN);
+  });
+});
+
+describe('resolveSettings, when OAuth was attempted but came up empty, and fallback is allowed', () => {
+  // The gap the panel's review found in this file's first version: a blank
+  // CLAUDE_CODE_OAUTH_TOKEN or a missing explicit AIGENCY_REVIEW_OAUTH_TOKEN_FILE
+  // path is a genuine attempt — see the file header's own stated principle —
+  // and that principle was honoured on the `!allowApiKeyFallback` refusal
+  // path but silently lost here, on the ordinary path CI and every default
+  // caller actually take, whenever the API key chain was tried next and also
+  // came up empty. These two tests are the ones missing before this fix; the
+  // blank-OAuth-FILE case immediately above was already covered.
+  it('names a blank OAuth env var as a problem, even though the API key chain was tried next and also failed', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: '   ' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(missingOf(result).map((setting) => setting.name)).toEqual(['ANTHROPIC_API_KEY']);
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('blank'))).toBe(true);
+  });
+
+  it('names a missing explicit OAuth file path as a problem, even though the API key chain was tried next and also failed', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/missing' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(missingOf(result).map((setting) => setting.name)).toEqual(['ANTHROPIC_API_KEY']);
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('AIGENCY_REVIEW_OAUTH_TOKEN_FILE'))).toBe(
+      true,
+    );
+    expect(problems.some((problem) => problem.includes('/oauth/missing'))).toBe(true);
   });
 });
 
