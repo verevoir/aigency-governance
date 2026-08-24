@@ -1,0 +1,96 @@
+diff --git a/src/review/anthropic.ts b/src/review/anthropic.ts
+index ada81ab..f892201 100644
+--- a/src/review/anthropic.ts
++++ b/src/review/anthropic.ts
+@@ -15,7 +15,39 @@
+ // here. Accounting is its own story with its own shape (four numbers kept
+ // apart, per provider call), and a half-implementation that recorded a total
+ // would be worse than none — it would look like accounting exists.
++//
++// TWO CREDENTIALS, ONE REQUEST SHAPE. `config.credential` (settings.ts) names
++// which of an API key and a subscription OAuth token authenticated this call,
++// and the ONLY thing that decides is which header carries it — see
++// `headersFor` below. Everything else about the request is identical: same
++// URL, same body, same model field, same `max_tokens`, same response
++// envelope, same `stop_reason` values, same failure shapes in `textFrom`. A
++// caller cannot tell from the response which credential was used, and that is
++// the point — it is why `NoRoomToAnswerError`, the retry a caller wraps this
++// in, and every other piece of behaviour this file already had continues to
++// mean the same thing regardless of which credential resolved.
++//
++// The alternative that was NOT built here is shelling out to a CLI that
++// already knows how to use a subscription token — the natural-looking
++// shortcut, and worth saying explicitly why it was rejected rather than
++// leaving the next person to wonder. A CLI is a DIFFERENT code path: a
++// different response envelope (whatever that program chooses to print, not
++// this API's JSON), no `stop_reason` this file could read, and
++// `NoRoomToAnswerError` — the class that exists specifically because a
++// truncated-thinking reply is otherwise indistinguishable from a transport
++// fault — blind through it, because the signal it depends on would never
++// arrive. Every failure shape this file and its tests already
++// establish (a truncated body, a non-JSON reply, a tool_use block with no
++// text, a max_tokens cutoff) would need re-establishing against a second
++// transport, in a second file, and the two would drift the moment either one
++// changed — the exact shape of defect this project keeps finding and fixing
++// under other names. An OAuth token against the same Messages API this file
++// already calls is a different CREDENTIAL on the SAME path: same request
++// shape, same response envelope, same model selection, same failure shapes.
++// Parity is preserved because nothing downstream of `headersFor` had to
++// learn a second way to fail.
+ 
++import type { Credential } from './settings.js';
+ import type { Prompt } from './prompt.js';
+ import { NoRoomToAnswerError, type Reviewer } from './panel.js';
+ 
+@@ -30,7 +62,7 @@ export type HttpPost = (
+ ) => Promise<{ readonly ok: boolean; readonly status: number; text(): Promise<string> }>;
+ 
+ export interface AnthropicConfig {
+-  readonly apiKey: string;
++  readonly credential: Credential;
+   /**
+    * Pinned, never defaulted by the caller's environment. CI and a laptop must
+    * judge the same commit with the same model or the two runs are not
+@@ -45,6 +77,24 @@ export interface AnthropicConfig {
+ const DEFAULT_BASE_URL = 'https://api.anthropic.com';
+ const ANTHROPIC_VERSION = '2023-06-01';
+ 
++/**
++ * The one place a `Credential` decides anything: which header carries it.
++ *
++ * An API key goes in `x-api-key`, unchanged from before this file knew about
++ * a second credential. A subscription OAuth token goes in `authorization` as
++ * a bearer token — the standard shape for that kind of credential, and
++ * distinct from `x-api-key` so a provider that inspects headers cannot
++ * confuse the two. Nothing else in the request differs: no extra field, no
++ * different endpoint, no different body — see the file header for why that
++ * identity is the entire safety argument for adding this rather than a
++ * second transport.
++ */
++function headersFor(credential: Credential): Record<string, string> {
++  return credential.source === 'api-key'
++    ? { 'x-api-key': credential.value }
++    : { authorization: `Bearer ${credential.value}` };
++}
++
+ /**
+  * Remove anything secret from text that is about to be thrown, logged or
+  * returned.
+@@ -131,7 +181,7 @@ function textFrom(body: string): string {
+  */
+ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Reviewer {
+   const url = `${config.baseUrl ?? DEFAULT_BASE_URL}/v1/messages`;
+-  const secrets = [config.apiKey];
++  const secrets = [config.credential.value];
+ 
+   return async (_lensId: string, prompt: Prompt): Promise<string> => {
+     const body = JSON.stringify({
+@@ -151,7 +201,7 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
+         headers: {
+           'content-type': 'application/json',
+           'anthropic-version': ANTHROPIC_VERSION,
+-          'x-api-key': config.apiKey,
++          ...headersFor(config.credential),
+         },
+         body,
+       });
