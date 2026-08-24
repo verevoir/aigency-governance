@@ -193,7 +193,9 @@ describe('parseReply — replies it cannot read', () => {
     // contract rather than typed as a literal (see
     // EXPECTED_VERDICT_LINES_IN_CONTRACT above), so this stays correct when
     // replyContract.ts gains another verdict word.
-    expect(result.reason).toContain(`${EXPECTED_VERDICT_LINES_IN_CONTRACT} ${VERDICT_MARKER} lines`);
+    expect(result.reason).toContain(
+      `${EXPECTED_VERDICT_LINES_IN_CONTRACT} ${VERDICT_MARKER} lines`,
+    );
   });
 });
 
