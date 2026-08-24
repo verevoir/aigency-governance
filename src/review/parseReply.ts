@@ -6,13 +6,16 @@
 // from a real approval afterwards. An unreadable reply that lands as
 // could_not_run is loud, wrong at worst, and fixable.
 //
-// Four of the refusals below are stricter than they look, and all four are
+// Five of the refusals below are stricter than they look, and all five are
 // deliberate:
 //
 //   Rejected with no findings is refused. A rejection nobody can act on
 //   stalls the change and names nothing to fix.
 //   Approved WITH findings is refused. The reviewer said two things; picking
 //   one means guessing which, and the guess is invisible in the result.
+//   Out of scope WITH findings is refused for the same reason: a lens that
+//   says its dimension has nothing to attach to and then names something
+//   wrong said two contradictory things, not one.
 //   An empty VERDICT: line is refused as an empty line, not reported as an
 //   absent one. It was written; saying otherwise is a false statement about
 //   the reply in the string a human reads when debugging a red panel.
@@ -25,6 +28,7 @@ import {
   APPROVED_WORD,
   CANNOT_RUN_WORD,
   FINDING_MARKER,
+  OUT_OF_SCOPE_WORD,
   REASON_MARKER,
   REJECTED_WORD,
   VERDICT_MARKER,
@@ -52,6 +56,15 @@ function taggedLines(lines: readonly string[], marker: string): string[] {
 
 function cannotRun(lens: string, reason: string): LensResult {
   return { lens, outcome: 'could_not_run', findings: [], reason };
+}
+
+// Structurally identical to cannotRun, and deliberately a separate function
+// rather than a shared helper with a parameter: the two outcomes read the
+// same reply shape (a word, then a REASON: line) but mean different things —
+// see replyContract.ts's header — and a caller here should never have to
+// pass an outcome literal to get the right one.
+function outOfScope(lens: string, reason: string): LensResult {
+  return { lens, outcome: 'out_of_scope', findings: [], reason };
 }
 
 /**
@@ -128,6 +141,38 @@ export function parseReply(lens: string, text: string): LensResult {
   if (verdict === CANNOT_RUN_WORD) {
     const reasons = taggedLines(lines, REASON_MARKER).filter((reason) => reason !== '');
     return cannotRun(lens, reasons[0] ?? 'reviewer gave no reason');
+  }
+
+  if (verdict === OUT_OF_SCOPE_WORD) {
+    // Read only when the reviewer wrote exactly this word — matching how
+    // CANNOT_RUN_WORD is read just above. Neither is this parser's default
+    // for an ambiguous reply; every ambiguity still resolves to could_not_run,
+    // per the file header. This is the model's own explicit, honest signal.
+    //
+    // Mirrors the APPROVED_WORD guard above: a reply declaring out_of_scope
+    // while also naming findings said two contradictory things, and the
+    // contradiction must be surfaced, not silently resolved by keeping one
+    // half (the verdict) and dropping the other (the findings).
+    //
+    // What this does NOT do, deliberately: preserve those findings anywhere
+    // in the returned result. Discarding them here is the same gap
+    // `cannotRun()` above has always had — a lens that DID produce findings
+    // and then wrote a contradictory or unreadable verdict has never had
+    // those findings survive parseReply, on any verdict word, and that is
+    // tracked as verevoir/aigency-rebuild#H099. This branch is structurally
+    // new; the hole it inherits is not. A fix that preserves findings across
+    // a malformed verdict is a real behaviour change, belongs to H099's
+    // actual remedy, applies equally to CANNOT_RUN_WORD above, and is out of
+    // scope for this PR, which surfaces the contradiction rather than
+    // resolving what to do with the findings it names.
+    if (findings.length > 0) {
+      return cannotRun(
+        lens,
+        `reply said ${OUT_OF_SCOPE_WORD} while reporting ${findings.length} finding(s)`,
+      );
+    }
+    const reasons = taggedLines(lines, REASON_MARKER).filter((reason) => reason !== '');
+    return outOfScope(lens, reasons[0] ?? 'reviewer gave no reason');
   }
 
   return cannotRun(lens, `reply carried an unrecognised verdict ${JSON.stringify(verdict)}`);

@@ -5,8 +5,24 @@
 // against the results that happened to arrive. A lens that produced nothing —
 // crashed, timed out, was never dispatched — is a lens that did not review,
 // and a panel missing a member has not approved anything.
+//
+// A lens that reviewed and found nothing in its scope is not the same fact
+// as a lens that did not review, and collapsing them is the defect this word
+// exists to fix. verevoir/aigency-runtime-v2#38
+// (https://github.com/verevoir/aigency-runtime-v2/pull/38) changed only
+// GitHub Actions workflow YAML — no test-covered code at all — and its own
+// `review / review` check run (id 97088772135) concluded could_not_run,
+// annotated "nothing was reviewed". The run and its annotation are
+// retrievable and checkable by anyone who reads the check run; what
+// happened lens by lens on that run is not claimed here — it lives only in
+// that run's job summary, which has no API.
+// `out_of_scope` holds the completed-but-empty case apart from a genuine
+// failure: it does not hold up the panel the way an unrun lens does. Whether
+// an ALL-out-of-scope panel counts as approved or as its own separate
+// non-green result is a policy decision, not a technical one, and it is
+// isolated to one line in `aggregate` below — see the comment there.
 
-export type Outcome = 'approved' | 'rejected' | 'could_not_run';
+export type Outcome = 'approved' | 'rejected' | 'could_not_run' | 'out_of_scope';
 
 export interface Finding {
   readonly lens: string;
@@ -18,7 +34,8 @@ export interface LensResult {
   readonly lens: string;
   readonly outcome: Outcome;
   readonly findings: readonly Finding[];
-  /** Why this lens could not run. Meaningless on the other two outcomes. */
+  /** Why this lens could not run, or why it found nothing in scope.
+   * Meaningless on `approved` and `rejected`. */
   readonly reason?: string;
 }
 
@@ -28,6 +45,12 @@ export interface Verdict {
   readonly findings: readonly Finding[];
   /** Lenses that were declared and did not return a review, with the reason. */
   readonly unran: readonly { readonly lens: string; readonly reason: string }[];
+  /** Lenses that reviewed and found nothing within their declared scope, with
+   * the reason — a completed judgement, not an incomplete one. Kept apart
+   * from `unran`: membership here does not, by itself, hold up the panel's
+   * outcome the way `unran` does. See `aggregate` for how it does affect the
+   * outcome. */
+  readonly outOfScope: readonly { readonly lens: string; readonly reason: string }[];
 }
 
 /** Thrown when the results and the definition disagree about who is on the panel. */
@@ -64,6 +87,7 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
 
   const ordered: LensResult[] = [];
   const unran: { lens: string; reason: string }[] = [];
+  const outOfScope: { lens: string; reason: string }[] = [];
   const findings: Finding[] = [];
 
   for (const lens of declared) {
@@ -77,15 +101,31 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
     findings.push(...result.findings);
     if (result.outcome === 'could_not_run') {
       unran.push({ lens, reason: result.reason ?? 'no reason given' });
+    } else if (result.outcome === 'out_of_scope') {
+      outOfScope.push({ lens, reason: result.reason ?? 'no reason given' });
     }
   }
 
+  // could_not_run still outranks everything (S25, unchanged): any lens that
+  // did not review at all holds up the whole panel, regardless of what
+  // anything else says. A rejection outranks an approval, as before.
   const outcome: Outcome =
     unran.length > 0
       ? 'could_not_run'
       : ordered.some((result) => result.outcome === 'rejected')
         ? 'rejected'
-        : 'approved';
+        : // OPERATOR DECISION, ISOLATED TO THIS ONE LINE: when every declared
+          // lens came back out_of_scope, the verdict reads as its own non-green
+          // result rather than as an approval — a change nothing actually
+          // evaluated should not read as one that passed. To make it read as
+          // an approval instead, change the string literal on the line below
+          // from 'out_of_scope' to 'approved'. Nothing else needs to move:
+          // report.ts's exitCodeFor already treats anything other than
+          // 'approved' as red, and its HEADING map already has an entry for
+          // this outcome.
+          outOfScope.length === declared.length
+          ? 'out_of_scope'
+          : 'approved';
 
-  return { outcome, results: ordered, findings, unran };
+  return { outcome, results: ordered, findings, unran, outOfScope };
 }

@@ -89,6 +89,7 @@ const PUBLISHED = [
   'LensSetError',
   'NO_PRACTICES_NOTICE',
   'NoRoomToAnswerError',
+  'OUT_OF_SCOPE_WORD',
   'PanelMismatchError',
   'REASON_MARKER',
   'REJECTED_WORD',
