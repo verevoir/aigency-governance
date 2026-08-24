@@ -205,6 +205,26 @@ describe('renderReport, when a lens has nothing in its scope', () => {
     expect(report.split('\n')[0]).toContain('Nothing in scope');
   });
 
+  // The message body for a fully out-of-scope review — the paragraph under
+  // the heading, not the heading word itself. Found missing by this PR's own
+  // review (verification lens, PR #8): every test in this block checked the
+  // heading, the bullet list, or the absence of the old overclaim string, but
+  // none asserted the message report.ts actually prints for this outcome.
+  // Deleting or garbling it in report.ts's `out_of_scope` branch left every
+  // test here green.
+  it('says explicitly that every lens found nothing within scope, in words', () => {
+    const report = renderReport(
+      aggregate(
+        DECLARED,
+        DECLARED.map((lens) => outOfScope(lens, 'nothing to judge')),
+      ),
+      CONTEXT,
+    );
+    expect(report).toContain(
+      'Every lens looked at the whole change and found nothing within its declared scope.',
+    );
+  });
+
   it('names a lens that had nothing in scope, with its reason, before any findings', () => {
     const verdict = aggregate(DECLARED, [
       approved('correctness'),
@@ -217,6 +237,13 @@ describe('renderReport, when a lens has nothing in its scope', () => {
     );
     expect(report.indexOf('nothing in scope')).toBeGreaterThan(-1);
     expect(report.indexOf('nothing in scope')).toBeLessThan(report.indexOf('finding(s)'));
+    // The count line itself, with real, non-uniform numbers — 1 out-of-scope,
+    // 1 rejected, 1 approved of 3 declared lenses — the same shape as the
+    // sibling `unran` count assertion above ('2 of 3 lenses did not review').
+    // Also found missing by this PR's own review: without this, swapping or
+    // hardcoding either number in report.ts's out-of-scope heading line would
+    // go uncaught by every test in this diff.
+    expect(report).toContain('1 of 3 lens(es) had nothing in scope');
   });
 
   // The collapse this story exists to undo, at the report layer: one lens
@@ -245,5 +272,26 @@ describe('renderReport, when a lens has nothing in its scope', () => {
       CONTEXT,
     );
     expect(report).not.toContain('Every lens reviewed and none had a finding');
+  });
+
+  // The message body for the approved-with-an-out-of-scope-lens branch — the
+  // positive half of the pair above it. The negative assertion above stays
+  // true regardless of what the new string actually says, so it alone cannot
+  // catch the new message being deleted or garbled; this pins the text
+  // report.ts actually prints in that case. Also found missing by this PR's
+  // own review.
+  it('says explicitly what happened when it approves with a lens out of scope', () => {
+    const report = renderReport(
+      aggregate(DECLARED, [
+        approved('correctness'),
+        approved('honesty'),
+        outOfScope('blast-radius', 'nothing to judge'),
+      ]),
+      CONTEXT,
+    );
+    expect(report).toContain(
+      'Every lens with something in scope reviewed it and found nothing. See above for the ' +
+        'lens(es) that had nothing in scope for this change.',
+    );
   });
 });
