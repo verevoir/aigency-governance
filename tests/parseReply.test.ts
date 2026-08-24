@@ -18,6 +18,15 @@ function parse(...lines: string[]): ReturnType<typeof parseReply> {
   return parseReply(LENS, lines.join('\n'));
 }
 
+// Counted from the contract itself, not typed as a literal: the number of
+// VERDICT: lines the contract advertises is a fact about replyContract.ts,
+// and a test that hardcodes it can go stale silently when that file gains a
+// fifth verdict word. Counting it here ties the two together in code instead
+// of in a comment.
+const EXPECTED_VERDICT_LINES_IN_CONTRACT = REPLY_CONTRACT.split('\n').filter((line) =>
+  line.trim().startsWith(VERDICT_MARKER),
+).length;
+
 describe('parseReply — the four answers it can give', () => {
   it('reads a clean approval', () => {
     const result = parse('Looks fine to me.', '', `${VERDICT_MARKER} ${APPROVED_WORD}`);
@@ -180,9 +189,11 @@ describe('parseReply — replies it cannot read', () => {
     expect(result.outcome).toBe('could_not_run');
     // Pinned to the reason, not just the colour. Without this the test passes
     // against a parser broken in almost any direction, since could_not_run is
-    // what this parser returns whenever it is unsure. Four now, not three:
-    // the contract lists four verdict words, out_of_scope included.
-    expect(result.reason).toContain(`4 ${VERDICT_MARKER} lines`);
+    // what this parser returns whenever it is unsure. Derived from the
+    // contract rather than typed as a literal (see
+    // EXPECTED_VERDICT_LINES_IN_CONTRACT above), so this stays correct when
+    // replyContract.ts gains another verdict word.
+    expect(result.reason).toContain(`${EXPECTED_VERDICT_LINES_IN_CONTRACT} ${VERDICT_MARKER} lines`);
   });
 });
 
