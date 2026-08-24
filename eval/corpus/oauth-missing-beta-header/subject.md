@@ -83,7 +83,7 @@ they were not established with the same confidence:**
    `design/tuned-constants-and-eval-harness.md`; no tool available in this
    pass reaches Anthropic's own API documentation to check it directly. If
    this external claim were wrong, the code-level fact above (the header is
-   never sent) would still stand, but the *defect* label would not — this
+   never sent) would still stand, but the _defect_ label would not — this
    distinction is why the label is `verified-directly` for the omission and
    `reported` for why the omission matters. Recorded honestly rather than
    folded into one blanket `verified-directly`.
@@ -95,7 +95,7 @@ they were not established with the same confidence:**
    `design/tuned-constants-and-eval-harness.md`'s own account, which states
    the same limitation about itself. It does not affect this entry's
    scoring value either way: what a configuration is tested against here is
-   whether it catches the defect *now*, shown the diff below — not whether
+   whether it catches the defect _now_, shown the diff below — not whether
    it reproduces the specific pass-1/pass-3 history.
 
 4. **Lens attribution (`correctness`) is carried from the same source and
