@@ -332,6 +332,34 @@ describe('resolveSettings, resolving the API key from a file', () => {
     expect(absent.kind).toBe('incomplete');
   });
 
+  // The asymmetry the panel's third review found: resolveChain already
+  // computed a blank-env-var signal for the API-key chain too, exactly as
+  // it does for OAuth's, but nothing read it — a blank ANTHROPIC_API_KEY
+  // alongside this chain's own unreadable file dropped the blank signal
+  // entirely, reporting only the broken file. Mirrors 'names a blank OAuth
+  // env var alongside an unreadable API key file' below, chains reversed:
+  // here it is the SAME chain that is both blank-then-unreadable.
+  it('names a blank API-key env var alongside its own unreadable file, rather than dropping the signal', async () => {
+    const unreadable = filesystem({
+      '/keys/anthropic': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: '   ', ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+      unreadable.read,
+    );
+
+    expect(result.kind).toBe('invalid');
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('EACCES'))).toBe(true);
+    expect(
+      problems.some(
+        (problem) => problem.includes('ANTHROPIC_API_KEY') && problem.includes('blank'),
+      ),
+    ).toBe(true);
+  });
+
   // There WAS a test here asserting the joined problems string did not
   // contain 'sk-', driven by a mock whose `reason` was the hardcoded string
   // 'EACCES: permission denied'. That string can never contain 'sk-'
@@ -762,6 +790,37 @@ describe('resolveSettings, when OAuth was attempted but came up empty, and fallb
       true,
     );
     expect(problems.some((problem) => problem.includes('/oauth/missing'))).toBe(true);
+  });
+});
+
+describe('resolveSettings, when the API key was attempted but came up empty', () => {
+  // The mirror of the OAuth block above, and the asymmetry the panel's
+  // third review found: resolveChain computes these same two signals for
+  // the API-key chain too, but nothing read them until now — a blank
+  // ANTHROPIC_API_KEY, or a missing explicit ANTHROPIC_API_KEY_FILE path,
+  // collapsed indistinguishably into "ANTHROPIC_API_KEY is not configured",
+  // the exact distinction this file already established for OAuth.
+  it('names a blank API-key env var as a problem, even though nothing else supplies a credential either', async () => {
+    const result = await resolveSettings(env({ ANTHROPIC_API_KEY: '   ' }), NO_FILES);
+
+    expect(result.kind).toBe('incomplete');
+    expect(named(missingOf(result), 'ANTHROPIC_API_KEY')).toBeDefined();
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('ANTHROPIC_API_KEY'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('blank'))).toBe(true);
+  });
+
+  it('names a missing explicit API-key file path as a problem, even though nothing else supplies a credential either', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/missing' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(named(missingOf(result), 'ANTHROPIC_API_KEY')).toBeDefined();
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('ANTHROPIC_API_KEY_FILE'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('/keys/missing'))).toBe(true);
   });
 });
 

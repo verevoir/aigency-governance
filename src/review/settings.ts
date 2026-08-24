@@ -135,7 +135,11 @@
 // `CredentialLookup.oauthAttempted` (see `resolveCredential` below) is the
 // fix: the same two signals, computed the same way, surfaced wherever
 // nothing ultimately supplies a credential — not only when fallback was
-// refused.
+// refused. The identical gap existed for the API-key chain's own blank-env
+// and missing-explicit-path signals — computed by the same generic
+// `resolveChain`, and never read by anything until the panel's third review
+// found the asymmetry. `CredentialLookup.apiKeyAttempted` closes it the same
+// way.
 //
 // A source that is genuinely broken — present, and unreadable, rather than
 // simply absent — is a hard stop for the WHOLE credential resolution, not a
@@ -366,16 +370,17 @@ interface ChainLookup {
   /** True when this chain's environment variable was set but blank — a
    * signal that someone attempted to configure this credential through the
    * environment and it arrived empty, as distinct from never having
-   * mentioned it at all. Read by the refusal path in `resolveCredential`
-   * and, via `oauthAttemptSignals`, by the ordinary fallback-allowed path
-   * too — see the file header. */
+   * mentioned it at all. Read, via `attemptSignals`, by OAuth's refusal
+   * path in `resolveCredential` and by the ordinary fallback-allowed path
+   * too — for both chains, not only OAuth's — see the file header. */
   readonly blankEnvVar: boolean;
   /** The `*_FILE` path, when the corresponding env var named one but no file
    * was found there — a signal that someone attempted to point this
    * credential at a file, as distinct from never having set the `*_FILE`
-   * variable at all. `undefined` when no such attempt was made. Read by the
-   * refusal path in `resolveCredential` and, via `oauthAttemptSignals`, by
-   * the ordinary fallback-allowed path too — see the file header. */
+   * variable at all. `undefined` when no such attempt was made. Read, via
+   * `attemptSignals`, by OAuth's refusal path in `resolveCredential` and by
+   * the ordinary fallback-allowed path too — for both chains, not only
+   * OAuth's — see the file header. */
   readonly missingExplicitPath?: string;
 }
 
@@ -430,9 +435,13 @@ async function resolveChain(
     return { resolution: { kind: 'found', value: fromEnv }, blankPaths: [], blankEnvVar: false };
   }
   // Set but blank is a real attempt, distinct from never having mentioned
-  // the variable at all — see the file header. Recorded even though this
-  // ordinary (fallback-allowed) path does nothing with it; only the refusal
-  // path in `resolveCredential` reads it.
+  // the variable at all — see the file header. Read by OAuth's refusal
+  // path in `resolveCredential`, and by the ordinary fallback-allowed path
+  // too, via `attemptSignals` — for whichever chain this is, not only
+  // OAuth's. This comment previously said the fallback-allowed path did
+  // nothing with it; that became false once the refusal-path fix landed,
+  // and stayed uncorrected — see CredentialLookup.oauthAttempted and
+  // CredentialLookup.apiKeyAttempted.
   const blankEnvVar = rawEnv !== undefined && rawEnv.trim() === '';
 
   const blankPaths: string[] = [];
@@ -515,22 +524,43 @@ interface CredentialLookup {
    * only meaningfully alongside a genuine "nothing at all" outcome.
    */
   readonly oauthAttempted: readonly string[];
+  /**
+   * The same signal, mirrored for the API-key chain. `resolveChain`
+   * already computed a blank-env-var and missing-explicit-path signal for
+   * the API-key chain exactly as it does for OAuth's, but nothing ever
+   * read them until the panel's third review found the asymmetry: a blank
+   * `ANTHROPIC_API_KEY`, or an `ANTHROPIC_API_KEY_FILE` naming a path that
+   * does not exist, collapsed indistinguishably into "ANTHROPIC_API_KEY is
+   * not configured". Carried forward whenever the API-key chain was
+   * actually tried and did not supply a credential — the final all-absent
+   * outcome, or the API-key chain itself resolving to `unreadable`. Empty
+   * whenever the API-key chain was never reached at all: OAuth resolved to
+   * `found` or `unreadable`, or fallback was disallowed and
+   * `oauth-required` refused before the API-key chain was ever tried.
+   * Deliberately excludes blank API-key *files*: those are already carried
+   * in `blankPaths` above.
+   */
+  readonly apiKeyAttempted: readonly string[];
 }
 
-/** The two OAuth signals a blank source and a missing explicit path leave
- * behind, independent of the blank-FILE case already tracked in
- * `blankPaths` — see `ChainLookup` and `CredentialLookup.oauthAttempted`
- * above. Used both by the refusal path (`oauth-required`, which appends its
- * own blank-file messages on top) and by the ordinary fallback-allowed path
- * when nothing at all ends up supplying a credential. */
-function oauthAttemptSignals(oauth: ChainLookup): string[] {
+/** The two attempt signals a blank source and a missing explicit path leave
+ * behind for ONE chain, independent of the blank-FILE case already tracked
+ * in `blankPaths` — see `ChainLookup`, `CredentialLookup.oauthAttempted` and
+ * `CredentialLookup.apiKeyAttempted` above. Generalised, like `resolveChain`
+ * itself, to one function given either chain's own lookup and config — see
+ * `ChainConfig` — rather than an OAuth-only version and a second,
+ * API-key-only copy the panel's third review found missing. Used by OAuth's
+ * refusal path (`oauth-required`, which appends its own blank-file messages
+ * on top) and by the ordinary fallback-allowed path, for whichever chain(s)
+ * were actually tried and came up empty. */
+function attemptSignals(chain: ChainLookup, config: ChainConfig): string[] {
   const attempted: string[] = [];
-  if (oauth.blankEnvVar) {
-    attempted.push(`${OAUTH_CHAIN.envVar} is set but blank`);
+  if (chain.blankEnvVar) {
+    attempted.push(`${config.envVar} is set but blank`);
   }
-  if (oauth.missingExplicitPath !== undefined) {
+  if (chain.missingExplicitPath !== undefined) {
     attempted.push(
-      `${OAUTH_CHAIN.fileEnvVar} names ${oauth.missingExplicitPath}, but no file exists there`,
+      `${config.fileEnvVar} names ${chain.missingExplicitPath}, but no file exists there`,
     );
   }
   return attempted;
@@ -567,15 +597,21 @@ async function resolveCredential(
       },
       blankPaths: oauth.blankPaths,
       oauthAttempted: [],
+      apiKeyAttempted: [],
     };
   }
   if (oauth.resolution.kind === 'unreadable') {
-    return { resolution: oauth.resolution, blankPaths: oauth.blankPaths, oauthAttempted: [] };
+    return {
+      resolution: oauth.resolution,
+      blankPaths: oauth.blankPaths,
+      oauthAttempted: [],
+      apiKeyAttempted: [],
+    };
   }
 
   // oauth.resolution.kind === 'absent'.
   if (!allowApiKeyFallback) {
-    const attempted = oauthAttemptSignals(oauth);
+    const attempted = attemptSignals(oauth, OAUTH_CHAIN);
     for (const path of oauth.blankPaths) {
       attempted.push(`the credential file at ${path} was found but was blank`);
     }
@@ -583,6 +619,7 @@ async function resolveCredential(
       resolution: { kind: 'oauth-required', attempted },
       blankPaths: oauth.blankPaths,
       oauthAttempted: [],
+      apiKeyAttempted: [],
     };
   }
 
@@ -599,6 +636,7 @@ async function resolveCredential(
       },
       blankPaths,
       oauthAttempted: [],
+      apiKeyAttempted: [],
     };
   }
   if (apiKey.resolution.kind === 'unreadable') {
@@ -608,11 +646,15 @@ async function resolveCredential(
     // hardcoding oauthAttempted: []. That collapsed two independently
     // real, distinguishable failures into one reported cause. Computed via
     // the same helper the plain-absent branch below already uses — see
-    // CredentialLookup.oauthAttempted.
+    // CredentialLookup.oauthAttempted. apiKeyAttempted is included for the
+    // same reason: a blank ANTHROPIC_API_KEY alongside its own unreadable
+    // file is a second, independently real fact about this same chain —
+    // see CredentialLookup.apiKeyAttempted.
     return {
       resolution: apiKey.resolution,
       blankPaths,
-      oauthAttempted: oauthAttemptSignals(oauth),
+      oauthAttempted: attemptSignals(oauth, OAUTH_CHAIN),
+      apiKeyAttempted: attemptSignals(apiKey, API_KEY_CHAIN),
     };
   }
   // Nothing at all supplied a credential, on either chain. The blank-FILE
@@ -621,10 +663,15 @@ async function resolveCredential(
   // `*_FILE` path naming nothing — are surfaced now too, exactly as
   // `oauth-required` already surfaces them when fallback is refused instead
   // of allowed. See the file header and `CredentialLookup.oauthAttempted`.
+  // The identical gap existed on the API-key side, unnoticed because the
+  // machinery to close it (`attemptSignals`, generalised here from what was
+  // `oauthAttemptSignals`) had only ever been built for OAuth — see
+  // `CredentialLookup.apiKeyAttempted`.
   return {
     resolution: { kind: 'absent' },
     blankPaths,
-    oauthAttempted: oauthAttemptSignals(oauth),
+    oauthAttempted: attemptSignals(oauth, OAUTH_CHAIN),
+    apiKeyAttempted: attemptSignals(apiKey, API_KEY_CHAIN),
   };
 }
 
@@ -671,6 +718,13 @@ export async function resolveSettings(
     // resolveCredential's apiKey-unreadable branch and
     // CredentialLookup.oauthAttempted.
     for (const detail of credentialLookup.oauthAttempted) {
+      problems.push(detail);
+    }
+    // The mirror of the fix above, for the API-key chain's own signals —
+    // see CredentialLookup.apiKeyAttempted. Empty here whenever OAuth
+    // itself was the source of `unreadable`, since the API-key chain is
+    // never reached in that case.
+    for (const detail of credentialLookup.apiKeyAttempted) {
       problems.push(detail);
     }
   } else if (credentialResolution.kind === 'oauth-required') {
@@ -721,6 +775,17 @@ export async function resolveSettings(
     // path — as it already was on the refusal path above. See the file
     // header and CredentialLookup.oauthAttempted.
     for (const detail of credentialLookup.oauthAttempted) {
+      problems.push(detail);
+    }
+    // The asymmetry the panel's third review found: resolveChain already
+    // computed these same two signals for the API-key chain too, but
+    // nothing ever read them, so a blank ANTHROPIC_API_KEY or an
+    // ANTHROPIC_API_KEY_FILE naming a path that does not exist collapsed
+    // indistinguishably into "ANTHROPIC_API_KEY is not configured" — the
+    // exact distinction this file went to some trouble to establish for
+    // OAuth, left unestablished for the identical case one chain over. See
+    // CredentialLookup.apiKeyAttempted.
+    for (const detail of credentialLookup.apiKeyAttempted) {
       problems.push(detail);
     }
   }

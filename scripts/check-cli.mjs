@@ -21,7 +21,7 @@
 // keys below are deliberately not real ones, and if this ever starts needing
 // one, something has moved that should not have.
 //
-// Three scenarios, not one. The panel's first real review found that nothing
+// Four scenarios, not one. The panel's first real review found that nothing
 // in this repository actually proves `review.ts` WIRES `keyFileReader()`
 // into `runReview` — every unit test drives `resolveSettings` or `runReview`
 // directly with an injected fake, and none of them touch the process
@@ -33,7 +33,13 @@
 // variable name (CLAUDE_CODE_OAUTH_TOKEN): every unit test for it drives
 // resolveSettings directly too, so nothing before this scenario proved the
 // real binary's environment reaches that name specifically, as opposed to a
-// fake reaching it in a test's own process.
+// fake reaching it in a test's own process. The fourth scenario is the same
+// argument again, one layer up: every unit test for allowApiKeyFallback
+// drives runReview directly with an injected boolean, and none of them
+// touch AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK's own string comparison in
+// cli/review.ts — the guard review-head.mjs relies on to keep a local run
+// from spending a purchased API key — so nothing before this scenario
+// proved that comparison reaches the real process boundary at all.
 
 import { spawn } from 'node:child_process';
 // Imported, not assumed. The flat config declares no environment globals, and
@@ -219,5 +225,6 @@ if (problems.length > 0) {
 
 console.log(
   `${BIN} started, resolved a credential from an env var, a file on disk and a second env ` +
-    'var for the OAuth token, and refused an empty diff all three times.',
+    'var for the OAuth token, refused an empty diff every time, and refused fallback when ' +
+    'disallowed too — four scenarios, not three.',
 );
