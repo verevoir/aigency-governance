@@ -705,6 +705,80 @@ describe('resolveSettings, resolving the subscription OAuth token', () => {
     ).toBe(true);
   });
 
+  // The mirror of the test above, chains reversed: here OAuth's OWN file is
+  // what turns out unreadable, coinciding with OAuth's own blank env var —
+  // the gap the panel's fourth review found. Before this fix, the
+  // oauth.resolution.kind === 'unreadable' branch in resolveCredential
+  // hardcoded oauthAttempted: [], discarding oauth.blankEnvVar even though
+  // the sibling apiKey-unreadable branch above already preserved this exact
+  // signal for OAuth via attemptSignals.
+  it('names a blank OAuth env var alongside its own unreadable file, rather than dropping the signal', async () => {
+    const unreadable = filesystem({
+      '/oauth/token': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      env({
+        CLAUDE_CODE_OAUTH_TOKEN: '   ',
+        AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/token',
+      }),
+      unreadable.read,
+    );
+
+    expect(result.kind).toBe('invalid');
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('/oauth/token'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('EACCES'))).toBe(true);
+    expect(
+      problems.some(
+        (problem) => problem.includes('CLAUDE_CODE_OAUTH_TOKEN') && problem.includes('blank'),
+      ),
+    ).toBe(true);
+  });
+
+  // `attemptSignals` reports two DIFFERENT signals — a blank env var, and a
+  // missing explicit *_FILE path — and every test above that pairs a genuine
+  // attempt with a second real problem uses only the first one. This is that
+  // same pairing for the second: an explicit `AIGENCY_REVIEW_OAUTH_TOKEN_FILE`
+  // naming a path that is not there, falling through to a default path that
+  // IS there and unreadable. Read alongside the test above rather than review
+  // findings this time — found by re-reading this file's own coverage rather
+  // than by the panel, on the same reasoning: a signal proven in isolation is
+  // not proven in combination with the failure that would most plausibly
+  // swallow it.
+  it('names a missing explicit OAuth file path alongside its own unreadable default-path file, rather than dropping either signal', async () => {
+    const unreadable = filesystem({
+      '/xdg/verevoir/anthropic-oauth.token': {
+        kind: 'unreadable',
+        reason: 'EACCES: permission denied',
+      },
+    });
+
+    const result = await resolveSettings(
+      env({
+        AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/oauth/missing',
+        XDG_CONFIG_HOME: '/xdg',
+        HOME: '/home/it',
+      }),
+      unreadable.read,
+    );
+
+    expect(result.kind).toBe('invalid');
+    const problems = problemsOf(result);
+    expect(
+      problems.some((problem) => problem.includes('/xdg/verevoir/anthropic-oauth.token')),
+    ).toBe(true);
+    expect(problems.some((problem) => problem.includes('EACCES'))).toBe(true);
+    expect(
+      problems.some(
+        (problem) =>
+          problem.includes('AIGENCY_REVIEW_OAUTH_TOKEN_FILE') &&
+          problem.includes('/oauth/missing') &&
+          problem.includes('no file exists there'),
+      ),
+    ).toBe(true);
+  });
+
   it('reads AIGENCY_REVIEW_OAUTH_TOKEN_FILE without ever asking for it when the env var already answered', async () => {
     const fs = filesystem({ '/oauth/token': { kind: 'text', text: OAUTH_TOKEN } });
 
@@ -720,39 +794,30 @@ describe('resolveSettings, resolving the subscription OAuth token', () => {
     expect(fs.asked).toEqual([]);
   });
 
-  // The leak test, rewritten. The earlier version of this test never put
-  // OAUTH_TOKEN anywhere in the environment, the file map, or any other
-  // input to `resolveSettings` — it supplied only an unrelated
-  // `reason: 'EACCES'` for the unreadable file, so `not.toContain(OAUTH_TOKEN)`
-  // held unconditionally and could not have caught a real leak. This version
-  // resolves the OAuth credential SUCCESSFULLY, so the literal token value is
-  // genuinely held in memory (`credential.value`, inside `resolveSettings`),
-  // while the lens token is separately missing — so `kind` is still
-  // `incomplete` and a report is still rendered. If `credential.value` ever
-  // rode along into `missing` or `problems` (the fields `renderMissing`
-  // actually reads), this is what would catch it, the same way
-  // tests/anthropic.test.ts's leak tests embed the real secret in a thrown
-  // error or response body before asserting its absence.
-  it('never puts a genuinely-resolved OAuth token in a rendered report, even when something else is missing', async () => {
-    const result = await resolveSettings(
-      {
-        ANTHROPIC_API_KEY: undefined,
-        CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN,
-        AIGENCY_REVIEW_LENSES_TOKEN: undefined,
-      },
-      NO_FILES,
-    );
-
-    // The credential itself resolved fine — this is `incomplete` only
-    // because the lens token is separately unset, which is what proves
-    // OAUTH_TOKEN was genuinely in scope while the report was assembled.
-    expect(missingOf(result).map((setting) => setting.name)).toEqual([
-      'AIGENCY_REVIEW_LENSES_TOKEN',
-    ]);
-
-    const rendered = renderMissing(missingOf(result), problemsOf(result));
-    expect(rendered).not.toContain(OAUTH_TOKEN);
-  });
+  // A test used to sit here — 'never puts a genuinely-resolved OAuth token
+  // in a rendered report' — asserting `not.toContain(OAUTH_TOKEN)` on a
+  // report built from a SUCCESSFULLY resolved OAuth credential. The panel's
+  // fourth review found it vacuous for a narrower reason than the version it
+  // replaced: on the `found` branch, `resolveSettings` never writes
+  // `credential.value` into `missing` or `problems` — the only two fields
+  // `renderMissing` ever reads — so the assertion held regardless of what
+  // OAUTH_TOKEN actually was, by construction of the code, not by verifying
+  // any behaviour. Deleted rather than patched, because no path was found,
+  // on trying, where a genuinely-resolved credential's VALUE could reach
+  // `missing` or `problems` at all: every string either module writes there
+  // is a fixed explanatory sentence, an environment-variable NAME (see
+  // `attemptSignals`), or a file PATH (see `blankPaths`) — never a
+  // credential's own bytes. That is a property of the types this module
+  // returns (`ReviewSettings.credential` is the only field carrying a
+  // value, and it exists only on the `ready` result, which produces no
+  // rendered report at all — `renderMissing` is never called with one), not
+  // something a test at this layer can meaningfully exercise by asserting a
+  // string's absence. The real leak surface is one level down, at the point
+  // a credential's value is actually SENT and could actually appear in a
+  // thrown error or a response body — see tests/anthropic.test.ts's leak
+  // tests, which embed the real secret in a thrown error and a response
+  // body before asserting `redact()` removed it. That is where a leak could
+  // really happen, and where a test can really catch one.
 });
 
 describe('resolveSettings, when OAuth was attempted but came up empty, and fallback is allowed', () => {

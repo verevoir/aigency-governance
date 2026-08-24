@@ -601,10 +601,19 @@ async function resolveCredential(
     };
   }
   if (oauth.resolution.kind === 'unreadable') {
+    // OAuth's own file is broken — a hard stop, unchanged. But this branch
+    // previously discarded OAuth's own genuinely-attempted signals (a blank
+    // CLAUDE_CODE_OAUTH_TOKEN, a missing explicit *_FILE path) by
+    // hardcoding oauthAttempted: [], exactly the bug already fixed in the
+    // sibling apiKey-unreadable branch below for the CROSS-chain case (OAuth
+    // blank, API key file unreadable) — the panel's fourth review found the
+    // SAME-chain case (OAuth blank, OAuth's own file unreadable) left
+    // uncorrected. Computed via the same attemptSignals helper every other
+    // branch here already uses.
     return {
       resolution: oauth.resolution,
       blankPaths: oauth.blankPaths,
-      oauthAttempted: [],
+      oauthAttempted: attemptSignals(oauth, OAUTH_CHAIN),
       apiKeyAttempted: [],
     };
   }
