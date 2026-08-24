@@ -26,19 +26,15 @@ export const CANNOT_RUN_WORD = 'could_not_run';
 // this lens's dimension has no material in this change — a diff that touches
 // no test, read by a lens whose entire mandate is judging tests, say. One is
 // an incomplete panel; the other is a complete panel where a member had
-// nothing to add. Conflating them was a real defect, not a hypothetical one:
+// nothing to add. Conflating them is the defect this word exists to fix:
 // verevoir/aigency-runtime-v2#38
 // (https://github.com/verevoir/aigency-runtime-v2/pull/38) changed only
 // GitHub Actions workflow YAML -- no test-covered code at all -- and its own
 // `review / review` check run (id 97088772135) concluded could_not_run,
-// annotated "nothing was reviewed". That is the whole-panel failure this
-// word exists to separate from a lens that reviewed and correctly found
-// nothing in its scope: the `verification` lens's declared mandate
-// (review/lenses.json) is judging changed tests, the natural lens to have
-// hit this. The per-lens breakdown itself lives only in that run's job
-// summary, which has no API and is not re-quoted here as a confirmed fact --
-// the PR content and the run's own could_not_run conclusion are what a
-// reader can check.
+// annotated "nothing was reviewed". The run and its annotation are
+// retrievable and checkable by anyone who reads the check run; what
+// happened lens by lens on that run is not claimed here -- it lives only in
+// that run's job summary, which has no API.
 export const OUT_OF_SCOPE_WORD = 'out_of_scope';
 
 /**

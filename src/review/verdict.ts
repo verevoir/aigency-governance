@@ -6,23 +6,21 @@
 // crashed, timed out, was never dispatched — is a lens that did not review,
 // and a panel missing a member has not approved anything.
 //
-// A LENS THAT REVIEWED AND FOUND NOTHING IN ITS SCOPE IS NOT THE SAME FACT AS
-// A LENS THAT DID NOT REVIEW, AND COLLAPSING THEM WAS A REAL DEFECT, NOT A
-// HYPOTHETICAL ONE. verevoir/aigency-runtime-v2#38
+// A lens that reviewed and found nothing in its scope is not the same fact
+// as a lens that did not review, and collapsing them is the defect this word
+// exists to fix. verevoir/aigency-runtime-v2#38
 // (https://github.com/verevoir/aigency-runtime-v2/pull/38) changed only
 // GitHub Actions workflow YAML — no test-covered code at all — and its own
-// `review / review` check run (id 97088772135) still concluded could_not_run,
-// annotated "nothing was reviewed", for a diff where the `verification`
-// lens's declared mandate (review/lenses.json: judging changed tests) had
-// nothing to attach to. The per-lens breakdown lives only in that run's job
-// summary, which has no API and is not re-quoted here as confirmed fact — the
-// PR content and the run's own could_not_run conclusion are what a reader can
-// check, and that alone shows the collapse this word exists to fix.
-// `out_of_scope` holds that fact apart from a genuine failure: it does not
-// hold up the panel the way an unrun lens does. Whether an ALL-out-of-scope
-// panel counts as approved or as its own separate non-green result is a
-// policy decision, not a technical one, and it is isolated to one line in
-// `aggregate` below — see the comment there.
+// `review / review` check run (id 97088772135) concluded could_not_run,
+// annotated "nothing was reviewed". The run and its annotation are
+// retrievable and checkable by anyone who reads the check run; what
+// happened lens by lens on that run is not claimed here — it lives only in
+// that run's job summary, which has no API.
+// `out_of_scope` holds the completed-but-empty case apart from a genuine
+// failure: it does not hold up the panel the way an unrun lens does. Whether
+// an ALL-out-of-scope panel counts as approved or as its own separate
+// non-green result is a policy decision, not a technical one, and it is
+// isolated to one line in `aggregate` below — see the comment there.
 
 export type Outcome = 'approved' | 'rejected' | 'could_not_run' | 'out_of_scope';
 
