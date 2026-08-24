@@ -1,5 +1,7 @@
 [
   {
+    "id": "guard-destroyed-report-false-positive",
+    "target": "(no file target — not diff-scored; a harness-guard false positive, see eval/corpus/README.md's \"Two classes of false positive\")",
     "lens": "verdict-claims-guard",
     "summary": "Some guard, on an earlier harness turn, destroyed that turn's entire report — discarding all of it, not just the disputed part — on what recon/harness-findings-overnight.md's own H60 heading names outright as a false positive: the report itself was not actually the problem the guard took it for.",
     "evidence": {

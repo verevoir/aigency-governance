@@ -1,5 +1,7 @@
 [
   {
+    "id": "guard-quoted-verdict-not-asserted",
+    "target": "(no file target — not diff-scored; a harness-guard false positive, see eval/corpus/README.md's \"Two classes of false positive\")",
     "lens": "verdict-claims-guard",
     "summary": "The verdict-claims guard rejected an entire turn's report because the turn quoted a gate-verdict token verbatim while reading design/tuned-constants-and-eval-harness.md aloud — reproducing a verdict string already present in that document's own text — and the guard treated the quotation as if the turn were itself asserting that verdict. The turn had made no such claim; it was citing, not concluding.",
     "evidence": null,

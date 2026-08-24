@@ -1,5 +1,7 @@
 [
   {
+    "id": "dead-decorators",
+    "target": "src/decorate/retrying.ts",
     "lens": "blast-radius",
     "summary": "Two generic, unrelated decorator modules for retrying and observing async operations (`src/decorate/retrying.ts`, `src/decorate/observing.ts`) are added and re-exported through the package's public barrel, even though nothing added in this diff's actual review pipeline (`anthropicReviewer`, `runPanel`, `runReview`, the readers) calls either one — the only callers anywhere in the change are their own dedicated test file, so the public surface is widened with capability this change does not use.",
     "evidence": {

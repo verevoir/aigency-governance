@@ -1,5 +1,7 @@
 [
   {
+    "id": "verification-wiring-gap",
+    "target": "src/cli/review.ts",
     "lens": "verification",
     "summary": "The security-critical change is the call site in `review.ts` that now supplies `url` and `access.lensToken` to `lensFetchHeaders`, but every new test (in `tests/readers.test.ts`) exercises `lensFetchHeaders` in isolation as a pure function — none verifies that `review.ts` actually wires the real fetch `url` and `access.lensToken` into it, so a regression at the call site (e.g. passing `access.lensSource` instead of `url`, or swapping the arguments) would not be caught by any test in this diff.",
     "evidence": {

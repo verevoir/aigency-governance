@@ -1,5 +1,7 @@
 [
   {
+    "id": "truncation-mechanism-overclaim",
+    "target": "src/review/verifyFindings.ts",
     "lens": "honesty",
     "summary": "The truncation note hardcoded into every \"truncated\" finding's detail asserts a specific causal mechanism (\"reshaped by a source line wrap\") that the code does not actually verify — `checkQuote`'s \"truncated\" branch only checks whether the citation matches after generic whitespace normalization and comment-marker stripping (`joinedProse`/`normalizeWhitespace`), which will also fire for a quote that merely strips a leading `//`/`#` on a single line, or one whose only difference from the diff is internal whitespace (multiple spaces or a tab) with no newline crossed at all. In those cases the finding is stamped with a claim about a mechanism (\"a source line wrap the diff breaks with a real newline\") that never happened, misrepresenting to a reader why the citation was accepted.",
     "evidence": {

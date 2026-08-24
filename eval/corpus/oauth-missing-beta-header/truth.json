@@ -1,5 +1,7 @@
 [
   {
+    "id": "oauth-missing-beta-header",
+    "target": "src/review/anthropic.ts",
     "lens": "correctness",
     "summary": "headersFor sends only an `authorization: Bearer <token>` header for a subscription-OAuth credential and adds no other header, contradicting this same file's own claim of full parity between the API-key and OAuth request paths ('same request shape, same response envelope, same failure shapes... nothing downstream of headersFor had to learn a second way to fail'). Anthropic's Messages API requires an additional anthropic-beta header to accept an OAuth bearer token at all, so a request built this way is not actually the parity the file's header comment claims — and, per the same original finding, a header alone may not be sufficient in any case, since subscription tokens may be restricted server-side to callers identifying as Claude Code.",
     "evidence": {

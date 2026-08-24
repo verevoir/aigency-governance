@@ -1,5 +1,7 @@
 [
   {
+    "id": "readme-drift-1",
+    "target": "README.md",
     "lens": "honesty",
     "summary": "README's \"On a fork's pull request\" section describes a failure sequence the code no longer produces: it asserts the governance-token secret is what stops the run first, and that the caller's own checkout fails with `Repository not found` because the governance-repo checkout is never reached. The actual workflow now checks the key, unconditionally, before either checkout runs at all, and reports a different message entirely: `ANTHROPIC_API_KEY is not available to this workflow.`.",
     "evidence": {
@@ -10,6 +12,8 @@
     "provenance": "verified-directly — README.md fetched and read in full at 7b9e3e4609e80bb595c7be6f337f9422de846620~1 (before, shown above as evidence) and 7b9e3e4609e80bb595c7be6f337f9422de846620 (after, now describing the real fail-fast key check), both in this pass. PR #1's own body (verevoir/aigency-governance#1, read via read_pull_request in this pass) independently names this as one of four documentation findings fixed at that same commit. Full before/after diff in diff.txt (hunk 1)."
   },
   {
+    "id": "readme-drift-2",
+    "target": "README.md",
     "lens": "honesty",
     "summary": "README's \"Running it locally\" section claims the `cli` gate leaves the entire `readers` module invisible to it, alongside `load`, `panel`, `prompt`, `anthropic`, `parseReply` and `report`. In fact the gate's second scenario drives `keyFileReader()` through `review.ts`'s real wiring specifically to prove that one path exists — the claim overstates what is uncovered by folding a partially-covered module into a fully-uncovered list.",
     "evidence": {
@@ -20,6 +24,8 @@
     "provenance": "verified-directly — README.md fetched and read in full at 7b9e3e4609e80bb595c7be6f337f9422de846620~1 (before, shown above as evidence) and 7b9e3e4609e80bb595c7be6f337f9422de846620 (after, now narrowed to name exactly what readers-coverage exists and what doesn't), both in this pass. PR #1's own body independently names this as one of four documentation findings fixed at that same commit. Full before/after diff in diff.txt (hunk 2)."
   },
   {
+    "id": "readme-drift-3",
+    "target": "README.md",
     "lens": "honesty",
     "summary": "A truncation-classification message named one specific cause for three different code paths that could each produce a truncated result, misattributing a shared symptom to a single mechanism.",
     "evidence": null,
@@ -27,6 +33,8 @@
     "provenance": "reported-not-rechecked — named only in README.md's own HTML comment marker (read directly on main and at commit 7b9e3e4609e80bb595c7be6f337f9422de846620 in this pass: 'a truncation-classification message that named one specific cause for three different code paths'). No prior commit, report file, or diff pinning the specific broken sentence was located in this pass; grepping the retrievable .review-report/* files in this repository did not surface it. Recorded as reported, per the design record's own discipline about distinguishing observed from inferred, not independently verified beyond the marker's own claim that it existed and was fixed."
   },
   {
+    "id": "readme-drift-4",
+    "target": "scripts/check-cli.mjs",
     "lens": "honesty",
     "summary": "The file's own header comment claims the gate proves \"the shebang survived emit,\" but the script never executes the emitted file directly (it runs `node <path>`, bypassing the shebang and the execute bit entirely) — and a later comment in the very same file admits this exact gap, so the header's claim is a state the code does not actually observe.",
     "evidence": {
