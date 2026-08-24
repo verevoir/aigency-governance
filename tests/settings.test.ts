@@ -644,6 +644,39 @@ describe('resolveSettings, resolving the subscription OAuth token', () => {
     // the fallback that would have worked".
   });
 
+  // The gap the panel's second review found: an OAuth attempt signal (here,
+  // a blank env var) must not vanish just because the API-key chain that
+  // was tried next also hit a real problem of its own. Before this fix,
+  // resolveCredential's apiKey-unreadable branch hardcoded oauthAttempted:
+  // [], so this scenario reported only the broken key file and never
+  // mentioned that CLAUDE_CODE_OAUTH_TOKEN had also been set-but-blank —
+  // two independently real failures collapsing into one reported cause.
+  it('names a blank OAuth env var alongside an unreadable API key file, rather than dropping the OAuth signal', async () => {
+    const unreadable = filesystem({
+      '/keys/anthropic': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      env({
+        CLAUDE_CODE_OAUTH_TOKEN: '   ',
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+      }),
+      unreadable.read,
+    );
+
+    expect(result.kind).toBe('invalid');
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('EACCES'))).toBe(true);
+    // The signal this fix restores.
+    expect(
+      problems.some(
+        (problem) => problem.includes('CLAUDE_CODE_OAUTH_TOKEN') && problem.includes('blank'),
+      ),
+    ).toBe(true);
+  });
+
   it('reads AIGENCY_REVIEW_OAUTH_TOKEN_FILE without ever asking for it when the env var already answered', async () => {
     const fs = filesystem({ '/oauth/token': { kind: 'text', text: OAUTH_TOKEN } });
 

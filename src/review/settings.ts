@@ -602,7 +602,18 @@ async function resolveCredential(
     };
   }
   if (apiKey.resolution.kind === 'unreadable') {
-    return { resolution: apiKey.resolution, blankPaths, oauthAttempted: [] };
+    // The API-key chain hit a real problem — a file found but not readable
+    // — and this branch previously discarded whatever OAuth had genuinely
+    // attempted along the way (a blank env var, a missing explicit path) by
+    // hardcoding oauthAttempted: []. That collapsed two independently
+    // real, distinguishable failures into one reported cause. Computed via
+    // the same helper the plain-absent branch below already uses — see
+    // CredentialLookup.oauthAttempted.
+    return {
+      resolution: apiKey.resolution,
+      blankPaths,
+      oauthAttempted: oauthAttemptSignals(oauth),
+    };
   }
   // Nothing at all supplied a credential, on either chain. The blank-FILE
   // signal is already folded into `blankPaths` above; the two signals that
@@ -653,6 +664,14 @@ export async function resolveSettings(
     );
     for (const path of credentialLookup.blankPaths) {
       problems.push(`the credential file at ${path} was found but was blank`);
+    }
+    // The other half of this fix: an OAuth attempt (a blank env var, a
+    // missing explicit path) must not vanish just because the API-key
+    // chain's own failure is also being reported here. See
+    // resolveCredential's apiKey-unreadable branch and
+    // CredentialLookup.oauthAttempted.
+    for (const detail of credentialLookup.oauthAttempted) {
+      problems.push(detail);
     }
   } else if (credentialResolution.kind === 'oauth-required') {
     // allowApiKeyFallback was false and OAuth resolved to nothing: the API

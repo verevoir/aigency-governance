@@ -177,6 +177,39 @@ if (oauthOut.includes('ANTHROPIC_API_KEY')) {
   );
 }
 
+// Scenario 4: AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK=false must actually reach
+// runReview's allowApiKeyFallback parameter through the real process
+// boundary — the guard review-head.mjs relies on to keep a local run from
+// spending a purchased API key. An ANTHROPIC_API_KEY that would otherwise
+// work is supplied specifically so a broken or reversed comparison in
+// cli/review.ts (falling through to it instead of refusing) is
+// distinguishable from the guard working, rather than merely absent because
+// nothing was configured at all. No unit test exercises this string
+// comparison through the actual process boundary — this is the seam the
+// panel's second review found untested.
+const fallbackDisallowed = await runEmptyDiff({
+  ANTHROPIC_API_KEY: 'not-a-real-key-and-must-never-need-to-be',
+  AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK: 'false',
+});
+if (fallbackDisallowed.code !== 1) {
+  problems.push(
+    `[AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK] expected exit 1 when OAuth is required and absent, got ${fallbackDisallowed.code}`,
+  );
+}
+if (!fallbackDisallowed.out.includes('CLAUDE_CODE_OAUTH_TOKEN')) {
+  problems.push(
+    '[AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK] expected the report to name CLAUDE_CODE_OAUTH_TOKEN ' +
+      'as missing — the flag should have refused before ever reaching the empty-diff guard',
+  );
+}
+if (fallbackDisallowed.out.includes('The diff was empty')) {
+  problems.push(
+    '[AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK] the report reached the empty-diff guard — ' +
+      'AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK=false is not actually reaching runReview, so it ' +
+      'silently fell through to the configured ANTHROPIC_API_KEY',
+  );
+}
+
 if (problems.length > 0) {
   console.error(
     `The binary ran and did the wrong thing:\n${problems.map((p) => `  - ${p}`).join('\n')}`,
