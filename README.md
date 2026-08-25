@@ -130,12 +130,16 @@ see `src/review/settings.ts`'s file header for why that distinction matters.
 
 When both are set, the OAuth token wins — deterministically, not by accident
 of which happened to be checked first (see `src/review/settings.ts`'s file
-header for the full argument). CI cannot be affected either way:
-`CLAUDE_CODE_OAUTH_TOKEN` is never named in any workflow in this repository,
-so a GitHub Actions run — which starts with none of a contributor's local
-environment regardless — structurally never has it. The report a run
-produces says which one judged it, on its last line: "via API key" or "via
-subscription OAuth" — never the credential's value, only which kind it was.
+header for the full argument). CI is not affected by this today:
+`CLAUDE_CODE_OAUTH_TOKEN` is not named in any workflow in this repository
+right now, so a GitHub Actions run — which starts with none of a
+contributor's local environment regardless — does not have it. That is a
+fact about this repository's current workflow files, not a property this
+code reads, checks or enforces: if a workflow is ever edited to set that
+variable, this paragraph would stop being true and nothing here would catch
+it. The report a run produces says which one judged it, on its last line:
+"via API key" or "via subscription OAuth" — never the credential's value,
+only which kind it was.
 
 Run `npm run build` after changing anything under `src/`. The `cli` gate covers
 less than its name suggests: it starts the emitted binary, so the CLI boundary
@@ -184,7 +188,7 @@ width is sized to its own two rows and the other one is untouched.
 
 | Variable                          | Default | Notes                                                                                                                                                                                                                                                                                                           |
 | --------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CLAUDE_CODE_OAUTH_TOKEN`         | —       | A subscription credential, tried before `ANTHROPIC_API_KEY` — see "Or a subscription, for free" above. Set by Claude Code's own runtime, not by this project; never set by anything in this repository's own CI.                                                                                                |
+| `CLAUDE_CODE_OAUTH_TOKEN`         | —       | A subscription credential, tried before `ANTHROPIC_API_KEY` — see "Or a subscription, for free" above. Set by Claude Code's own runtime, not by this project; not set by any workflow in this repository today — a fact about the current workflow files, not something this code enforces.                     |
 | `AIGENCY_REVIEW_OAUTH_TOKEN_FILE` | —       | A path to read the OAuth token from, tried when the variable above is unset — the option for working outside Claude Code. Falls back further to `$XDG_CONFIG_HOME/verevoir/anthropic-oauth.token` (`~/.config/verevoir/anthropic-oauth.token` when unset), the same shape `ANTHROPIC_API_KEY_FILE` already had. |
 
 A third table, for the same reason as the split above — this one row alone,

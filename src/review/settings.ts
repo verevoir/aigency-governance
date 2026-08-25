@@ -85,9 +85,17 @@
 // `Review` step lists every variable it receives, and does not list this
 // one). A GitHub Actions runner starts with none of a contributor's local
 // environment, so the omission there is what keeps it out — a fact about
-// what that step's `env:` names, not a promise anyone has to remember to
-// keep. That makes OAuth-first *safe*: CI can never have it, so giving it top
-// priority never changes what CI does. It is also what makes it *right*: a
+// what that step's `env:` names TODAY, not a promise anyone has to
+// remember to keep, and not something this code reads, validates, or could
+// notice changing: if `review.yml` is ever edited to name this variable —
+// for a reason unrelated to this file entirely — this paragraph would
+// silently stop being true, and nothing here would catch it. The panel's
+// seventh review found the earlier wording ("CI can never have it")
+// overclaiming exactly this: an inherent, enforced property, stated where
+// only a fact about the current contents of an external file exists. That
+// makes OAuth-first *safe right now*: no workflow in this repository
+// currently gives CI this credential, so giving it top priority does not
+// currently change what CI does. It is also what makes it *right*: a
 // developer who has deliberately set up a subscription token gets the
 // cheaper path even if `ANTHROPIC_API_KEY` also happens to be lying around
 // from some other tool, which is exactly the case this exists to make free —
@@ -818,8 +826,9 @@ export async function resolveSettings(
         'or set AIGENCY_REVIEW_OAUTH_TOKEN_FILE to a path holding it, or place it at ' +
         '$XDG_CONFIG_HOME/verevoir/anthropic-oauth.token ' +
         '(~/.config/verevoir/anthropic-oauth.token when XDG_CONFIG_HOME is unset). ' +
-        'CI never sets the OAuth variable, so it is the right default for a laptop and ' +
-        'cannot affect a production run.',
+        'no workflow in this repository sets the OAuth variable today, so it is the ' +
+        'right default for a laptop and does not affect a production run — a fact ' +
+        'about the current workflow files, not a guarantee this code enforces.',
     });
     for (const blank of credentialLookup.blankPaths) {
       problems.push(
