@@ -1117,6 +1117,82 @@ describe('resolveSettings, resolving the lens token', () => {
   });
 });
 
+// The panel's sixth review found this: an unreadable or blank credential
+// file was rendered through the identical generic sentence regardless of
+// which chain (OAuth or API key) it came from, so a reader whose *_FILE
+// path was not one of the two conventional filenames could not tell which
+// credential had actually broken. Deliberately using a non-descriptive
+// path ('/secret/a', not 'anthropic.key' or 'anthropic-oauth.token') in
+// every test below, so a pass here proves the LABEL is doing the work, not
+// the path happening to be recognisable on its own.
+describe('resolveSettings, naming which credential a broken file belongs to', () => {
+  it('names the API key, not OAuth, when the API-key chain hits an unreadable file', async () => {
+    const unreadable = filesystem({
+      '/secret/a': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/secret/a' }),
+      unreadable.read,
+    );
+
+    const problems = problemsOf(result);
+    expect(
+      problems.some((problem) => problem.includes('API key') && problem.includes('/secret/a')),
+    ).toBe(true);
+    expect(problems.some((problem) => problem.includes('subscription OAuth'))).toBe(false);
+  });
+
+  it('names subscription OAuth, not the API key, when the OAuth chain hits an unreadable file', async () => {
+    const unreadable = filesystem({
+      '/secret/a': { kind: 'unreadable', reason: 'EACCES: permission denied' },
+    });
+
+    const result = await resolveSettings(
+      env({ AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/secret/a' }),
+      unreadable.read,
+    );
+
+    const problems = problemsOf(result);
+    expect(
+      problems.some(
+        (problem) => problem.includes('subscription OAuth') && problem.includes('/secret/a'),
+      ),
+    ).toBe(true);
+    expect(problems.some((problem) => problem.includes('API key'))).toBe(false);
+  });
+
+  // The case the finding actually names: BOTH chains leave a blank file
+  // behind, at paths that give no clue on their own which credential each
+  // belongs to. Before this fix these rendered as two copies of the exact
+  // same sentence, differing only by path.
+  it('names which credential each blank file belonged to, when both chains leave one behind', async () => {
+    const bothBlank = filesystem({
+      '/secret/a': { kind: 'text', text: '' },
+      '/secret/b': { kind: 'text', text: '  ' },
+    });
+
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/secret/a',
+        AIGENCY_REVIEW_OAUTH_TOKEN_FILE: '/secret/b',
+      }),
+      bothBlank.read,
+    );
+
+    const problems = problemsOf(result);
+    expect(
+      problems.some((problem) => problem.includes('API key') && problem.includes('/secret/a')),
+    ).toBe(true);
+    expect(
+      problems.some(
+        (problem) => problem.includes('subscription OAuth') && problem.includes('/secret/b'),
+      ),
+    ).toBe(true);
+  });
+});
+
 // The panel's fifth review found this: cli/review.ts's own string
 // comparison alone treated any value other than the literal 'false' as
 // permission to fall back, so a typo silently allowed spending a purchased

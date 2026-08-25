@@ -366,7 +366,13 @@ async function credentialFromPath(
 
 interface ChainLookup {
   readonly resolution: ChainResolution;
-  readonly blankPaths: readonly string[];
+  /** Every path THIS ONE chain found blank, in the order tried. Paired with
+   * the chain's own `CredentialSource` at the point it is pushed, in
+   * `resolveChain` — not left as a bare path — so a message built from it
+   * can name which credential's file it was. See `credentialLabel` and the
+   * panel's sixth review, which found a blank OAuth file and a blank
+   * API-key file rendered as the identical sentence. */
+  readonly blankPaths: readonly { readonly path: string; readonly source: CredentialSource }[];
   /** True when this chain's environment variable was set but blank — a
    * signal that someone attempted to configure this credential through the
    * environment and it arrived empty, as distinct from never having
@@ -444,14 +450,14 @@ async function resolveChain(
   // CredentialLookup.apiKeyAttempted.
   const blankEnvVar = rawEnv !== undefined && rawEnv.trim() === '';
 
-  const blankPaths: string[] = [];
+  const blankPaths: { path: string; source: CredentialSource }[] = [];
   let missingExplicitPath: string | undefined;
 
   const explicitPath = present(env[chain.fileEnvVar]);
   if (explicitPath !== undefined) {
     const result = await credentialFromPath(explicitPath, readKeyFile);
     if (result.kind === 'blank') {
-      blankPaths.push(result.path);
+      blankPaths.push({ path: result.path, source: chain.source });
     } else if (result.kind === 'absent') {
       // Attempted and not there — different from the *_FILE variable never
       // having been set. See the file header.
@@ -465,7 +471,7 @@ async function resolveChain(
   if (defaultPath !== undefined) {
     const result = await credentialFromPath(defaultPath, readKeyFile);
     if (result.kind === 'blank') {
-      blankPaths.push(result.path);
+      blankPaths.push({ path: result.path, source: chain.source });
     } else if (result.kind !== 'absent') {
       return {
         resolution: result,
@@ -487,7 +493,17 @@ async function resolveChain(
 type CredentialResolution =
   | { readonly kind: 'found'; readonly credential: Credential }
   | { readonly kind: 'absent' }
-  | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string }
+  | {
+      readonly kind: 'unreadable';
+      readonly path: string;
+      readonly reason: string;
+      /** Which credential this broken file belongs to — the panel's sixth
+       * review found `resolveSettings` naming neither, so a reader whose
+       * `*_FILE` path was not one of the two conventional filenames could
+       * not tell which credential had actually broken. See
+       * `credentialLabel`. */
+      readonly source: CredentialSource;
+    }
   | {
       /** OAuth resolved to nothing and `allowApiKeyFallback` was false, so
        * the API key chain was never tried. See the file header. */
@@ -503,8 +519,11 @@ interface CredentialLookup {
    * tried — even the ones from a chain that was not, in the end, the one
    * that supplied the credential. See the file header: a blank file is real
    * information that must not vanish just because something else eventually
-   * worked out or came up empty too. */
-  readonly blankPaths: readonly string[];
+   * worked out or came up empty too. Each entry carries its own
+   * `CredentialSource`, for the same reason `CredentialResolution`'s
+   * `unreadable` variant now does — see that type's doc comment and
+   * `credentialLabel`. */
+  readonly blankPaths: readonly { readonly path: string; readonly source: CredentialSource }[];
   /**
    * A genuine OAuth attempt that produced nothing — a blank
    * `CLAUDE_CODE_OAUTH_TOKEN`, or an `AIGENCY_REVIEW_OAUTH_TOKEN_FILE`
@@ -573,6 +592,23 @@ function attemptSignals(chain: ChainLookup, config: ChainConfig): string[] {
 }
 
 /**
+ * The two-word phrase a reader uses to tell the two credentials' broken
+ * files apart, once the path itself is not self-describing enough to —
+ * an explicit `*_FILE` pointing somewhere other than the two conventional
+ * filenames (`anthropic.key`, `anthropic-oauth.token`) gives no clue on its
+ * own. The panel's sixth review found `resolveSettings` rendering an
+ * unreadable or blank OAuth file and an unreadable or blank API-key file
+ * through the identical sentence, with nothing to tell them apart — the
+ * exact same words `report.ts`'s own `CREDENTIAL_LABEL` already uses for
+ * the same two kinds ("via API key" / "via subscription OAuth"), reused
+ * here rather than invented afresh, so a reader carries one mapping
+ * between the two places a credential's kind is ever named.
+ */
+function credentialLabel(source: CredentialSource): string {
+  return source === 'api-key' ? 'API key' : 'subscription OAuth';
+}
+
+/**
  * The choice between the two credentials, made once, deterministically. See
  * the file header for the full argument; the shape of it here is: try OAuth
  * first, in full — all three of its sources — and only fall through to the
@@ -617,7 +653,7 @@ async function resolveCredential(
     // uncorrected. Computed via the same attemptSignals helper every other
     // branch here already uses.
     return {
-      resolution: oauth.resolution,
+      resolution: { ...oauth.resolution, source: OAUTH_CHAIN.source },
       blankPaths: oauth.blankPaths,
       oauthAttempted: attemptSignals(oauth, OAUTH_CHAIN),
       apiKeyAttempted: [],
@@ -627,8 +663,10 @@ async function resolveCredential(
   // oauth.resolution.kind === 'absent'.
   if (!allowApiKeyFallback) {
     const attempted = attemptSignals(oauth, OAUTH_CHAIN);
-    for (const path of oauth.blankPaths) {
-      attempted.push(`the credential file at ${path} was found but was blank`);
+    for (const blank of oauth.blankPaths) {
+      attempted.push(
+        `the ${credentialLabel(blank.source)} credential file at ${blank.path} was found but was blank`,
+      );
     }
     return {
       resolution: { kind: 'oauth-required', attempted },
@@ -666,7 +704,7 @@ async function resolveCredential(
     // file is a second, independently real fact about this same chain —
     // see CredentialLookup.apiKeyAttempted.
     return {
-      resolution: apiKey.resolution,
+      resolution: { ...apiKey.resolution, source: API_KEY_CHAIN.source },
       blankPaths,
       oauthAttempted: attemptSignals(oauth, OAUTH_CHAIN),
       apiKeyAttempted: attemptSignals(apiKey, API_KEY_CHAIN),
@@ -721,11 +759,13 @@ export async function resolveSettings(
     credential = credentialResolution.credential;
   } else if (credentialResolution.kind === 'unreadable') {
     problems.push(
-      `the credential file at ${credentialResolution.path} could not be read: ` +
-        credentialResolution.reason,
+      `the ${credentialLabel(credentialResolution.source)} credential file at ` +
+        `${credentialResolution.path} could not be read: ${credentialResolution.reason}`,
     );
-    for (const path of credentialLookup.blankPaths) {
-      problems.push(`the credential file at ${path} was found but was blank`);
+    for (const blank of credentialLookup.blankPaths) {
+      problems.push(
+        `the ${credentialLabel(blank.source)} credential file at ${blank.path} was found but was blank`,
+      );
     }
     // The other half of this fix: an OAuth attempt (a blank env var, a
     // missing explicit path) must not vanish just because the API-key
@@ -781,8 +821,10 @@ export async function resolveSettings(
         'CI never sets the OAuth variable, so it is the right default for a laptop and ' +
         'cannot affect a production run.',
     });
-    for (const path of credentialLookup.blankPaths) {
-      problems.push(`the credential file at ${path} was found but was blank`);
+    for (const blank of credentialLookup.blankPaths) {
+      problems.push(
+        `the ${credentialLabel(blank.source)} credential file at ${blank.path} was found but was blank`,
+      );
     }
     // The gap the panel's review found: a blank CLAUDE_CODE_OAUTH_TOKEN, or
     // an AIGENCY_REVIEW_OAUTH_TOKEN_FILE naming a path that is not there, is

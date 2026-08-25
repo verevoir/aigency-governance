@@ -223,8 +223,21 @@ if (problems.length > 0) {
   process.exit(1);
 }
 
+// The panel's sixth review found this sentence misdescribing scenario 4:
+// it claimed "refused an empty diff every time", but scenario 4's own
+// assertions above check the OPPOSITE — that its output does NOT contain
+// 'The diff was empty', because AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK
+// refuses before that guard is ever reached, for an unrelated reason (OAuth
+// required and absent). The COUNT at the end of this sentence ("four
+// scenarios, not three") was already correct — it was updated in the same
+// commit that added scenario 4. What stayed wrong was the CLAIM in the
+// middle of the sentence, carried over unread from when there were only
+// three scenarios and it was true of all of them. Fixed by saying what each
+// group of scenarios actually does, rather than one claim stretched to
+// cover all four.
 console.log(
   `${BIN} started, resolved a credential from an env var, a file on disk and a second env ` +
-    'var for the OAuth token, refused an empty diff every time, and refused fallback when ' +
-    'disallowed too — four scenarios, not three.',
+    'var for the OAuth token — the first three refused because the diff was empty, and the ' +
+    'fourth refused for a different reason (fallback disallowed, OAuth absent) before ever ' +
+    'reaching that guard — four scenarios, not three.',
 );
