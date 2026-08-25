@@ -17,11 +17,7 @@ import { loadLensSet, type SourceReader } from '../review/load.js';
 import { runPanel } from '../review/panel.js';
 import type { Subject } from '../review/prompt.js';
 import { exitCodeFor, renderReport } from '../review/report.js';
-import {
-  checkClaudeCliAvailable,
-  claudeCliReviewer,
-  type CliRunner,
-} from '../review/claudeCli.js';
+import { checkClaudeCliAvailable, claudeCliReviewer, type CliRunner } from '../review/claudeCli.js';
 import { DEFAULT_LENS_SOURCE } from '../review/settings.js';
 
 /** What this composition needs from outside itself — a way to read the lens
@@ -54,6 +50,32 @@ function couldNotRun(subject: string, reason: string): ReviewOutcome {
       'Nothing was reviewed. This is a red result and not a passing one — a green',
       'badge over a review that never ran is worse than a red one over a review',
       'that failed, because nobody investigates green.',
+    ].join('\n'),
+    exitCode: 1,
+  };
+}
+
+/** Same shape as {@link couldNotRun}, plus which lens set this run was
+ * attempting to read — used only once a source is actually known, mirroring
+ * `run.ts`'s own `couldNotRun(subject, source, reason)`: a reader told a
+ * lens set "could not be read" needs to know WHICH one before they can go
+ * looking. */
+function lensSetCouldNotRun(subject: string, source: string, reason: string): ReviewOutcome {
+  return {
+    report: [
+      '## Review: Could not run',
+      '',
+      `**${subject}**`,
+      '',
+      reason,
+      '',
+      'Nothing was reviewed. This is a red result and not a passing one — a green',
+      'badge over a review that never ran is worse than a red one over a review',
+      'that failed, because nobody investigates green.',
+      '',
+      '---',
+      '',
+      `Lens set: \`${source}\`.`,
     ].join('\n'),
     exitCode: 1,
   };
@@ -109,8 +131,9 @@ export async function runLocalReview(
   const lensSource = present(env['AIGENCY_REVIEW_LENSES']) ?? DEFAULT_LENS_SOURCE;
   const loaded = await loadLensSet(lensSource, deps.read);
   if (loaded.kind === 'unavailable') {
-    return couldNotRun(
+    return lensSetCouldNotRun(
       subject.title,
+      lensSource,
       `The lens set could not be read (${loaded.why}): ${loaded.reason}`,
     );
   }

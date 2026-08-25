@@ -89,7 +89,11 @@ function harness(options: HarnessOptions = {}): Harness {
     // for the lens id substring the fixture above declares.
     const lensId = input.includes('Honesty') ? 'honesty' : 'correctness';
     calls.reviewed.push(lensId);
-    return Promise.resolve({ stdout: JSON.stringify({ result: reply(lensId) }), stderr: '', exitCode: 0 });
+    return Promise.resolve({
+      stdout: JSON.stringify({ result: reply(lensId) }),
+      stderr: '',
+      exitCode: 0,
+    });
   };
 
   return { deps: { read, run }, calls };
@@ -197,7 +201,11 @@ describe('runLocalReview, when the panel runs', () => {
   it('reads no ANTHROPIC_API_KEY-shaped setting at all — an env carrying one changes nothing', async () => {
     const fakes = harness();
 
-    const withKey = await runLocalReview({ ANTHROPIC_API_KEY: 'sk-should-be-ignored' }, SUBJECT, fakes.deps);
+    const withKey = await runLocalReview(
+      { ANTHROPIC_API_KEY: 'sk-should-be-ignored' },
+      SUBJECT,
+      fakes.deps,
+    );
     const withoutKey = await runLocalReview({}, SUBJECT, fakes.deps);
 
     expect(withKey.exitCode).toBe(withoutKey.exitCode);

@@ -75,7 +75,9 @@ if (diff.out.trim() === '') {
   process.exit(1);
 }
 
-console.log(`Reviewing HEAD via claude -p (subscription, not billed API credit): ${subject.out.trim()}`);
+console.log(
+  `Reviewing HEAD via claude -p (subscription, not billed API credit): ${subject.out.trim()}`,
+);
 console.log(`Diff is ${String(diff.out.split('\n').length)} lines.\n`);
 
 const review = await capture(
