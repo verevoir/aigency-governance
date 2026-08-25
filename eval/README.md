@@ -483,10 +483,35 @@ the fix on the next build with no code change of its own.
 decision, named as such throughout this session; nothing above commits to
 building either path.
 
-**One claim this checkpoint was explicitly asked to confirm and could not:**
-that "the corpus cannot be extended into a drift instrument." Grepped this
-branch for anything resembling that claim before writing this section --
-no match, and no turn in this session's own record establishes it either.
-Recorded here as **unconfirmed**, not affirmed and not silently dropped: if
-it is true, it was established somewhere this checkpoint could not find, and
-should be re-stated with its own reasoning by whoever holds it.
+**Resolved (2026-08-25, later the same day): why the corpus above cannot be
+extended into a drift instrument.** The prior checkpoint flagged this claim
+as unconfirmed in this repository and asked whoever held the reasoning to
+restate it. It was established in this session's own design work and is
+recorded more fully in the planning repository (`verevoir/aigency-rebuild`
+PR #35) -- unreachable from this repository, which is exactly why the grep
+above found nothing: this repository cannot see the record that holds its
+own design reasoning. Restated here, in full, so a reader finds it without
+needing that other repository:
+
+The labelled corpus above is a **recall** instrument. Each case is a fixed
+`(diff, truth)` pair, scored by whether the panel's findings match a static
+label. Nothing in `score.mjs` or `criterion.mjs` stores or compares one
+run's actual finding _text_ against a prior run's -- only against
+`truth.json`.
+
+**Drift detection is structurally different: it needs no ground truth at
+all.** It needs the _same input_ run twice -- at two times, or across two
+substrates -- compared against each other, with a real change in the
+finding text counted as the signal.
+
+**The failure mode that makes this central rather than academic:** a panel
+that still finds _something_ on every case, while the _something_ quietly
+changes shape, passes the existing scorer perfectly. Same verdict, subtly
+worse specificity, no alarm -- recall and confirmed-false-positives are both
+blind to it by construction, because both only ever compare against a fixed
+label, never against an earlier run of the same case.
+
+**Conclusion: keep the recall corpus above for what it does well, and build
+a second, small set of fixed, repeatable cases with no labels, whose raw
+finding text is retained and diffed run to run.** A different harness shape,
+not an extension of this one -- not built in this change.
