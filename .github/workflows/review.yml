@@ -170,6 +170,20 @@ jobs:
           path: .aigency-review
           persist-credentials: false
 
+      # `governance-ref` is what was ASKED for — `main`, a pin, a PR's own
+      # head sha for self-review — and it can float between runs. This
+      # records what was actually resolved: the real commit the checkout
+      # above landed on. Kept apart from the input deliberately (see the
+      # review artefact below): a verdict is a function of two shas, this
+      # repository's own head and the governance commit that judged it, and
+      # only the first has ever been visible on a report. If `governance-ref`
+      # ever resolves differently between two runs, that is real information
+      # and this is what would show it.
+      - name: Record which governance commit was actually checked out
+        id: governance-sha
+        working-directory: .aigency-review
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       # No `cache: npm`, and it is a choice rather than an impossibility — an
       # earlier comment here said the latter, which was wrong. `setup-node`
       # takes `cache-dependency-path`, and this step runs after the governance
@@ -243,6 +257,88 @@ jobs:
             echo "The review produced no report: it failed before writing one." >> "${GITHUB_STEP_SUMMARY}"
             echo "The failing step above says why." >> "${GITHUB_STEP_SUMMARY}"
           fi
+
+      # Every review runs, is read once from the step summary, and is gone —
+      # there is no REST API for a step summary, and until now no artefact
+      # either. This is the fix: the same content that went to the step
+      # summary above, kept, so twenty ordinary pull requests become twenty
+      # retained data points instead of twenty discarded ones. This step
+      # changes nothing about what the review DOES — no lens, no contract, no
+      # rendering — only what is kept afterwards.
+      #
+      # `if: success() || failure()`, the same guard as Publish the report,
+      # deliberately: a review that failed or could not run is exactly the
+      # case where the retained record is most valuable, and an artefact that
+      # only survived on success would keep the least interesting half.
+      #
+      # Raw `reportMarkdown`, not re-parsed fields. The structured verdict and
+      # findings already exist once, inside report.ts's own render; re-deriving
+      # `lens`/`summary` from the rendered text in shell here would be a
+      # second, parallel, drift-prone format of the same data — the exact
+      # thing a fresh artefact format must not become. Keeping the text whole
+      # preserves it without duplicating it.
+      - name: Assemble the review artefact
+        if: success() || failure()
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GOVERNANCE_REF: ${{ inputs.governance-ref }}
+          GOVERNANCE_SHA: ${{ steps.governance-sha.outputs.sha }}
+          MODEL: ${{ inputs.model }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/review-artifact"
+          if [ -f "${RUNNER_TEMP}/review.md" ]; then
+            REPORT_FILE="${RUNNER_TEMP}/review.md"
+          else
+            REPORT_FILE=/dev/null
+          fi
+          # `substrate` is a HARDCODED STRING, not a measured value — stated
+          # here so a reader can see that it is hardcoded rather than mistake
+          # it for something this step computed. It names the only substrate
+          # this codebase's production request path actually has today
+          # (src/review/anthropic.ts, an API key over HTTP). When a second
+          # substrate exists (e.g. a `claude -p` run), this line must become
+          # something this step actually observes — an unchanged value at
+          # that point would silently misreport which substrate ran.
+          jq -n \
+            --arg headSha "$HEAD_SHA" \
+            --arg governanceRef "$GOVERNANCE_REF" \
+            --arg governanceSha "${GOVERNANCE_SHA:-}" \
+            --arg model "${MODEL:-}" \
+            --arg substrate "api-key via src/review/anthropic.ts, called over HTTP from this workflow — hardcoded, not measured; see the comment above this step" \
+            --arg subject "${PR_TITLE:-this change}" \
+            --arg repository "$REPOSITORY" \
+            --arg runId "$RUN_ID" \
+            --arg eventName "$EVENT_NAME" \
+            --rawfile reportMarkdown "$REPORT_FILE" \
+            '{
+              headSha: $headSha,
+              governanceRef: $governanceRef,
+              governanceSha: ($governanceSha | if . == "" then null else . end),
+              model: ($model | if . == "" then null else . end),
+              substrate: $substrate,
+              subject: $subject,
+              repository: $repository,
+              runId: $runId,
+              eventName: $eventName,
+              reportMarkdown: (if $reportMarkdown == "" then null else $reportMarkdown end)
+            }' > "${RUNNER_TEMP}/review-artifact/review.json"
+
+      # 90 days is GitHub's own platform default for `upload-artifact`, kept
+      # rather than overridden — a number someone picked invites someone
+      # else to change it without knowing why the pick was right; the
+      # platform default does not. This step costs nothing to run: artefact
+      # storage is not the constrained budget (model-call spend is).
+      - name: Publish the review artefact
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-report-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/review-artifact/review.json
+          if-no-files-found: warn
 
       # The verdict, taken from the step that produced it. `success` means the
       # binary exited 0, which it does only for an approval — a rejection and
