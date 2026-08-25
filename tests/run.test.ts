@@ -504,31 +504,26 @@ describe('runReview, choosing a credential', () => {
     expect(outcome.report).toContain('via subscription OAuth');
   });
 
-  // The leak test. Worth more than the tests above asserting the report was
-  // produced: this asserts the token is ABSENT from it. A report only ever
-  // carries `credentialSource` (report.ts's `ReportContext`), a label rather
-  // than the credential itself — this is the end-to-end proof that the value
-  // genuinely never rides along, not merely that the type system says it
-  // should not.
-  it('never puts the OAuth token itself anywhere in the report', async () => {
-    const fakes = harness();
-
-    const outcome = await runReview(
-      env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN }),
-      SUBJECT,
-      fakes.deps,
-    );
-
-    expect(outcome.report).not.toContain(OAUTH_TOKEN);
-  });
-
-  it('never puts the API key itself anywhere in the report', async () => {
-    const fakes = harness();
-
-    const outcome = await runReview(env(), SUBJECT, fakes.deps);
-
-    expect(outcome.report).not.toContain('sk-ant-test');
-  });
+  // A pair of tests used to sit here — 'never puts the OAuth token itself
+  // anywhere in the report' and its API-key mirror — each asserting
+  // `.not.toContain(secret)` on the rendered report. The panel's fifth
+  // review found them vacuous, the same defect this file's own sibling
+  // tests/settings.test.ts already caught and removed one layer down:
+  // `ReportContext.credentialSource` (report.ts) is typed as
+  // `CredentialSource`, a two-value string-literal union — `renderReport`
+  // is structurally incapable of threading the actual credential value into
+  // its output, so these tests could not fail for any bug in the code under
+  // test. Deleted rather than patched, for the same reason as their
+  // settings.ts sibling: no path was found, on trying, where a genuinely
+  // resolved credential's VALUE reaches anything `runReview` or
+  // `renderReport` return — only its KIND does, via `credential.source`
+  // (see cli/run.ts, which builds `ReportContext.credentialSource` from
+  // exactly that field and nothing else). The real leak surface is one
+  // level down, at the point a credential is actually sent over the wire —
+  // see tests/anthropic.test.ts's leak tests, which embed the real secret
+  // in a thrown error and a response body before asserting `redact()`
+  // removed it. That is where a leak could really happen, and where a test
+  // can really catch one.
 });
 
 // The fifth argument, end to end through the same real settings resolution

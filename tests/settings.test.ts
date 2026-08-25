@@ -1117,6 +1117,62 @@ describe('resolveSettings, resolving the lens token', () => {
   });
 });
 
+// The panel's fifth review found this: cli/review.ts's own string
+// comparison alone treated any value other than the literal 'false' as
+// permission to fall back, so a typo silently allowed spending a purchased
+// key with no diagnostic. Tested here rather than through runReview's
+// injected boolean, because the whole point is that resolveSettings reads
+// AND validates the raw env value independently of whatever the caller
+// already computed and passed in.
+describe('resolveSettings, given AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK', () => {
+  it('accepts "true" and resolves normally', async () => {
+    const result = await resolveSettings(
+      env({ AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK: 'true' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('ready');
+  });
+
+  it('accepts "false" and resolves normally', async () => {
+    const result = await resolveSettings(
+      env({ AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK: 'false' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('ready');
+  });
+
+  it('refuses a value that is neither "true" nor "false", naming what it got', async () => {
+    const result = await resolveSettings(
+      env({ AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK: 'True' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('invalid');
+    expect(problemsOf(result)).toContain(
+      'AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK must be "true" or "false", got "True"',
+    );
+  });
+
+  // The assertion this whole fix exists for: refusing regardless of whether
+  // a credential would otherwise have resolved cleanly — env() supplies a
+  // working ANTHROPIC_API_KEY by default, so this proves the malformed
+  // value alone is enough to stop a `ready` result, not merely a
+  // coincidence of something else already being wrong.
+  it('refuses even when a working credential is present, spending nothing on the way there', async () => {
+    const result = await resolveSettings(
+      env({ AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK: '0' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).not.toBe('ready');
+    expect(problemsOf(result)).toContain(
+      'AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK must be "true" or "false", got "0"',
+    );
+  });
+});
+
 describe('resolveSettings, falling back to defaults', () => {
   it('uses the exported defaults for model, maxTokens and lens source', async () => {
     const settings = readyOf(await resolveSettings(env(), NO_FILES));

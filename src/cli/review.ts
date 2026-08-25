@@ -36,6 +36,15 @@ async function main(): Promise<number> {
   // string 'false'. See settings.ts's header for why a local run must be able
   // to refuse a fallback to a purchased credential rather than spend it
   // silently.
+  //
+  // Loose on purpose: any value other than the literal string 'false' ends
+  // up true here, including a typo — which used to be the whole gap. The
+  // panel's fifth review found that a malformed value silently allowed
+  // fallback with no diagnostic; the fix lives in resolveSettings
+  // (settings.ts), which reads and validates the same raw environment value
+  // independently, and refuses — spending nothing — whenever it is present
+  // and neither 'true' nor 'false'. This line only ever decides real
+  // behaviour for the two values that already passed that check.
   const allowApiKeyFallback = process.env['AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK'] !== 'false';
 
   const outcome = await runReview(

@@ -520,8 +520,14 @@ interface CredentialLookup {
    * excludes blank OAuth *files*: those are already carried in `blankPaths`
    * above and rendered from there, so repeating them here would report the
    * same fact under two different names. Empty whenever a credential was
-   * found or the failure was `unreadable` — a value that could be reported
-   * only meaningfully alongside a genuine "nothing at all" outcome.
+   * found. NOT empty when OAuth's own file resolved to `unreadable` either —
+   * an earlier version of this comment said it was, which stayed true only
+   * until the panel's fourth review found that branch discarding a genuine
+   * OAuth attempt signal it should have preserved, the same way the
+   * fallback-allowed path above already had to learn to. See
+   * `resolveCredential`'s oauth-unreadable branch, which computes this via
+   * `attemptSignals` like every other branch here does — the panel's fifth
+   * review found this comment had not been updated to match.
    */
   readonly oauthAttempted: readonly string[];
   /**
@@ -834,6 +840,37 @@ export async function resolveSettings(
     } else {
       maxTokens = parsed;
     }
+  }
+
+  // The panel's fifth review found this: cli/review.ts computes
+  // allowApiKeyFallback with `process.env[...] !== 'false'`, a strict
+  // inequality against one literal string — so ANY other value (a typo,
+  // '0', 'False', 'no') is treated exactly like the variable never having
+  // been set at all, and fallback silently stays allowed with no problem
+  // reported, even though the whole point of this variable is to make a
+  // local run refuse rather than spend a purchased credential. Validated
+  // here, independently of the boolean the caller already computed and
+  // passed in as `allowApiKeyFallback` above, for the same reason every
+  // other setting in this function is validated here rather than at the
+  // call site: this module is the one place a malformed value becomes a
+  // reportable message rather than a silent default. `present()`, not a raw
+  // read: a blank value is treated as not set (matching MAX_TOKENS's own
+  // precedent, and matching the direction cli/review.ts's own loose
+  // comparison already takes for blank), so this only fires on a value that
+  // is actually there and actually wrong. `problems.length > 0 ? invalid :
+  // ...` below means the run refuses before anything is spent — the
+  // credential lookup above may already have run in whichever direction the
+  // caller's own loose comparison chose, but nothing downstream of it costs
+  // money until this function returns `ready`, and it will not.
+  const rawAllowApiKeyFallback = present(env['AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK']);
+  if (
+    rawAllowApiKeyFallback !== undefined &&
+    rawAllowApiKeyFallback !== 'true' &&
+    rawAllowApiKeyFallback !== 'false'
+  ) {
+    problems.push(
+      `AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK must be "true" or "false", got ${JSON.stringify(rawAllowApiKeyFallback)}`,
+    );
   }
 
   // Absence decides the `kind` before invalidity does, because someone who

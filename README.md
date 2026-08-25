@@ -187,6 +187,13 @@ width is sized to its own two rows and the other one is untouched.
 | `CLAUDE_CODE_OAUTH_TOKEN`         | —       | A subscription credential, tried before `ANTHROPIC_API_KEY` — see "Or a subscription, for free" above. Set by Claude Code's own runtime, not by this project; never set by anything in this repository's own CI.                                                                                                |
 | `AIGENCY_REVIEW_OAUTH_TOKEN_FILE` | —       | A path to read the OAuth token from, tried when the variable above is unset — the option for working outside Claude Code. Falls back further to `$XDG_CONFIG_HOME/verevoir/anthropic-oauth.token` (`~/.config/verevoir/anthropic-oauth.token` when unset), the same shape `ANTHROPIC_API_KEY_FILE` already had. |
 
+A third table, for the same reason as the split above — this one row alone,
+so it costs nothing in either neighbour's column widths:
+
+| Variable                                | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK` | `true`  | Set to `false` to refuse falling back to a billed `ANTHROPIC_API_KEY` when the subscription resolves to nothing — the mode every local run through `scripts/review-head.mjs` already uses, so purchased credits are never spent by a laptop run. Not meant to be set by hand for CI, which never sets it and always allows the fallback. Only `true` and `false` are accepted; any other value is refused as invalid, spending nothing. |
+
 ## If the diff is empty
 
 The run refuses it rather than approving. An empty diff usually means a wiring
