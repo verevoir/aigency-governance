@@ -21,7 +21,7 @@
 // keys below are deliberately not real ones, and if this ever starts needing
 // one, something has moved that should not have.
 //
-// Four scenarios, not one. The panel's first real review found that nothing
+// Five scenarios, not one. The panel's first real review found that nothing
 // in this repository actually proves `review.ts` WIRES `keyFileReader()`
 // into `runReview` — every unit test drives `resolveSettings` or `runReview`
 // directly with an injected fake, and none of them touch the process
@@ -39,7 +39,15 @@
 // touch AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK's own string comparison in
 // cli/review.ts — the guard review-head.mjs relies on to keep a local run
 // from spending a purchased API key — so nothing before this scenario
-// proved that comparison reaches the real process boundary at all.
+// proved that comparison reaches the real process boundary at all. The
+// fifth scenario is the same argument once more, one function over: the
+// malformed-value validation added to resolveSettings (settings.ts) reads
+// the same raw AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK a second time,
+// independently of the boolean cli/review.ts computes, and every test for
+// IT also drove resolveSettings directly — the panel's eighth review found
+// that this file, which exists specifically to prove every other guard in
+// this story reaches the real process boundary, had not been extended to
+// prove this one does too.
 
 import { spawn } from 'node:child_process';
 // Imported, not assumed. The flat config declares no environment globals, and
@@ -216,6 +224,45 @@ if (fallbackDisallowed.out.includes('The diff was empty')) {
   );
 }
 
+// Scenario 5: a value that is neither 'true' nor 'false' — 'True',
+// capitalised, chosen because it is the exact typo the malformed-value
+// validation exists to catch — must actually reach resolveSettings's own
+// re-read of AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK through the real process
+// boundary. A valid ANTHROPIC_API_KEY is supplied alongside it so a working
+// credential existing is distinguishable from the guard actually refusing,
+// the same reasoning scenario 4 already applies to its own case. Expected
+// to refuse via resolveSettings's `invalid` outcome — present and wrong,
+// not missing — before ever reaching the empty-diff guard, and to name the
+// exact malformed value in the report, not merely refuse for some other
+// reason.
+const malformedFallback = await runEmptyDiff({
+  ANTHROPIC_API_KEY: 'not-a-real-key-and-must-never-need-to-be',
+  AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK: 'True',
+});
+if (malformedFallback.code !== 1) {
+  problems.push(
+    `[AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK malformed] expected exit 1 for a malformed value, got ${malformedFallback.code}`,
+  );
+}
+if (
+  !malformedFallback.out.includes(
+    'AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK must be "true" or "false", got "True"',
+  )
+) {
+  problems.push(
+    '[AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK malformed] expected the report to name the exact ' +
+      'malformed value — the validation is not actually reading the real process.env, or is ' +
+      'not reaching the real binary at all',
+  );
+}
+if (malformedFallback.out.includes('The diff was empty')) {
+  problems.push(
+    '[AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK malformed] the report reached the empty-diff guard ' +
+      '— the malformed value did not refuse before it, so the validation is not actually wired ' +
+      'into the real process boundary',
+  );
+}
+
 if (problems.length > 0) {
   console.error(
     `The binary ran and did the wrong thing:\n${problems.map((p) => `  - ${p}`).join('\n')}`,
@@ -223,21 +270,21 @@ if (problems.length > 0) {
   process.exit(1);
 }
 
-// The panel's sixth review found this sentence misdescribing scenario 4:
-// it claimed "refused an empty diff every time", but scenario 4's own
-// assertions above check the OPPOSITE — that its output does NOT contain
-// 'The diff was empty', because AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK
+// The panel's sixth review found the previous version of this sentence
+// misdescribing scenario 4: it claimed "refused an empty diff every time",
+// but scenario 4's own assertions check the OPPOSITE — that its output does
+// NOT contain 'The diff was empty', because AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK
 // refuses before that guard is ever reached, for an unrelated reason (OAuth
-// required and absent). The COUNT at the end of this sentence ("four
-// scenarios, not three") was already correct — it was updated in the same
-// commit that added scenario 4. What stayed wrong was the CLAIM in the
-// middle of the sentence, carried over unread from when there were only
-// three scenarios and it was true of all of them. Fixed by saying what each
-// group of scenarios actually does, rather than one claim stretched to
-// cover all four.
+// required and absent). Read again in full now that a fifth scenario has
+// been added — the earlier fix corrected the middle clause for scenarios 1
+// through 4 but was written before scenario 5 existed, so it would have gone
+// stale a third time if only the count at the end were bumped without
+// re-reading what the sentence actually claims about every scenario it
+// lists.
 console.log(
   `${BIN} started, resolved a credential from an env var, a file on disk and a second env ` +
     'var for the OAuth token — the first three refused because the diff was empty, and the ' +
-    'fourth refused for a different reason (fallback disallowed, OAuth absent) before ever ' +
-    'reaching that guard — four scenarios, not three.',
+    'last two refused for other reasons before ever reaching that guard (fallback disallowed ' +
+    'and OAuth absent; then a malformed fallback value, with a working credential present) — ' +
+    'five scenarios, not four.',
 );
