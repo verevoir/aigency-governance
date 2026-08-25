@@ -18,8 +18,27 @@ jobs:
     uses: verevoir/aigency-governance/.github/workflows/review.yml@main
     secrets:
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-      governance-token: ${{ secrets.AIGENCY_GOVERNANCE_TOKEN }}
+      governance-token: ${{ secrets.GOVERNANCE_TOKEN }}
 ```
+
+**The workflow's own input is `governance-token` — that name is fixed. The
+name of the secret behind it, on the right of `secrets.`, is not.** Nothing
+downstream ever reads the secret's own name, only its value, so your
+repository may call it anything, as long as it is mapped to
+`governance-token` on the left. `GOVERNANCE_TOKEN` above is shown because it
+is what the one real consumer that exists (`aigency-runtime-v2`) actually
+uses — not because that name is required. This is stated explicitly because
+an unmarked example reads as a requirement, and getting it wrong is not
+loud: a secret referenced by a name that does not exist on your repository
+resolves to an empty string, which still satisfies the reusable workflow's
+`required: true`, and the run fails two steps later at the cross-repository
+checkout with `Repository not found` — a message that does not point back
+at a naming mismatch in your own workflow file.
+`design/stories/S01e-name-the-token-what-it-is.md` in
+`verevoir/aigency-rebuild` records this exact failure shape once already,
+for this same input: a caller referenced a secret that did not exist at
+all, and the run failed silently one step downstream rather than naming
+the missing secret.
 
 Your repository gets no copy of the lens set, the prompts or the runner. They
 arrive fresh on every run, from `main` here — which is the point of there being
@@ -40,7 +59,7 @@ deciding to move it.
 | Name                       | What it is for                                                                                                                                                                                                                                                                                 |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ANTHROPIC_API_KEY`        | The panel calls a model once per lens.                                                                                                                                                                                                                                                         |
-| `AIGENCY_GOVERNANCE_TOKEN` | Read access to this repository, which is private. The default `GITHUB_TOKEN` is scoped to _your_ repository and cannot see it, so a run without this fails at the checkout with `Repository not found`. A fine-grained token with `contents: read` on `verevoir/aigency-governance` is enough. |
+| `GOVERNANCE_TOKEN`         | **An illustrative name — the workflow input it satisfies, `governance-token`, is what's fixed; see the note above the first example.** Read access to this repository, which is private. The default `GITHUB_TOKEN` is scoped to _your_ repository and cannot see it, so a run without this fails at the checkout with `Repository not found`. A fine-grained token with `contents: read` on `verevoir/aigency-governance` is enough. |
 
 Forget one and the run names it, says what it is for, and says where it goes —
 at the moment it finds it missing, not in a document you have to go and find. It
