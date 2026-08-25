@@ -41,7 +41,7 @@
       "name": "review",
       "kind": "release",
       "command": ["node", "scripts/review-head.mjs"],
-      "description": "Run the review panel against the HEAD commit. A release step rather than a gate because it costs money — one model call per lens — and a gate that bills on every verification is a gate someone turns off. Requires ANTHROPIC_API_KEY in the environment; without it the run reports which setting is missing and where to put it, and exits red without calling anything.",
+      "description": "Run the review panel against the HEAD commit, through the claude CLI (claude -p) on a subscription credential rather than the Anthropic API — see scripts/review-head.mjs's own header for why. A release step rather than a gate because it still takes real wall-clock time (one subprocess per lens) and needs the claude CLI installed and logged in; a gate that can fail for reasons unrelated to the code is not a fact about the commit being verified. Requires no ANTHROPIC_API_KEY and reads none: if claude is not usable, the run reports so and exits red without ever falling back to a billed key.",
       "timeoutMs": 900000
     }
   ]

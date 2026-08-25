@@ -116,6 +116,32 @@ git diff --merge-base origin/main HEAD | node dist/cli/review.js "what you are r
 copy over HTTP, which needs a token, and you get a missing-token report instead
 of a review.
 
+### Running it locally without spending purchased API credit
+
+This repository's own iteration uses a second local entry point,
+`scripts/review-head.mjs` (declared as the `review` release step in
+`aigency.json`), that runs the identical panel and the identical reply
+contract against the real `claude` CLI's non-interactive print mode
+(`claude -p`) instead of the Anthropic API — a subscription credential, with
+its own separate balance from the metered `ANTHROPIC_API_KEY`. Nothing about
+what a lens sees or how a verdict is read differs; only which substrate
+answers. See `src/review/claudeCli.ts`'s file header for the full reasoning,
+including the one known limitation (an argv-length ceiling on very large
+diffs or an unusually large practices corpus) that is disclosed there rather
+than solved.
+
+```sh
+npm install && npm run build
+node scripts/review-head.mjs
+```
+
+No `ANTHROPIC_API_KEY` is read on this path, and none is required — this
+composition has no credential of any kind to resolve. It needs the `claude`
+CLI installed and logged into a subscription (`claude setup-token`, or an
+interactive login); if it is not usable, the run reports so and exits red
+without ever falling back to a billed key — see `runLocalReview` in
+`src/cli/runLocal.ts`.
+
 Run `npm run build` after changing anything under `src/`. The `cli` gate covers
 less than its name suggests: it starts the emitted binary, so the CLI boundary
 and settings resolution genuinely are exercised — but it stops at the empty-diff
