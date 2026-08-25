@@ -380,3 +380,34 @@ the next person doesn't spend the same time on them:**
    (`prepare_repository`, or the `build` step) rather than running against
    an unknown build — see `checkBuildFreshness` and the `buildFreshness`
    field now recorded in every results file's provenance.
+
+**2026-08-25 — confirmed, by running: against a real, production-shaped
+finding, `score.mjs`'s matcher recalls 1 of 7 known defects. This is a
+property of the matcher, not of any panel run — no model was called to
+produce this number.** `src/review/parseReply.ts`, the only place a real
+`Finding` is ever built from a real reply, constructs one as
+`{ lens, summary }` — `.map((summary) => ({ lens, summary }))`. No
+production code path on this branch ever populates `detail`. `mentionsTarget`
+(above) has exactly one signal available to it: whether a finding's own text
+literally contains the truth entry's `target` path or basename. Against the
+corpus's five diff-bearing cases' real, captured findings text — not
+synthetic fixtures — built in the shape `parseReply.ts` actually produces,
+`tests/eval-score-corpus.test.mjs` runs this directly and confirms: of the 7
+`defect`-verdict entries across those five cases, exactly **1** (`dead-decorators`,
+whose summary happens to name `src/decorate/retrying.ts` outright) is
+recalled. The other 6 — all four `readme-drift` entries and
+`truncation-mechanism-overclaim` (whose summaries describe a section title or
+a function name, never a file path) and, worse, `oauth-missing-beta-header`
+(the corpus's single best-verified defect, whose summary discusses
+`headersFor` and header parity at length but never writes `anthropic.ts`
+anywhere — only its `detail` field does, and production never populates
+`detail`) — all score `unclassified`, not because the panel would fail to
+find them, but because the matcher has no location signal to work with. **A
+sweep run today, at any width, against this matcher, would undercount recall
+by this amount before a single lens result is even considered good or bad.**
+Fixing this is a reply-contract question (asking a lens to name the file its
+finding concerns, which the current contract explicitly does not do) more
+than a matcher question — argued in full, including its blast radius and
+open risks, in this session's own record; not undertaken in this change.
+`mentionsTarget` itself is unmodified: this entry documents what it already
+does, run against real text, rather than changing what it does.

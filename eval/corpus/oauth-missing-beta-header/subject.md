@@ -137,31 +137,76 @@ artifact, survives the branch's deletion.** This is now the primary framing:
 diff.txt is the evidence; `refs.json`'s `base`/`head` are a record of where
 it came from, not a live dependency anything still reads at score time.
 
-**What does not survive, or is not known to.** `refs.json`'s `base`/`head`
-will stop resolving once the branch is gone — confirmed by reading
-`make-diffs.mjs` in this pass, which hardcodes an `origin/<ref>` prefix and
-cannot address a raw sha, so pinning `head` to a sha was considered and
-rejected: it would not make the case more durable, it would just make the
-next full-corpus `make-diffs.mjs` run fail this one case outright (a failure
-the script handles safely — it does not overwrite an already-good diff.txt
-on a failed regeneration — but a failure nonetheless). The two historical
-shas (`624ef6c...`, `87101960...`) are recorded in `refs.json` under
-`verifiedShas` as **provenance**: proof of what was independently checked,
-twice, not a claim that they remain independently re-checkable afterward. No
-merge or other preserving ref onto either sha was found in this pass, so it
-is **not established** that either commit stays fetchable once its only
-branch is deleted — the honest assumption is that a future reader cannot
-repeat the byte-comparison this pass and the original pass both did. **This
-is stated as a real limit, not softened**: if this case's ground truth is
-ever challenged, that specific re-verification path is likely gone, and only
-the prose and diff already captured here would remain to stand on.
+**What does not survive `refs.json`'s own `base`/`head` fields, unchanged
+from the original analysis.** Those two fields will still stop resolving
+once the branch is gone — confirmed by reading `make-diffs.mjs`, which
+hardcodes an `origin/<ref>` prefix and cannot address a raw sha, so pinning
+`head` to a sha directly was, and remains, rejected: it would not make the
+case more durable, it would just make the next full-corpus `make-diffs.mjs`
+run fail this one case outright (a failure the script handles safely — it
+does not overwrite an already-good `diff.txt` on a failed regeneration —
+but a failure nonetheless).
 
-**What would close that gap, not done here:** a lightweight tag pushed to
-`origin` pointing at each of the two shas, taken before the branch is
-deleted, would keep the objects fetchable independent of the branch's own
-ref. Naming it here as the cheap mitigation available, not applying it —
-creating tags was not part of this task and is left for whoever owns the
-closure of PR #5 to decide.
+**CORRECTION (2026-08-25, later the same day): the paragraph that used to
+stand here said independent re-verification of the two shas would likely
+not survive the branch's deletion, because no preserving ref had been
+found. That is now wrong, in the good direction, and is corrected here
+rather than silently edited away.** The operator created and pushed two
+lightweight tags directly at the two shas:
+
+```
+624ef6c09b201b98a4d963942726a2652cfb5ba3    refs/tags/corpus/oauth-missing-beta-header/base
+87101960f98abf2ed29c946c20929f1ec964b56c    refs/tags/corpus/oauth-missing-beta-header/head
+```
+
+Confirmed resolvable from the belt in this pass — `read_file` against
+`https://github.com/verevoir/aigency-governance` succeeded through both
+`refs/tags/corpus/oauth-missing-beta-header/base` and the bare
+`corpus/oauth-missing-beta-header/base` ref form (and the equivalent `/head`
+forms), returning `headersFor` content byte-identical to every earlier read
+at these shas. **This is real, demonstrated evidence, not restated hope**:
+a lightweight tag, unlike a branch, is not removed by any routine action —
+including the deletion of `s26/subscription-oauth-locally` itself — and
+requires a separate, deliberate act to remove. The reasoning that produced
+the earlier, more pessimistic paragraph was correct at the time it was
+written (no preserving ref existed then); the fact on the ground has since
+changed, and the honest thing is to say so plainly rather than have the two
+paragraphs read as if they always agreed.
+
+**What this does and does not buy.** It buys future independent
+re-verification of the code-level claim: anyone can still fetch
+`refs/tags/corpus/oauth-missing-beta-header/{base,head}` and re-run the same
+byte-comparison this pass and the original pass both did, even after the
+branch and PR #5 itself are gone. It does **not** make `refs.json`'s
+`base`/`head` fields resolve, and it does not let `make-diffs.mjs` (as it
+stands) regenerate `diff.txt` from these tags — see the sizing note below.
+`diff.txt`, already committed, remains the artifact `score()` actually
+reads; the tags are additional provenance, not a replacement path into the
+scoring pipeline.
+
+**Sizing `make-diffs.mjs` accepting a tag, asked and not actioned.** The
+script's `origin/${refs.head}` construction resolves a remote-tracking
+branch ref; a tag is fetched to `refs/tags/<name>` directly, with no
+`origin/` prefix, so the same string substitution that would work for a sha
+does not work for a tag either — this is a distinct case, not a special
+case of the sha problem. Teaching it to accept a tag is **plausibly small in
+lines** (a conditional on a new `refType` field, or a fallback that retries
+unprefixed if the `origin/`-prefixed form fails) but is not zero-decision:
+it needs a schema choice for how `refs.json` states "this is a tag, not a
+branch" and a decision about whether that fallback should apply repo-wide or
+only where declared. Not implemented in this pass, per instruction — sized,
+not built.
+
+**Both original reasons `anthropic.ts` was kept broken all session no
+longer apply, as a fact about this case, not as an instruction being acted
+on here.** It was left alone (a) to stay the corpus's calibration point and
+(b) to keep the objects it was found in reachable while no preserving ref
+existed. (a) is now moot because the feature it belongs to is being removed
+with PR #5, not repaired — a fix and a deletion are different events and
+this record should not blur them. (b) is now moot because the tags above
+anchor the objects independent of the code's fate. Neither of these facts
+changes anything this pass did to the file: it remains untouched here,
+exactly as instructed.
 
 ## A further ref-durability test (added 2026-08-25, same session)
 
