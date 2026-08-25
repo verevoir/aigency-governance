@@ -411,3 +411,82 @@ than a matcher question — argued in full, including its blast radius and
 open risks, in this session's own record; not undertaken in this change.
 `mentionsTarget` itself is unmodified: this entry documents what it already
 does, run against real text, rather than changing what it does.
+
+## Checkpoint (2026-08-25): the reply-contract-vs-matcher decision, sized but not made
+
+The entry above says fixing the 1-of-7 gap is a reply-contract question, not
+a matcher question, and that this was "argued in full ... in this session's
+own record." That record was a conversation, not a file. Written down here,
+before a restart, so the reasoning survives the session it was produced in --
+per the same discipline this corpus has applied to itself all session
+(nothing of value should live only in a transcript).
+
+**Why the fix belongs in the reply contract, not the matcher.** A `Finding`
+(`src/review/verdict.ts`) is built, in the only place a real one is ever
+constructed (`src/review/parseReply.ts`), as `{ lens, summary }` --
+`.map((summary) => ({ lens, summary }))`. No production path populates
+`detail`. `replyContract.ts`'s own instruction to every lens asks for one
+sentence stating what is wrong and explicitly does **not** ask for a file, a
+line or a quote. `mentionsTarget` (above) therefore has exactly one signal:
+whether that one sentence happens to contain the target path or basename. No
+matcher can recover a location that was never asked for -- that is an
+absent-signal problem, not a weak-matching problem. A cleverer matcher
+(section-title aliases, fuzzy text, embeddings) would guess at the file
+rather than know it, and a matcher tuned until the 5 diff-bearing corpus
+cases pass is the identical shape of defect already found three times this
+session (`score()`-can't-fail, `subjectErrors`, the honesty finding that
+turned out stale) -- a fixture-tuned check, not a working one.
+
+**Blast radius, enumerated by reading every consumer, not guessed.**
+`.review-report/*.json` has **zero code consumers** on this branch --
+`review.yml` writes only `review.md` to `$GITHUB_STEP_SUMMARY`,
+`scripts/review-head.mjs` writes only to stdout; every other match is prose
+inside `eval/corpus/*/subject.md` citing a file that existed transiently in
+an earlier session. Real consumers of the `Finding` type: `parseReply.ts`
+(the producer -- this is where a `TARGET:` marker, mirroring how `REASON:`
+already works, would be parsed), `verdict.ts` (the type, additive), `panel.ts`
+and `src/index.ts` (pass-through, untouched), `report.ts` (renders `summary`/
+`detail`; rendering a new `target` too is a **separate** decision, since that
+changes what a human reads), and `eval/score.mjs` (would need teaching to
+use it -- not required for the field to exist safely, required for it to
+change any score). `eval/sweep.mjs` imports compiled `dist/`, so it inherits
+the fix on the next build with no code change of its own.
+
+**Three questions, answered:**
+
+1. **Optional at first, not mandatory.** No lens has ever been asked for
+   this before; making it mandatory day one risks flipping real rejections
+   into `could_not_run` under this file's own fail-closed discipline, the
+   day the contract changes -- worse than not having the field. Should ship
+   with a tracked metric (percent of rejections carrying a target) so
+   "optional" isn't a permanent unexamined state.
+2. **The 5 diff-bearing corpus cases prove the plumbing, not lens
+   compliance.** They're hand-authored from historical prose, under a
+   contract that never asked for a target -- they show `score()` can consume
+   a correct `target` once taught to, nothing about whether a real model
+   under a new prompt reliably writes one rather than omitting it or naming
+   a plausible wrong file. That needs real spend against a live model, a
+   different and not-yet-attempted question.
+3. **A hallucinated target has two different failure shapes.** Against the
+   scorer: narrow risk, mostly fails to match anything, sharper where several
+   truth entries share one target file (`readme-drift`'s four entries all
+   target `README.md` -- a plausible-but-wrong location could cross-match the
+   wrong one). Against a human reading a real report: worse, because
+   `verifyFindings.ts` -- the one module ever built on this codebase to check
+   a finding's evidence against a diff -- **does not exist on this branch**,
+   so there is no hook to verify a claimed `target` against the actual diff
+   either. A `target` field would ship exactly as unverified as `summary`
+   prose already is today. Not worse than the status quo, but not the
+   verifiability an eventual reader might assume it buys.
+
+**Status: sized, not decided, not implemented.** This is the operator's
+decision, named as such throughout this session; nothing above commits to
+building either path.
+
+**One claim this checkpoint was explicitly asked to confirm and could not:**
+that "the corpus cannot be extended into a drift instrument." Grepped this
+branch for anything resembling that claim before writing this section --
+no match, and no turn in this session's own record establishes it either.
+Recorded here as **unconfirmed**, not affirmed and not silently dropped: if
+it is true, it was established somewhere this checkpoint could not find, and
+should be re-stated with its own reasoning by whoever holds it.
