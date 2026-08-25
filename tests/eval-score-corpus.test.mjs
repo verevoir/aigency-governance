@@ -96,6 +96,29 @@ describe('score() against a real, committed corpus case (oauth-missing-beta-head
     expect(result.confirmedFalsePositives).toBe(0);
     expect(result.recall).toBe(0);
   });
+
+  it('PRODUCTION-SHAPED (summary only, no detail -- what parseReply.ts actually builds): does NOT match, because only detail names the target file', () => {
+    // detail deliberately omitted, unlike the test above. parseReply.ts's
+    // real construction is `.map((summary) => ({ lens, summary }))` -- no
+    // production code path anywhere on this branch ever populates `detail`.
+    // The summary text discusses headersFor and header parity at length but
+    // never writes `anthropic.ts` or `src/review/anthropic.ts` anywhere in
+    // it; only `detail` does. This is the corpus's single best-verified
+    // case, and against a genuinely production-shaped finding it still
+    // fails to match -- confirmed here by running, not carried forward as
+    // reasoning from an earlier report.
+    const findings = [{ lens: truth[0].lens, summary: truth[0].summary }];
+    let result;
+    expect(() => {
+      result = score(findings, truth);
+    }).not.toThrow();
+    expect(result.matched).toBe(0);
+    expect(result.confirmedFalsePositives).toBe(0);
+    expect(result.unclassified).toBe(1);
+    expect(result.recall).toBe(0);
+    const entry = result.perEntry.find((e) => e.id === truth[0].id);
+    expect(entry.found).toBe(false);
+  });
 });
 
 function loadTruthFor(caseId) {
@@ -170,6 +193,18 @@ describe('score() against practices-not-dead-code (not-a-defect, target src/prac
     expect(result.matched).toBe(0);
     expect(result.confirmedFalsePositives).toBe(0);
     expect(result.unclassified).toBe(1);
+  });
+
+  it(`PRODUCTION-SHAPED (summary only, no detail): matches anyway -- this entry's summary names its own target literally, so dropping detail does not change the outcome`, () => {
+    const findings = [{ lens: truth[0].lens, summary: truth[0].summary }];
+    let result;
+    expect(() => {
+      result = score(findings, truth);
+    }).not.toThrow();
+    expect(result.confirmedFalsePositives).toBe(1);
+    expect(result.matched).toBe(0);
+    expect(result.unclassified).toBe(0);
+    expect(result.recall).toBeNull();
   });
 });
 
