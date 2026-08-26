@@ -259,6 +259,21 @@ jobs:
           node "${GITHUB_WORKSPACE}/.aigency-review/dist/cli/review.js" "${PR_TITLE:-this change}" \
             < "${RUNNER_TEMP}/review.diff" \
             | tee "${RUNNER_TEMP}/review.md"
+          # Captured immediately, from the pipeline's own exit status — not
+          # re-derived downstream from whether review.md merely looks
+          # complete. review.js documents exactly two exit codes: 0 for an
+          # approved verdict, 1 for anything else it produced on purpose
+          # (rejected, could-not-run). Anything else — a different code, or
+          # a signal (bash reports a signal-killed pipeline as 128+n, e.g.
+          # 137 for SIGKILL from an OOM or a timeout kill) — means the
+          # process did not finish the way it was designed to, whatever
+          # review.md happens to contain. If the whole step is killed
+          # before this line runs, this output is simply never set, which
+          # the Assemble step below treats the same way. Found by this
+          # branch's own review (PR #11): outcome was previously derived
+          # only from review.md's heading, which a mid-write crash can
+          # leave looking valid.
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
       # Not always(): that also runs on cancellation, and if an earlier step
       # failed the report was never written — cat would fail with "No such
@@ -351,6 +366,35 @@ jobs:
       # artefact — not nothing — but the loop this artefact exists to close
       # is not closed until something consumes the field, and that is not
       # claimed here.
+      #
+      # Two further properties, added after this branch's own review (PR
+      # #11) caught what each one fixes:
+      #
+      # `outcome` no longer trusts review.md's heading unconditionally. It
+      # also checks the exit code the Review step recorded for its own
+      # process (see the comment on that step, above). A process that
+      # crashed, was killed, or never got far enough to record an exit
+      # code produces `outcome: "crashed"` regardless of what review.md
+      # contains — a mid-write crash can leave a truncated file that still
+      # opens with a valid-looking heading, and that must not be read as a
+      # clean verdict.
+      #
+      # `reportMarkdown` is masked before it is written, using the exact
+      # credential value this job holds — the same substitution GitHub's
+      # own log-stream masking performs, reproduced directly here rather
+      # than approximated, because there is no GitHub-provided way to ask
+      # for the masked form of arbitrary text after the fact (`::add-mask::`
+      # only affects log output still to come; it cannot redact a file
+      # already on disk). Reading review.md instead of the job log exists
+      # specifically to escape that masking (see above) — persisting the
+      # UNMASKED result into a 90-day downloadable artefact would defeat
+      # GitHub's redaction entirely rather than merely working around its
+      # unreliability, which is what this branch's own review caught. This
+      # deliberately costs exact wording in the same case that motivated
+      # reading the file in the first place: pass 9's own finding, quoted
+      # in eval/pr5-review-history-recovered.md, already carries this
+      # exact kind of mangling, for the same reason. Security wins over
+      # prose fidelity.
       - name: Assemble the review artefact
         if: success() || failure()
         env:
@@ -362,13 +406,43 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           EVENT_NAME: ${{ github.event_name }}
+          REVIEW_EXIT_CODE: ${{ steps.review.outputs.exit_code }}
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
         run: |
           mkdir -p "${RUNNER_TEMP}/review-artifact"
           REPORT_PATH="${RUNNER_TEMP}/review.md"
-          if [ -s "${REPORT_PATH}" ]; then
-            # Present and non-empty: read the outcome off the report's own
-            # heading rather than re-deriving it — see the comment above
-            # this step.
+          if [ ! -f "${REPORT_PATH}" ]; then
+            # Absent: the Review step's body never executed at all — tee
+            # truncates-and-creates its output file the instant that
+            # step's shell runs, before the process it wraps writes
+            # anything, so a wholly missing file means this step was
+            # skipped in consequence of something earlier in the job (the
+            # key check, either checkout, the build) already having
+            # failed.
+            REPORT_FILE=/dev/null
+            OUTCOME="not_reached"
+          elif [ -z "${REVIEW_EXIT_CODE:-}" ] || { [ "${REVIEW_EXIT_CODE}" != "0" ] && [ "${REVIEW_EXIT_CODE}" != "1" ]; }; then
+            # review.md exists — the Review step's shell did run — but its
+            # process either never got to record its exit code (the step
+            # itself was killed first: a timeout, an OOM, a cancellation)
+            # or exited with something other than the two codes review.js
+            # documents (0 approved, 1 anything else it produced on
+            # purpose). Either way this is a crash, not a completed run,
+            # and whatever review.md holds — even a heading this step
+            # would otherwise recognise — must not be read as that
+            # heading's verdict. The content is kept, for forensics; the
+            # outcome is not one of the clean ones.
+            if [ -s "${REPORT_PATH}" ]; then
+              REPORT_FILE="${REPORT_PATH}"
+            else
+              REPORT_FILE=/dev/null
+            fi
+            OUTCOME="crashed"
+          elif [ -s "${REPORT_PATH}" ]; then
+            # Present, non-empty, and the process that wrote it exited the
+            # way review.js is designed to. Safe now to read the outcome
+            # off the report's own heading rather than re-deriving it —
+            # see the comment above the Review step.
             REPORT_FILE="${REPORT_PATH}"
             HEADING_LINE="$(head -n 1 "${REPORT_PATH}")"
             case "${HEADING_LINE}" in
@@ -384,18 +458,34 @@ jobs:
                 OUTCOME="unrecognised_report"
                 ;;
             esac
-          elif [ -f "${REPORT_PATH}" ]; then
-            # Present but empty: the Review step ran — its tee opened this
-            # file — but nothing was written before it finished or died.
+          else
+            # Present but empty, with a clean exit code: the Review step
+            # ran and exited the way it is designed to, but wrote nothing.
             REPORT_FILE=/dev/null
             OUTCOME="empty_report"
-          else
-            # Absent: the Review step's body never executed at all (see the
-            # comment above this step for why that is the only way this
-            # happens).
-            REPORT_FILE=/dev/null
-            OUTCOME="not_reached"
           fi
+          # Mask any credential value before it is ever written into the
+          # artefact — see the comment above this step for why this exists
+          # and what it costs. This is a literal, non-regex substitution
+          # of the exact secret value this job holds, done with node
+          # rather than shell string-replacement so no character in the
+          # secret needs escaping for a pattern language it is never
+          # matched against.
+          MASKED_REPORT_PATH="${RUNNER_TEMP}/review-artifact/review.masked.md"
+          if [ "${REPORT_FILE}" = "/dev/null" ]; then
+            : > "${MASKED_REPORT_PATH}"
+          else
+            cp "${REPORT_FILE}" "${MASKED_REPORT_PATH}"
+          fi
+          node -e '
+            const fs = require("fs");
+            const path = process.argv[1];
+            const secret = process.env.ANTHROPIC_API_KEY || "";
+            if (!secret) { process.exit(0); }
+            const content = fs.readFileSync(path, "utf8");
+            fs.writeFileSync(path, content.split(secret).join("***"));
+          ' "${MASKED_REPORT_PATH}"
+          REPORT_FILE="${MASKED_REPORT_PATH}"
           # `substrate` is a HARDCODED STRING, not a measured value — stated
           # here so a reader can see that it is hardcoded rather than mistake
           # it for something this step computed. It names the only substrate
