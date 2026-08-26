@@ -12,7 +12,6 @@
 # revision cannot read a lens set from another. BETWEEN runs both halves
 # float, because `governance-ref` defaults to `main` — which is deliberate,
 # and is how a fix reaches every repository at once.
-
 name: review
 
 on:
@@ -180,10 +179,25 @@ jobs:
       # only the first has ever been visible on a report. If `governance-ref`
       # ever resolves differently between two runs, that is real information
       # and this is what would show it.
+      #
+      # `sha=$(git rev-parse HEAD)` piped straight into the `echo` argument
+      # list used to be the whole step. That buries a failure: under `set
+      # -e`, a failing command substitution does not fail the `echo` that
+      # contains it — only the enclosing simple command's own exit status
+      # matters — so a broken checkout made this step report success while
+      # silently writing `sha=` (empty) to `$GITHUB_OUTPUT`. Downstream that
+      # collapsed into the artefact's `governanceSha: null`, indistinguishable
+      # from "there was nothing to resolve" — the exact missing/broken
+      # conflation this whole branch exists to eliminate, found by this
+      # branch's own review, sitting inside a step this change never touched.
+      # Assigning to a variable first makes the failure its own simple
+      # command, which `set -e` does catch.
       - name: Record which governance commit was actually checked out
         id: governance-sha
         working-directory: .aigency-review
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 
       # No `cache: npm`, and it is a choice rather than an impossibility — an
       # earlier comment here said the latter, which was wrong. `setup-node`
@@ -280,8 +294,9 @@ jobs:
       # preserves it without duplicating it.
       #
       # Two properties below are not incidental — recovering PR #5's own nine
-      # review passes (eval/pr5-review-history-recovered.md) hit both walls
-      # directly, and this design is the answer to each:
+      # review passes (eval/pr5-review-history-recovered.md, its own pull
+      # request) hit both walls directly, and this design is the answer to
+      # each:
       #
       # 1. Retrieval here is by artefact name, tied to this run — never by
       #    "the pull request's most recently matched check run", which is the
