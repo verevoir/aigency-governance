@@ -181,6 +181,80 @@ interface ClaudeCliJsonResult {
 }
 
 /**
+ * What the CLI itself said about a non-zero exit — or `undefined` if
+ * nothing legible could be recovered from `stdout`.
+ *
+ * CONFIRMED, NOT ASSUMED, and confirmed by direct reproduction rather than
+ * by reasoning about the code: a real `claude -p` failure (this sandbox,
+ * not logged into any subscription) exits 1 with `stderr` EMPTY and the
+ * actual reason — `"Not logged in · Please run /login"` — sitting on
+ * `stdout`. With `--output-format json` (what `buildArgs` always sends),
+ * the identical reason arrives wrapped in the JSON envelope's own `result`
+ * field, alongside `is_error: true`. Before this function existed, that
+ * reason was silently discarded: the caller only ever looked at `stderr`,
+ * which was empty, so the thrown error carried nothing but the exit code —
+ * this corpus's defining defect, reproduced in miniature: the reason
+ * existed, was available, and was thrown away on the way out.
+ *
+ * ONLY THIS ONE FAILURE SHAPE HAS BEEN REPRODUCED. This function does not
+ * assume every failure puts JSON on stdout, or that `result` is always
+ * where the reason lives — it tries the JSON envelope first (the shape
+ * confirmed for `buildArgs`'s own flags), falls back to raw stdout if
+ * parsing fails or `result` is absent/empty, and returns `undefined` rather
+ * than fabricate a reason when stdout itself is empty too.
+ *
+ * NO MASKING IS APPLIED HERE, and that is a deliberate limit, not an
+ * oversight. `stripEnv` already deletes every credential-shaped value this
+ * codebase can name (`STRIPPED_ENV_VARS`) from the child's OWN environment
+ * before it ever runs — so there is no known secret value this composition
+ * holds that could be matched out of `stdout` the way a process holding a
+ * known key value can mask it in its own logs. Scanning arbitrary CLI
+ * output for credential-shaped text the CLI might print for reasons
+ * unrelated to this composition's own stripped env vars would be
+ * improvising a redactor against a failure shape nobody has reproduced —
+ * refused here for exactly that reason. If a future failure shape is found
+ * to leak something sensitive, that is a real problem to fix then, with
+ * evidence, not a heuristic to guess at now.
+ */
+function reasonFromFailedInvocation(invocation: CliInvocation): string | undefined {
+  const stdout = invocation.stdout.trim();
+  if (stdout === '') {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(stdout) as ClaudeCliJsonResult;
+    if (typeof parsed.result === 'string' && parsed.result !== '') {
+      return parsed.result;
+    }
+  } catch {
+    // Not JSON — or JSON without a usable `result` falls through below.
+  }
+  return stdout;
+}
+
+/**
+ * The message for a non-zero exit — the exit code, then whatever
+ * {@link reasonFromFailedInvocation} recovered from `stdout`, then `stderr`
+ * if it adds anything `stdout` did not already say. Previously this was
+ * exit code and `stderr` alone; see {@link reasonFromFailedInvocation}'s own
+ * comment for why that discarded the CLI's actual explanation whenever it
+ * arrived on `stdout` instead, which — confirmed by reproduction — is where
+ * it lives.
+ */
+function failureMessage(invocation: CliInvocation): string {
+  const reason = reasonFromFailedInvocation(invocation);
+  const stderr = invocation.stderr.trim();
+  const parts = [`claude -p exited with code ${String(invocation.exitCode)}`];
+  if (reason !== undefined) {
+    parts.push(reason);
+  }
+  if (stderr !== '' && stderr !== reason) {
+    parts.push(stderr);
+  }
+  return parts.join(': ');
+}
+
+/**
  * Pull the reply text out of one CLI invocation.
  *
  * This is the ONLY unwrapping this transport does, and it happens entirely
@@ -192,10 +266,7 @@ interface ClaudeCliJsonResult {
  */
 function textFrom(invocation: CliInvocation): string {
   if (invocation.exitCode !== 0) {
-    throw new Error(
-      `claude -p exited with code ${String(invocation.exitCode)}` +
-        (invocation.stderr.trim() !== '' ? `: ${invocation.stderr.trim()}` : ''),
-    );
+    throw new Error(failureMessage(invocation));
   }
 
   let parsed: ClaudeCliJsonResult;
