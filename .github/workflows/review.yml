@@ -303,12 +303,26 @@ jobs:
           # substrate exists (e.g. a `claude -p` run), this line must become
           # something this step actually observes — an unchanged value at
           # that point would silently misreport which substrate ran.
+          #
+          # `credentialPath` is the same discipline applied to a different
+          # question: not HOW the call was transported, but WHICH credential
+          # authorised it. Confirmed by direct grep of this repository's own
+          # main (zero CLAUDE_CODE_OAUTH_TOKEN references anywhere, 90+
+          # ANTHROPIC_API_KEY references spanning both workflows, settings.ts,
+          # the tests and README): today there is exactly one credential path
+          # in this codebase, so the honest value IS a constant, and it is
+          # written as one rather than dressed up as measured. A
+          # `local-review-via-claude-cli` runner already exists on another
+          # branch — the moment CI can run through it instead, this line must
+          # become an observed value or every record written before that
+          # point becomes indistinguishable from one written after it.
           jq -n \
             --arg headSha "$HEAD_SHA" \
             --arg governanceRef "$GOVERNANCE_REF" \
             --arg governanceSha "${GOVERNANCE_SHA:-}" \
             --arg model "${MODEL:-}" \
             --arg substrate "api-key via src/review/anthropic.ts, called over HTTP from this workflow — hardcoded, not measured; see the comment above this step" \
+            --arg credentialPath "ANTHROPIC_API_KEY (metered key), via secrets.anthropic-api-key — hardcoded, not measured; this workflow has exactly one credential path today, see the comment above this step" \
             --arg subject "${PR_TITLE:-this change}" \
             --arg repository "$REPOSITORY" \
             --arg runId "$RUN_ID" \
@@ -320,6 +334,7 @@ jobs:
               governanceSha: ($governanceSha | if . == "" then null else . end),
               model: ($model | if . == "" then null else . end),
               substrate: $substrate,
+              credentialPath: $credentialPath,
               subject: $subject,
               repository: $repository,
               runId: $runId,
