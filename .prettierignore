@@ -7,6 +7,9 @@ package-lock.json
 # eval/pr5-review-history-recovered.md quotes CI job-log findings verbatim,
 # including a GitHub secret-redaction artifact; a formatter rewrapping it
 # changes the thing whose value is being exactly what it was. eval/results/
-# is generated output, same reasoning. Exempt the whole directory, not a
-# single file, so this does not need revisiting later.
-eval/
+# is generated run output, same reasoning. Narrowed to these two paths
+# specifically — not the whole eval/ directory — per review, which flagged
+# the wider exemption three times: anything else later placed under eval/
+# that should be formatted must not silently lose that just by living here.
+eval/pr5-review-history-recovered.md
+eval/results/

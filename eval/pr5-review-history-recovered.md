@@ -5,10 +5,25 @@ PR #5 (`S26: run the panel on a subscription OAuth token, locally`,
 `decisions/022` (see its own body, and `aigency-rebuild`'s
 `decisions/024-the-reviewer-does-not-learn-subscription-auth-it-shells-out.md`
 on `meta/self-review-story`). Its nine review passes are the richest single
-record of this panel's actual behaviour this project has produced — twenty
-findings, every one adjudicated true, all but one fixed. Closing the pull
-request made that record hard to reach. This file is the recovery attempt,
-done once the pull request was already closed, and it reports both what was
+record of this panel's actual behaviour this project has produced. An
+earlier draft of this paragraph also claimed a total of twenty findings,
+every one adjudicated true, all but one fixed — **that claim is retracted
+here, because it does not sum from what this document itself recovered,
+and the per-finding fix status was never itemized here either.** What can
+actually be summed, from this document's own per-pass counts (pass 2: 2,
+pass 3: 4, pass 4: 3, pass 5: 4, pass 7: 1, pass 8: 1, pass 9: 1 — see 'Per
+pass' below, and the 'Pass 6' section for where pass 2's count is stated),
+is **at least 16 findings, individually attested across seven of the nine
+passes.** Pass 1 is known to have had at least one further finding, but no
+count for it survives anywhere reachable; pass 6's count exists only as
+the operator's own contemporaneous report, not independently verified,
+and this document's own 'Pass 6' section already states plainly that it
+does not reconcile against the rest. **The honest total across all nine
+passes is therefore at least 16, with an unknown further count in passes 1
+and 6, and — per 'What is genuinely gone', below — no route left to
+establish it more precisely than that.** Closing the pull request made
+this record hard to reach. This file is the recovery attempt, done once
+the pull request was already closed, and it reports both what was
 recovered and what was not — a partial record honestly labelled, per the
 instruction that produced it.
 
