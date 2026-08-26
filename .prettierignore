@@ -2,3 +2,11 @@ dist
 node_modules
 coverage
 package-lock.json
+
+# Preserved evidence and generated run output — neither should be reformatted.
+# eval/pr5-review-history-recovered.md quotes CI job-log findings verbatim,
+# including a GitHub secret-redaction artifact; a formatter rewrapping it
+# changes the thing whose value is being exactly what it was. eval/results/
+# is generated output, same reasoning. Exempt the whole directory, not a
+# single file, so this does not need revisiting later.
+eval/
