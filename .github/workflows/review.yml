@@ -12,6 +12,7 @@
 # revision cannot read a lens set from another. BETWEEN runs both halves
 # float, because `governance-ref` defaults to `main` — which is deliberate,
 # and is how a fix reaches every repository at once.
+
 name: review
 
 on:
@@ -298,6 +299,43 @@ jobs:
       #    TEXT contains and has no effect on a file the same step also wrote
       #    to disk. Reading the file, not the log, is what keeps this artefact
       #    out of reach of that layer.
+      #
+      # A third property, added here: `outcome`. Until this, `reportMarkdown:
+      # null` meant three different things with nothing else in the artefact
+      # to tell them apart — the Review step never got reached because
+      # something before it failed; it was reached and wrote nothing before
+      # finishing or dying; or it wrote something and this step lost it. That
+      # is the exact defect this whole persistence mechanism exists to fight,
+      # sitting inside the mechanism itself — found by this branch's own
+      # review (PR #11), which is the correct way for it to have been found.
+      # `outcome` now always names which happened:
+      #
+      #   - `approved` / `rejected` / `could_not_run` / `out_of_scope` — the
+      #     panel ran and wrote a report. The word is read off the report's
+      #     own first line — report.ts's existing HEADING vocabulary — the
+      #     same way "Take the verdict" below already reads that line rather
+      #     than re-deriving the outcome; this is not a parallel set of words
+      #     invented for the artefact.
+      #   - `empty_report` — the Review step ran (its `tee` opened
+      #     `review.md`) but the file holds nothing: the process finished or
+      #     died before writing a byte.
+      #   - `not_reached` — `review.md` does not exist at all. `tee`
+      #     truncates-and-creates its output file the instant that step's
+      #     shell runs, before the process it wraps writes anything — so a
+      #     wholly missing file means the Review step's body never executed.
+      #     With no `if: always()` on any step here, that happens only when
+      #     something earlier in the job (the key check, either checkout, the
+      #     build) already failed and this step was skipped in consequence.
+      #     "The panel never ran" and "a step failed before it could" are the
+      #     same fact seen from two ends, not two states this shell can tell
+      #     apart — so they share one value rather than being given a false
+      #     distinction.
+      #
+      # Named plainly rather than implied: nothing in this repository reads
+      # `outcome` back yet. Recording it removes a collapse from the
+      # artefact — not nothing — but the loop this artefact exists to close
+      # is not closed until something consumes the field, and that is not
+      # claimed here.
       - name: Assemble the review artefact
         if: success() || failure()
         env:
@@ -311,10 +349,37 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           mkdir -p "${RUNNER_TEMP}/review-artifact"
-          if [ -f "${RUNNER_TEMP}/review.md" ]; then
-            REPORT_FILE="${RUNNER_TEMP}/review.md"
-          else
+          REPORT_PATH="${RUNNER_TEMP}/review.md"
+          if [ -s "${REPORT_PATH}" ]; then
+            # Present and non-empty: read the outcome off the report's own
+            # heading rather than re-deriving it — see the comment above
+            # this step.
+            REPORT_FILE="${REPORT_PATH}"
+            HEADING_LINE="$(head -n 1 "${REPORT_PATH}")"
+            case "${HEADING_LINE}" in
+              "## Review: Approved") OUTCOME="approved" ;;
+              "## Review: Rejected") OUTCOME="rejected" ;;
+              "## Review: Could not run") OUTCOME="could_not_run" ;;
+              "## Review: Nothing in scope") OUTCOME="out_of_scope" ;;
+              *)
+                # Content exists but does not open with a heading this step
+                # recognises. Named rather than guessed at: a value nothing
+                # here can classify must not silently become one of the ones
+                # it can.
+                OUTCOME="unrecognised_report"
+                ;;
+            esac
+          elif [ -f "${REPORT_PATH}" ]; then
+            # Present but empty: the Review step ran — its tee opened this
+            # file — but nothing was written before it finished or died.
             REPORT_FILE=/dev/null
+            OUTCOME="empty_report"
+          else
+            # Absent: the Review step's body never executed at all (see the
+            # comment above this step for why that is the only way this
+            # happens).
+            REPORT_FILE=/dev/null
+            OUTCOME="not_reached"
           fi
           # `substrate` is a HARDCODED STRING, not a measured value — stated
           # here so a reader can see that it is hardcoded rather than mistake
@@ -348,6 +413,7 @@ jobs:
             --arg repository "$REPOSITORY" \
             --arg runId "$RUN_ID" \
             --arg eventName "$EVENT_NAME" \
+            --arg outcome "$OUTCOME" \
             --rawfile reportMarkdown "$REPORT_FILE" \
             '{
               headSha: $headSha,
@@ -360,6 +426,7 @@ jobs:
               repository: $repository,
               runId: $runId,
               eventName: $eventName,
+              outcome: $outcome,
               reportMarkdown: (if $reportMarkdown == "" then null else $reportMarkdown end)
             }' > "${RUNNER_TEMP}/review-artifact/review.json"
 
