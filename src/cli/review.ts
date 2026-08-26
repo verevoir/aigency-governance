@@ -59,6 +59,14 @@ function boundaryFailureReport(cause: unknown): string {
 // does, instead, means anything already parsing this process's stdout for a
 // recognised heading keeps working without needing to know this exists.
 //
+// Two explicit calls, one per event, rather than a loop over both event
+// names: each event's own listener type differs (`UncaughtExceptionListener`
+// takes an `Error`, `UnhandledRejectionListener` takes a `reason` and the
+// rejected `Promise`), and a loop would ask TypeScript to resolve the right
+// overload for a union-typed event name, which is not guaranteed to hold
+// across type-definition versions the way two calls against their own single
+// literal event are.
+//
 // What this still cannot catch, named rather than left implied: this file's
 // process dying BELOW the JS layer entirely — a segfault, or the runner
 // OOM-killing or timing out the whole step — never reaches a JS event
@@ -66,13 +74,17 @@ function boundaryFailureReport(cause: unknown): string {
 // "Assemble the review artefact" steps are where that residual case is
 // caught instead, from outside this process, by its exit code; see the
 // comments there for exactly what that outer boundary still owns.
-for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
-  process.on(event, (cause: unknown) => {
-    process.stdout.write(`${boundaryFailureReport(cause)}\n`, () => {
-      process.exit(1);
-    });
+process.on('uncaughtException', (cause: unknown) => {
+  process.stdout.write(`${boundaryFailureReport(cause)}\n`, () => {
+    process.exit(1);
   });
-}
+});
+
+process.on('unhandledRejection', (cause: unknown) => {
+  process.stdout.write(`${boundaryFailureReport(cause)}\n`, () => {
+    process.exit(1);
+  });
+});
 
 async function main(): Promise<number> {
   // The title is what a reader sees at the top of the report. It is an
