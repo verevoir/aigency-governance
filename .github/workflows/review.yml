@@ -277,6 +277,27 @@ jobs:
       # second, parallel, drift-prone format of the same data — the exact
       # thing a fresh artefact format must not become. Keeping the text whole
       # preserves it without duplicating it.
+      #
+      # Two properties below are not incidental — recovering PR #5's own nine
+      # review passes (eval/pr5-review-history-recovered.md) hit both walls
+      # directly, and this design is the answer to each:
+      #
+      # 1. Retrieval here is by artefact name, tied to this run — never by
+      #    "the pull request's most recently matched check run", which is the
+      #    only retrieval `read_pull_request_review` offers. That single-slot
+      #    limit is why 8 of PR #5's 9 passes have no recoverable verbatim
+      #    text today: nothing captured them before a later pass aged them out
+      #    of that one slot. An artefact per run has no slot to age out of —
+      #    every run's own record survives independently of what ran after it.
+      #
+      # 2. `reportMarkdown` below is read from the file the Review step wrote
+      #    directly via `tee`, never from a job log. That distinction is not
+      #    pedantry: recovering PR #5's ninth pass from its job log surfaced a
+      #    finding's own prose rendered as `authorization: ***` — GitHub's
+      #    log-stream secret masking, which rewrites whatever the captured log
+      #    TEXT contains and has no effect on a file the same step also wrote
+      #    to disk. Reading the file, not the log, is what keeps this artefact
+      #    out of reach of that layer.
       - name: Assemble the review artefact
         if: success() || failure()
         env:
