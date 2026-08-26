@@ -23,6 +23,57 @@ async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
   return chunks.join('');
 }
 
+// The one report this file ever writes for a failure it did not itself
+// decide — as opposed to `runReview`'s own reports, which are a verdict
+// about the change. Shared by both places that can reach it (the promise
+// rejection below, and the process-level handlers further down) so the
+// wording cannot drift into two different descriptions of the same kind of
+// failure.
+function boundaryFailureReport(cause: unknown): string {
+  return [
+    '## Review: Could not run',
+    '',
+    `Unexpected failure at the process boundary: ${
+      cause instanceof Error ? cause.message : String(cause)
+    }`,
+    '',
+    'This is a defect in the runner, not a verdict about the change.',
+  ].join('\n');
+}
+
+// A crash `main()`'s own promise chain never sees. A synchronous throw before
+// `main()` is even called would be one way; the realistic one is an
+// unhandled rejection from a promise this file never awaited, somewhere
+// deeper in the panel or reviewer stack — `fetch` calls that are started and
+// not properly chained are the likeliest source. Either bypasses
+// `main().then(resolve, reject)` below entirely: left to Node's own default
+// handling, the process would exit 1 and write a stack trace to STDERR,
+// never touching review.md at all — indistinguishable, from anything reading
+// this process's output, from `runReview`'s own designed exit(1) for an
+// ordinary rejected verdict. `report.ts`'s `exitCodeFor` is deliberately,
+// testedly binary (see its own comment: "0 only for an approval... only an
+// approval is zero"), so a third exit code was never going to be able to
+// carry this distinction, and giving it one here would mean widening that
+// invariant for every caller of this binary to serve one workflow's
+// artefact. Reporting it the same way the existing rejection path already
+// does, instead, means anything already parsing this process's stdout for a
+// recognised heading keeps working without needing to know this exists.
+//
+// What this still cannot catch, named rather than left implied: this file's
+// process dying BELOW the JS layer entirely — a segfault, or the runner
+// OOM-killing or timing out the whole step — never reaches a JS event
+// handler of any kind, this one included. `review.yml`'s own "Review" and
+// "Assemble the review artefact" steps are where that residual case is
+// caught instead, from outside this process, by its exit code; see the
+// comments there for exactly what that outer boundary still owns.
+for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
+  process.on(event, (cause: unknown) => {
+    process.stdout.write(`${boundaryFailureReport(cause)}\n`, () => {
+      process.exit(1);
+    });
+  });
+}
+
 async function main(): Promise<number> {
   // The title is what a reader sees at the top of the report. It is an
   // argument rather than an env var because it is not configuration — it
@@ -62,15 +113,13 @@ main().then(
     process.exitCode = code;
   },
   (cause: unknown) => {
-    // Last resort. Anything reaching here is a defect in the boundary itself,
-    // since `runReview` returns rather than throws — so it is reported as
-    // red and as unexpected, not folded into the ordinary could-not-run
-    // wording that would make it look handled.
-    process.stdout.write(
-      `## Review: Could not run\n\nUnexpected failure at the process boundary: ${
-        cause instanceof Error ? cause.message : String(cause)
-      }\n\nThis is a defect in the runner, not a verdict about the change.\n`,
-    );
+    // Last resort for a rejection of `main()` itself, as opposed to the
+    // process-level handlers above, which cover a crash `main()`'s own
+    // promise never sees. Reported as red and as unexpected, not folded
+    // into the ordinary could-not-run wording that would make it look
+    // handled — via the same shared report as those handlers, so the two
+    // paths cannot describe the same kind of failure two different ways.
+    process.stdout.write(`${boundaryFailureReport(cause)}\n`);
     process.exitCode = 1;
   },
 );
