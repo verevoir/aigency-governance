@@ -156,9 +156,17 @@ ellipsis truncations, reproduced verbatim as it appears there:
 > value... to prove the real `process.env` actually reaches this specific
 > check."
 
-This was the pass predicted, before it ran, by the conversation doing the
-work at the time — asked what a further pass would find, it named this gap
-specifically, and pass 8 found exactly that instance.
+An earlier account of this pass additionally claimed it was predicted
+before it ran — that the conversation doing the work at the time was asked
+what a further pass would find, named this gap specifically, and pass 8
+found exactly that instance. **That claim is carried here only as an
+unsourced recollection, not confirmed:** a direct grep of
+`tuned-constants-and-eval-harness.md`, the only document reachable from
+this recovery attempt that could contain such a prediction, found no
+matching text, and no other reachable source states it either. It is not
+independently verified the way the rest of this file's claims are — the
+same honest treatment this file already gives the Pass 6 operator account,
+applied here instead of being made an exception.
 
 ### Pass 9 — `b444e2f4af7a8ddce218bc68e283447e6bd0a0a4`, check run `97673740219`, rejected, 1 finding (`correctness`)
 
