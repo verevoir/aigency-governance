@@ -256,24 +256,59 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -o pipefail
-          node "${GITHUB_WORKSPACE}/.aigency-review/dist/cli/review.js" "${PR_TITLE:-this change}" \
+          # `if pipeline; then … ; else … ; fi` rather than running the
+          # pipeline as its own statement and reading `$?` on the next line.
+          # This step's shell is invoked as `bash -e {0}` (GitHub Actions'
+          # own default), and under `set -e` a failing pipeline — which is
+          # exactly what happens on every rejected or could-not-run review,
+          # review.js's own designed exit(1) — terminates the script
+          # immediately, before any later line in this step ever runs. The
+          # line that used to sit here as its own statement,
+          # `echo "exit_code=$?" >> "$GITHUB_OUTPUT"`, therefore never
+          # executed for anything but an approval: this step's own first
+          # live run recorded `REVIEW_EXIT_CODE` empty for a normal
+          # rejected verdict, and the Assemble step below (which treats
+          # empty as unrecoverable) reported outcome: "crashed" for a
+          # review that had in fact run cleanly and reported a real
+          # finding — found by this branch's own review. Being the
+          # CONDITION of an `if` is one of the constructs `set -e` exempts
+          # from triggering it, so the status is captured whatever it
+          # turns out to be.
+          #
+          # The trailing `exit "${EXIT_CODE}"` matters as much as the
+          # capture above, and is not redundant with it. Without it this
+          # script's own last command would be the final `echo`, which
+          # always succeeds — so this step's own outcome would read as
+          # `success` even for a rejected review, and "Take the verdict",
+          # further down, only fires on `steps.review.outcome == 'failure'`.
+          # Losing that would mean a rejected pull request stops failing
+          # this job at all, which is the one thing this workflow exists to
+          # do. Re-exiting with the captured code keeps that behaviour
+          # exactly as it was for the two codes that worked before (0, 1),
+          # and extends it correctly to any other exit status too.
+          if node "${GITHUB_WORKSPACE}/.aigency-review/dist/cli/review.js" "${PR_TITLE:-this change}" \
             < "${RUNNER_TEMP}/review.diff" \
-            | tee "${RUNNER_TEMP}/review.md"
-          # Captured immediately, from the pipeline's own exit status — not
-          # re-derived downstream from whether review.md merely looks
-          # complete. review.js documents exactly two exit codes: 0 for an
-          # approved verdict, 1 for anything else it produced on purpose
-          # (rejected, could-not-run). Anything else — a different code, or
-          # a signal (bash reports a signal-killed pipeline as 128+n, e.g.
-          # 137 for SIGKILL from an OOM or a timeout kill) — means the
-          # process did not finish the way it was designed to, whatever
-          # review.md happens to contain. If the whole step is killed
-          # before this line runs, this output is simply never set, which
-          # the Assemble step below treats the same way. Found by this
-          # branch's own review (PR #11): outcome was previously derived
-          # only from review.md's heading, which a mid-write crash can
-          # leave looking valid.
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+            | tee "${RUNNER_TEMP}/review.md"; then
+            EXIT_CODE=0
+          else
+            EXIT_CODE=$?
+          fi
+          # See review.ts's own two `process.on('uncaughtException', ...)`
+          # / `process.on('unhandledRejection', ...)` handlers for the
+          # other half of what this can and cannot now tell apart: an
+          # ordinary rejection and a crash review.js's own runtime can
+          # catch both still exit 1 here, on purpose, and both now carry a
+          # review.md heading this step's own case statement recognises
+          # (see "Assemble the review artefact", below) — because review.js
+          # itself, not this step, is what guarantees that now. What THIS
+          # step's own exit code still catches, and review.js's handlers
+          # cannot: node's process dying BELOW the JS layer entirely — a
+          # segfault, or the runner OOM-killing or timing out the whole
+          # step — which shows up here as a code outside {0,1}, or (if the
+          # step itself is killed before this line runs at all) as this
+          # output never being written.
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+          exit "${EXIT_CODE}"
 
       # Not always(): that also runs on cancellation, and if an earlier step
       # failed the report was never written — cat would fail with "No such
@@ -345,7 +380,15 @@ jobs:
       #     own first line — report.ts's existing HEADING vocabulary — the
       #     same way "Take the verdict" below already reads that line rather
       #     than re-deriving the outcome; this is not a parallel set of words
-      #     invented for the artefact.
+      #     invented for the artefact. `could_not_run` now covers two things
+      #     that look identical from here and are both, honestly, "no verdict
+      #     was reached": review.js's own designed could-not-run paths
+      #     (missing config, an empty diff, a lens set that failed to load),
+      #     and a crash review.js's own process-level handlers caught (see
+      #     the Review step's comment, above, and review.ts's own two
+      #     `process.on(...)` handlers) — both now write the same recognised
+      #     heading, which is the more accurate label for either than the
+      #     "crashed" bucket below would be.
       #   - `empty_report` — the Review step ran (its `tee` opened
       #     `review.md`) but the file holds nothing: the process finished or
       #     died before writing a byte.
@@ -360,24 +403,16 @@ jobs:
       #     same fact seen from two ends, not two states this shell can tell
       #     apart — so they share one value rather than being given a false
       #     distinction.
+      #   - `crashed` — the residual bucket, narrower than it used to be. See
+      #     the case statement below for exactly what still lands here now
+      #     that review.js's own boundary catches everything a JS exception
+      #     or rejection can reach.
       #
       # Named plainly rather than implied: nothing in this repository reads
       # `outcome` back yet. Recording it removes a collapse from the
       # artefact — not nothing — but the loop this artefact exists to close
       # is not closed until something consumes the field, and that is not
       # claimed here.
-      #
-      # Two further properties, added after this branch's own review (PR
-      # #11) caught what each one fixes:
-      #
-      # `outcome` no longer trusts review.md's heading unconditionally. It
-      # also checks the exit code the Review step recorded for its own
-      # process (see the comment on that step, above). A process that
-      # crashed, was killed, or never got far enough to record an exit
-      # code produces `outcome: "crashed"` regardless of what review.md
-      # contains — a mid-write crash can leave a truncated file that still
-      # opens with a valid-looking heading, and that must not be read as a
-      # clean verdict.
       #
       # `reportMarkdown` is masked before it is written, using the exact
       # credential value this job holds — the same substitution GitHub's
@@ -422,16 +457,20 @@ jobs:
             REPORT_FILE=/dev/null
             OUTCOME="not_reached"
           elif [ -z "${REVIEW_EXIT_CODE:-}" ] || { [ "${REVIEW_EXIT_CODE}" != "0" ] && [ "${REVIEW_EXIT_CODE}" != "1" ]; }; then
-            # review.md exists — the Review step's shell did run — but its
-            # process either never got to record its exit code (the step
-            # itself was killed first: a timeout, an OOM, a cancellation)
-            # or exited with something other than the two codes review.js
-            # documents (0 approved, 1 anything else it produced on
-            # purpose). Either way this is a crash, not a completed run,
-            # and whatever review.md holds — even a heading this step
-            # would otherwise recognise — must not be read as that
-            # heading's verdict. The content is kept, for forensics; the
-            # outcome is not one of the clean ones.
+            # review.md exists, but the Review step's own exit code is
+            # either missing (the step itself was killed before it could
+            # record one: a timeout, an OOM, a cancellation) or outside
+            # the two codes review.js can produce (0 approved, 1 anything
+            # else it reaches its own completion path to report — see
+            # review.ts's own `process.on('uncaughtException', ...)` /
+            # `process.on('unhandledRejection', ...)` handlers, which now
+            # convert every JS-level crash review.js's own runtime can
+            # observe into that same exit(1) and a recognised heading, so
+            # it is classified below rather than here). What is LEFT here
+            # is narrower than it used to be: node's own process dying
+            # BELOW the JS layer entirely, which no JS event handler can
+            # observe either. review.md's content, if any, is kept for
+            # forensics; the outcome is not one of the clean ones.
             if [ -s "${REPORT_PATH}" ]; then
               REPORT_FILE="${REPORT_PATH}"
             else
