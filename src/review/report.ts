@@ -25,6 +25,22 @@ export interface ReportContext {
   readonly source: string;
   /** What was reviewed. */
   readonly subject: string;
+  /**
+   * The model that was ASKED for. Always known — it is what the caller
+   * configured, never learned from a response — so this is required, not
+   * optional, unlike `servedModel` below.
+   */
+  readonly model: string;
+  /**
+   * The model a response said actually SERVED a call, if anything in this
+   * run identified one. Absent, not defaulted to `model`: a run where
+   * nothing said so — no lens's response carried the field, or the
+   * composition never captured it — must not be reported as having
+   * confirmed agreement it never actually observed. A request silently
+   * downgraded is exactly the case this field exists to catch, and it can
+   * only catch it by being allowed to disagree with `model`.
+   */
+  readonly servedModel?: string;
 }
 
 /**
@@ -138,6 +154,25 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
   // which definition judged a change cannot tell whether the bar moved.
   const attribution = `Judged by ${verdict.results.length} lens(es) from \`${context.source}\`.`;
   lines.push('---', '', attribution);
+
+  // Two fixed-format lines, not folded into the attribution prose above and
+  // not phrased differently depending on whether they agree — something
+  // downstream (review.yml's own artefact-assembly step, at the time this
+  // was written) greps these by exact prefix, the same way "Take the
+  // verdict" already greps this file's own heading rather than re-deriving
+  // the outcome. A line whose wording depends on its own content would break
+  // that the first time the content changed.
+  //
+  // "Model served" is omitted entirely, not printed as "unknown", when
+  // nothing in this run identified one — an absent line and an empty value
+  // must not read the same to whatever is parsing this: one means "nothing
+  // to report", grep would find nothing to report either way, but the two
+  // are worth keeping honestly distinct in the source even though both
+  // collapse to "no served model on record" downstream.
+  lines.push(`Model requested: \`${context.model}\``);
+  if (context.servedModel !== undefined) {
+    lines.push(`Model served: \`${context.servedModel}\``);
+  }
 
   return lines.join('\n');
 }

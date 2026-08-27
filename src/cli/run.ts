@@ -32,6 +32,16 @@ export interface ReviewDeps {
   readonly review: Reviewer;
   /** The bar, if the composition could fetch one. */
   readonly practices?: string;
+  /**
+   * The model that actually served the panel's calls, if the reviewer this
+   * composition wired can say. Read once, AFTER the panel has run — nothing
+   * has answered yet at the point `deps` itself is constructed, which is why
+   * this is a getter and not a value. Omitted, or returning `undefined`, for
+   * a reviewer that offers no such answer — no calls succeeded, or served-
+   * model observation is not implemented for whatever transport was wired —
+   * never fabricated as equal to the requested model.
+   */
+  readonly servedModel?: () => string | undefined;
 }
 
 export interface ReviewOutcome {
@@ -154,8 +164,14 @@ export async function runReview(
   }
 
   const run = await runPanel(loaded.set, subject, wired.review, wired.practices);
+  const servedModel = wired.servedModel?.();
   return {
-    report: renderReport(run.verdict, { source: loaded.source, subject: subject.title }),
+    report: renderReport(run.verdict, {
+      source: loaded.source,
+      subject: subject.title,
+      model: settings.model,
+      ...(servedModel !== undefined ? { servedModel } : {}),
+    }),
     exitCode: exitCodeFor(run.verdict.outcome),
   };
 }

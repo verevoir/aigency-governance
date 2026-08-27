@@ -42,6 +42,25 @@ export interface AnthropicConfig {
   readonly baseUrl?: string;
 }
 
+/**
+ * A place to learn which model actually served a call, once a response says
+ * so — separate from `AnthropicConfig.model` because that field is what was
+ * ASKED for, dictated by the caller, and needs no capture; this is what
+ * came back, which only a response can say. See `servedModelFrom` for why
+ * the two can differ at all.
+ *
+ * One mutable slot, not a list, and overwritten rather than reconciled: a
+ * panel makes several otherwise-identical calls for one run (one per lens),
+ * and the ordinary case — every call served by the same snapshot — only
+ * needs one value kept. A caller that wants to know whether every lens
+ * agreed is not what this composition serves today; if calls ever did
+ * disagree, the last one observed is what this reports, silently, and that
+ * is a real limit worth knowing about rather than a claim of consensus.
+ */
+export interface ServedModelSink {
+  value?: string;
+}
+
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
 
@@ -122,6 +141,32 @@ function textFrom(body: string): string {
 }
 
 /**
+ * The model that actually served a response, read from the response's own
+ * top-level `model` field — present on Anthropic's Messages API responses
+ * because a REQUESTED model name is not always what SERVED it: a name can
+ * resolve, on the provider's side, to a specific dated snapshot, and only
+ * the response says which one. This is exactly the case a silent downgrade
+ * would look like from the caller's side — the request looked identical,
+ * only the answer changed — which is why it is worth capturing at all.
+ *
+ * Returns `undefined` when the field is absent or not a string, deliberately
+ * rather than falling back to the requested model: a response that does not
+ * say cannot be turned into a claim that it agreed.
+ */
+function servedModelFrom(body: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  const document = parsed as { model?: unknown };
+  return typeof document.model === 'string' && document.model !== ''
+    ? document.model
+    : undefined;
+}
+
+/**
  * A `Reviewer` backed by the Anthropic messages API.
  *
  * Every failure throws. `runPanel` turns a throw into `could_not_run` for that
@@ -129,7 +174,18 @@ function textFrom(body: string): string {
  * so there is nothing to gain here from catching, and something to lose: a
  * caught error that returned a string would be parsed as a reply.
  */
-export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Reviewer {
+export function anthropicReviewer(
+  config: AnthropicConfig,
+  post: HttpPost,
+  /**
+   * Optional: a caller that wants to know which model actually served the
+   * panel's calls passes a sink here and reads it back once the panel has
+   * finished. Omitted entirely for anything that does not care — a test
+   * driving this reviewer directly, for instance — rather than forcing every
+   * caller to plumb one through.
+   */
+  servedModel?: ServedModelSink,
+): Reviewer {
   const url = `${config.baseUrl ?? DEFAULT_BASE_URL}/v1/messages`;
   const secrets = [config.apiKey];
 
@@ -192,6 +248,18 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
 
     if (bodyError !== undefined) {
       throw new Error(redact(`response body could not be read: ${bodyError}`, secrets));
+    }
+
+    // Captured here, before textFrom, and unconditionally on a readable
+    // success body — even if textFrom goes on to throw (an empty reply, a
+    // truncated one). Which model produced a broken reply is still real
+    // information about that reply, and is not the reply's own fault to
+    // withhold.
+    if (servedModel !== undefined) {
+      const observed = servedModelFrom(raw);
+      if (observed !== undefined) {
+        servedModel.value = observed;
+      }
     }
 
     try {
