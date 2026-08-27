@@ -59,13 +59,13 @@ describe("aigency.json's review step vs. claudeCli.ts's CLAUDE_CLI_CREDENTIAL_EN
 
     expect(
       agree,
-      "aigency.json's \"review\" step declares env " +
+      'aigency.json\'s "review" step declares env ' +
         `${JSON.stringify(declared)}, but src/review/claudeCli.ts's ` +
         `CLAUDE_CLI_CREDENTIAL_ENV_VAR is ${JSON.stringify(CLAUDE_CLI_CREDENTIAL_ENV_VAR)}. ` +
         'The two must name the exact same credential: allowedEnv() only ever lets ' +
         'through what CLAUDE_CLI_CREDENTIAL_ENV_VAR names, so if aigency.json declares ' +
         "a different (or no) name, the review step's own env grant never reaches the " +
-        "child at all — claude -p then fails authentication with \"Not logged in\", " +
+        'child at all — claude -p then fails authentication with "Not logged in", ' +
         'which points nowhere near this mismatch. Fix whichever side changed without ' +
         'the other.',
     ).toBe(true);
