@@ -27,8 +27,8 @@
 // is added here: if `claude` cannot be run at all, every call this file
 // makes throws, `runPanel` turns that into `could_not_run` for the lens, and
 // nothing here reaches for a billed key instead. There is no branch in this
-// file that could spend one — see `stripEnv` below for how that is enforced
-// even against an operator's own shell carrying one.
+// file that could spend one — see `allowedEnv` below for how that is
+// enforced even against an operator's own shell carrying one.
 import { NoRoomToAnswerError, type Reviewer } from './panel.js';
 import type { Prompt } from './prompt.js';
 
@@ -37,6 +37,18 @@ export interface CliInvocation {
   readonly stdout: string;
   readonly stderr: string;
   readonly exitCode: number | null;
+  /**
+   * The signal that terminated the process, or `null` when it exited under
+   * its own steam. Node's `child_process` guarantees exactly one of
+   * `exitCode`/`signal` is non-null on `'exit'`/`'close'` — `exitCode` is
+   * `null` PRECISELY WHEN the child was killed by a signal (SIGTERM from a
+   * timeout, SIGKILL from an OOM killer, anything else), not as some other,
+   * unrelated shape of "no exit code". Carried through so a signal-
+   * terminated run is reported distinguishably from a bare "exited with
+   * code null" instead of the two collapsing into the same message — see
+   * `describeExit` below.
+   */
+  readonly signal: NodeJS.Signals | null;
 }
 
 /**
@@ -54,43 +66,73 @@ export interface CliInvocation {
 export type CliRunner = (args: readonly string[], input: string) => Promise<CliInvocation>;
 
 /**
- * Billed-credential env vars stripped from the CLI's child environment
- * before every invocation — mirroring `STRIPPED_ENV_VARS` in
- * `@verevoir/llm`'s `claude-cli` adapter (verevoir/llm PR #36) exactly, for
- * the same reason: this script exists specifically to stop spending the
- * metered key, so it must not be able to, even by accident, even if the
- * operator's own shell has one exported.
- *
- * `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are the two this script was
- * built to strip. `ANTHROPIC_API_KEY_FILE` and the two Bedrock/Vertex
- * routing toggles are carried over from #36's fuller list as the same
- * precautionary extension #36 settled on there, not independently verified
- * here either: stripping a variable that turns out not to matter costs
- * nothing, and protecting a balance that has to last argues for the same
- * asymmetry in both places.
+ * The base environment names every invocation gets, regardless of what else
+ * is permitted — mirrors `verevoir/aigency-runtime`'s `gate-runner.ts`
+ * `BASE_ENV_NAMES` exactly, for the same reason: PATH so the `claude`
+ * binary can be found at all, HOME because node/npm-adjacent tooling under
+ * it reads per-user configuration and cache from it and fails in obscure
+ * ways without it, TMPDIR because a build writes scratch files and the
+ * fallback is not writable everywhere. Nothing else — this list stays
+ * boring on purpose; anything added to it is handed to `claude` on every
+ * invocation forever.
  */
-export const STRIPPED_ENV_VARS = [
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'ANTHROPIC_API_KEY_FILE',
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-] as const;
+const BASE_ENV_NAMES = ['PATH', 'HOME', 'TMPDIR'] as const;
 
 /**
- * A copy of `env` with every {@link STRIPPED_ENV_VARS} entry deleted — never
- * the original object, and never left unset by omission. Pure and exported
- * so the POLICY (which variables) is asserted directly by a test, with no
- * subprocess spawned to prove it; the MECHANISM (actually building the
- * child's environment from this) lives at the process boundary, the one
- * place this composition touches `node:child_process` at all.
+ * The one credential this transport authenticates with — a subscription
+ * OAuth token, not the billed `ANTHROPIC_API_KEY` this whole file exists to
+ * avoid spending. Declared as a single named constant rather than as a
+ * string literal repeated wherever it is needed, so {@link ALLOWED_ENV_VARS}
+ * below and anything else that has to name this credential are reading the
+ * SAME name rather than two names that merely happen to agree today — the
+ * outer `review` release step this composition runs under declares exactly
+ * this variable, and this constant is what keeps the two from drifting
+ * apart.
  */
-export function stripEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const copy = { ...env };
-  for (const key of STRIPPED_ENV_VARS) {
-    delete copy[key];
+export const CLAUDE_CLI_CREDENTIAL_ENV_VAR = 'CLAUDE_CODE_OAUTH_TOKEN';
+
+/**
+ * Every environment variable name the `claude` child process is permitted
+ * to see — an ALLOWLIST, built from {@link BASE_ENV_NAMES} plus
+ * {@link CLAUDE_CLI_CREDENTIAL_ENV_VAR}, never independently.
+ *
+ * REPLACES an earlier `STRIPPED_ENV_VARS`/`stripEnv` DENYLIST that deleted
+ * five named Anthropic/Bedrock/Vertex variables and passed everything else
+ * in the operator's environment through to the child unchanged — other
+ * cloud credentials, other API tokens, `SSH_AUTH_SOCK`, `GITHUB_TOKEN`,
+ * all of it, handed to a third-party CLI subprocess. The outer boundary
+ * this release step runs under already narrows to an explicit allowlist
+ * (PATH, HOME, TMPDIR plus this one declared credential — see
+ * `aigency.json`'s `review` step); this file now reasons for least surface
+ * the same way at both boundaries instead of an allowlist at one and a
+ * denylist one hop further in, handing the wider surface to the same
+ * subprocess the outer boundary was narrowing for.
+ */
+export const ALLOWED_ENV_VARS = [...BASE_ENV_NAMES, CLAUDE_CLI_CREDENTIAL_ENV_VAR] as const;
+
+/**
+ * The environment to hand the `claude` child process: every name in
+ * {@link ALLOWED_ENV_VARS} that `env` actually carries, and nothing else —
+ * never the original object, and never anything not on the allowlist, no
+ * matter what the operator's own shell exports. A name on the allowlist
+ * that `env` does not have is simply absent from the result, not an error
+ * here: a missing `CLAUDE_CODE_OAUTH_TOKEN` is `claude` itself refusing to
+ * authenticate, reported through the normal failure path, not a concern of
+ * building the environment. Pure and exported so the POLICY (which
+ * variables) is asserted directly by a test, with no subprocess spawned to
+ * prove it; the MECHANISM (actually building the child's environment from
+ * this) lives at the process boundary, the one place this composition
+ * touches `node:child_process` at all.
+ */
+export function allowedEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const child: NodeJS.ProcessEnv = {};
+  for (const name of ALLOWED_ENV_VARS) {
+    const value = env[name];
+    if (value !== undefined) {
+      child[name] = value;
+    }
   }
-  return copy;
+  return child;
 }
 
 /**
@@ -172,8 +214,9 @@ interface ClaudeCliJsonResult {
    * figure is billed or notional, so asserting either would be an unbacked
    * claim. This transport already knows the stronger, certain fact
    * independently: no billed-credential env var this codebase knows about
-   * reached the child process at all (see `STRIPPED_ENV_VARS`/`stripEnv`
-   * above). Declared here as a field, not silently omitted from the type,
+   * reached the child process at all (see `ALLOWED_ENV_VARS`/`allowedEnv`
+   * above — an allowlist that never named a billed credential in the first
+   * place). Declared here as a field, not silently omitted from the type,
    * so a reader sees it was seen and set aside on purpose rather than
    * missed.
    */
@@ -204,17 +247,17 @@ interface ClaudeCliJsonResult {
  * than fabricate a reason when stdout itself is empty too.
  *
  * NO MASKING IS APPLIED HERE, and that is a deliberate limit, not an
- * oversight. `stripEnv` already deletes every credential-shaped value this
- * codebase can name (`STRIPPED_ENV_VARS`) from the child's OWN environment
- * before it ever runs — so there is no known secret value this composition
- * holds that could be matched out of `stdout` the way a process holding a
- * known key value can mask it in its own logs. Scanning arbitrary CLI
- * output for credential-shaped text the CLI might print for reasons
- * unrelated to this composition's own stripped env vars would be
- * improvising a redactor against a failure shape nobody has reproduced —
- * refused here for exactly that reason. If a future failure shape is found
- * to leak something sensitive, that is a real problem to fix then, with
- * evidence, not a heuristic to guess at now.
+ * oversight. `allowedEnv` already limits the child's OWN environment to
+ * {@link ALLOWED_ENV_VARS} before it ever runs — so there is no known secret
+ * value this composition hands the child (beyond the one credential it is
+ * meant to have) that could be matched out of `stdout` the way a process
+ * holding a known key value can mask it in its own logs. Scanning arbitrary
+ * CLI output for credential-shaped text the CLI might print for reasons
+ * unrelated to this composition's own environment would be improvising a
+ * redactor against a failure shape nobody has reproduced — refused here for
+ * exactly that reason. If a future failure shape is found to leak something
+ * sensitive, that is a real problem to fix then, with evidence, not a
+ * heuristic to guess at now.
  */
 function reasonFromFailedInvocation(invocation: CliInvocation): string | undefined {
   const stdout = invocation.stdout.trim();
@@ -233,18 +276,41 @@ function reasonFromFailedInvocation(invocation: CliInvocation): string | undefin
 }
 
 /**
- * The message for a non-zero exit — the exit code, then whatever
- * {@link reasonFromFailedInvocation} recovered from `stdout`, then `stderr`
- * if it adds anything `stdout` did not already say. Previously this was
- * exit code and `stderr` alone; see {@link reasonFromFailedInvocation}'s own
- * comment for why that discarded the CLI's actual explanation whenever it
- * arrived on `stdout` instead, which — confirmed by reproduction — is where
- * it lives.
+ * How the process ended, described for a human reading a failure message.
+ *
+ * `exitCode` is `null` PRECISELY WHEN the child was terminated by a signal
+ * — SIGTERM from a timeout, SIGKILL from an OOM killer, anything else that
+ * sends one — not as some other, unrelated shape of "no exit code".
+ * Collapsing that into "exited with code null" throws away the one piece of
+ * information that would tell a signal kill apart from whatever else null
+ * might otherwise mean, which is exactly the defect this corpus keeps
+ * finding in other shapes: the cause was available and was not kept. This
+ * checks `signal` FIRST, and unconditionally — Node never sets both, so
+ * there is no case where checking `signal` first hides a real exit code.
+ */
+function describeExit(
+  command: string,
+  invocation: Pick<CliInvocation, 'exitCode' | 'signal'>,
+): string {
+  if (invocation.signal !== null) {
+    return `${command} was killed by signal ${invocation.signal}`;
+  }
+  return `${command} exited with code ${String(invocation.exitCode)}`;
+}
+
+/**
+ * The message for a non-zero exit — how the process ended (see
+ * `describeExit`), then whatever {@link reasonFromFailedInvocation}
+ * recovered from `stdout`, then `stderr` if it adds anything `stdout` did
+ * not already say. Previously this was exit code and `stderr` alone; see
+ * {@link reasonFromFailedInvocation}'s own comment for why that discarded
+ * the CLI's actual explanation whenever it arrived on `stdout` instead,
+ * which — confirmed by reproduction — is where it lives.
  */
 function failureMessage(invocation: CliInvocation): string {
   const reason = reasonFromFailedInvocation(invocation);
   const stderr = invocation.stderr.trim();
-  const parts = [`claude -p exited with code ${String(invocation.exitCode)}`];
+  const parts = [describeExit('claude -p', invocation)];
   if (reason !== undefined) {
     parts.push(reason);
   }
@@ -339,8 +405,8 @@ export interface Availability {
  * panel would otherwise spend up to five lenses' worth of invocations each
  * discovering the same fact independently and reporting it five confusing
  * ways. Costs nothing against a billed key either way — `run` here goes
- * through the same stripped environment as every other call this transport
- * makes.
+ * through the same allowlisted environment as every other call this
+ * transport makes.
  */
 export async function checkClaudeCliAvailable(run: CliRunner): Promise<Availability> {
   try {
@@ -349,7 +415,7 @@ export async function checkClaudeCliAvailable(run: CliRunner): Promise<Availabil
       return {
         ok: false,
         reason:
-          `claude --version exited with code ${String(invocation.exitCode)}` +
+          describeExit('claude --version', invocation) +
           (invocation.stderr.trim() !== '' ? `: ${invocation.stderr.trim()}` : ''),
       };
     }

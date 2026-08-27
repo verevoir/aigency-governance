@@ -5,11 +5,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ALLOWED_ENV_VARS,
+  allowedEnv,
   buildArgs,
   checkClaudeCliAvailable,
   claudeCliReviewer,
-  STRIPPED_ENV_VARS,
-  stripEnv,
+  CLAUDE_CLI_CREDENTIAL_ENV_VAR,
   type CliInvocation,
   type CliRunner,
 } from '../src/review/claudeCli.js';
@@ -43,7 +44,7 @@ function fakeRun(respond: () => Promise<CliInvocation>): FakeRun {
 }
 
 function invocation(overrides: Partial<CliInvocation> = {}): CliInvocation {
-  return { stdout: '', stderr: '', exitCode: 0, ...overrides };
+  return { stdout: '', stderr: '', exitCode: 0, signal: null, ...overrides };
 }
 
 /** A successful invocation whose stdout is `{ result, ...extra }`. */
@@ -94,35 +95,64 @@ describe('buildArgs', () => {
   });
 });
 
-describe('stripEnv', () => {
-  const DIRTY_ENV: NodeJS.ProcessEnv = {
+describe('allowedEnv', () => {
+  // A realistic operator shell: the one credential this transport needs,
+  // the base names every process needs, and a pile of things it must
+  // never see — cloud credentials, another provider's key, an SSH agent
+  // socket, a CI token. None of PATH/HOME/TMPDIR/CLAUDE_CODE_OAUTH_TOKEN
+  // is what this test is pinning; UNDECLARED is.
+  const OPERATOR_ENV: NodeJS.ProcessEnv = {
+    PATH: '/usr/bin:/bin',
+    HOME: '/home/it',
+    TMPDIR: '/tmp',
+    CLAUDE_CODE_OAUTH_TOKEN: 'oauth-should-reach-the-child',
     ANTHROPIC_API_KEY: 'sk-should-never-reach-the-child',
-    ANTHROPIC_AUTH_TOKEN: 'tok-should-never-reach-the-child',
-    ANTHROPIC_API_KEY_FILE: '/path/to/a/key',
-    CLAUDE_CODE_USE_BEDROCK: '1',
-    CLAUDE_CODE_USE_VERTEX: '1',
-    UNRELATED: 'kept',
+    AWS_SECRET_ACCESS_KEY: 'aws-should-never-reach-the-child',
+    SSH_AUTH_SOCK: '/tmp/ssh-agent.sock',
+    GITHUB_TOKEN: 'gh-should-never-reach-the-child',
   };
 
-  it('deletes every STRIPPED_ENV_VARS entry', () => {
-    const stripped = stripEnv(DIRTY_ENV);
-    for (const key of STRIPPED_ENV_VARS) {
-      expect(stripped[key]).toBeUndefined();
+  it('carries every ALLOWED_ENV_VARS name that is present in the source', () => {
+    const child = allowedEnv(OPERATOR_ENV);
+    for (const key of ALLOWED_ENV_VARS) {
+      expect(child[key]).toBe(OPERATOR_ENV[key]);
     }
   });
 
-  it('leaves everything else untouched', () => {
-    expect(stripEnv(DIRTY_ENV)['UNRELATED']).toBe('kept');
+  // THE MUTATION TARGET for finding two. An allowlist that merely names its
+  // permitted set but still spreads the source through underneath — the
+  // shape a denylist-to-allowlist rename can regress into by accident — has
+  // every one of these still leaking. This is the one property `stripEnv`
+  // never had and could not have: it deleted five names and passed
+  // everything else, which is the opposite guarantee.
+  it('does not let an undeclared variable in the source reach the child, however sensitive', () => {
+    const child = allowedEnv(OPERATOR_ENV);
+    expect(child['ANTHROPIC_API_KEY']).toBeUndefined();
+    expect(child['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
+    expect(child['SSH_AUTH_SOCK']).toBeUndefined();
+    expect(child['GITHUB_TOKEN']).toBeUndefined();
+    // Nothing beyond ALLOWED_ENV_VARS reached the child at all — not just
+    // the four named above.
+    expect(Object.keys(child).sort()).toEqual([...ALLOWED_ENV_VARS].sort());
+  });
+
+  it('carries the credential the review step declares, by name — CLAUDE_CODE_OAUTH_TOKEN specifically', () => {
+    expect(ALLOWED_ENV_VARS).toContain(CLAUDE_CLI_CREDENTIAL_ENV_VAR);
+    expect(allowedEnv(OPERATOR_ENV)[CLAUDE_CLI_CREDENTIAL_ENV_VAR]).toBe(
+      OPERATOR_ENV[CLAUDE_CLI_CREDENTIAL_ENV_VAR],
+    );
+  });
+
+  it('omits an allowed name the source simply does not have, rather than inventing it', () => {
+    const child = allowedEnv({ PATH: '/usr/bin' });
+    expect(child['HOME']).toBeUndefined();
+    expect(child[CLAUDE_CLI_CREDENTIAL_ENV_VAR]).toBeUndefined();
+    expect(child['PATH']).toBe('/usr/bin');
   });
 
   it('leaves the original object untouched — a copy, not a mutation', () => {
-    stripEnv(DIRTY_ENV);
-    expect(DIRTY_ENV['ANTHROPIC_API_KEY']).toBe('sk-should-never-reach-the-child');
-  });
-
-  it('strips at least the two vars this script was built to strip', () => {
-    expect(STRIPPED_ENV_VARS).toContain('ANTHROPIC_API_KEY');
-    expect(STRIPPED_ENV_VARS).toContain('ANTHROPIC_AUTH_TOKEN');
+    allowedEnv(OPERATOR_ENV);
+    expect(OPERATOR_ENV['ANTHROPIC_API_KEY']).toBe('sk-should-never-reach-the-child');
   });
 });
 
@@ -186,6 +216,26 @@ describe('failures', () => {
     const error = await failureOf(claudeCliReviewer(run.impl)('honesty', PROMPT));
     expect(error.message).toContain('exited with code 1');
     expect(error.message).toContain('auth failed: no session');
+  });
+
+  // THE MUTATION TARGET for finding one. Before the fix, `CliInvocation` had
+  // no `signal` field at all and `failureMessage` always read
+  // `claude -p exited with code ${exitCode}` — so a SIGKILL-terminated run
+  // and a bare `exitCode: null` with no signal were REPORTED IDENTICALLY,
+  // both as "exited with code null". This pins that the two are now told
+  // apart.
+  it('reports a signal-terminated close distinguishably from a null exit carrying no signal', async () => {
+    const killed = fakeRun(() =>
+      Promise.resolve(invocation({ exitCode: null, signal: 'SIGKILL' })),
+    );
+    const killedError = await failureOf(claudeCliReviewer(killed.impl)('honesty', PROMPT));
+    expect(killedError.message).toContain('SIGKILL');
+    expect(killedError.message).not.toContain('code null');
+
+    const nullExit = fakeRun(() => Promise.resolve(invocation({ exitCode: null, signal: null })));
+    const nullExitError = await failureOf(claudeCliReviewer(nullExit.impl)('honesty', PROMPT));
+    expect(nullExitError.message).toContain('code null');
+    expect(nullExitError.message).not.toContain('signal');
   });
 
   // Reproduces the real failure this fix exists for: a genuine `claude -p`

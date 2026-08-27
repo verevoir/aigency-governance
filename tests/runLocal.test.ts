@@ -77,9 +77,19 @@ function harness(options: HarnessOptions = {}): Harness {
     if (isPreflight) {
       calls.availabilityChecks += 1;
       if (!available) {
-        return Promise.resolve({ stdout: '', stderr: 'claude: command not found', exitCode: 127 });
+        return Promise.resolve({
+          stdout: '',
+          stderr: 'claude: command not found',
+          exitCode: 127,
+          signal: null,
+        });
       }
-      return Promise.resolve({ stdout: '2.1.243 (Claude Code)', stderr: '', exitCode: 0 });
+      return Promise.resolve({
+        stdout: '2.1.243 (Claude Code)',
+        stderr: '',
+        exitCode: 0,
+        signal: null,
+      });
     }
     // A real lens call: the per-lens prompt is the stdin `input`, and the
     // reply function has no way to see which lens this is from the args
@@ -93,6 +103,7 @@ function harness(options: HarnessOptions = {}): Harness {
       stdout: JSON.stringify({ result: reply(lensId) }),
       stderr: '',
       exitCode: 0,
+      signal: null,
     });
   };
 

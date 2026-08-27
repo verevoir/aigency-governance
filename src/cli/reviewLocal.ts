@@ -20,7 +20,7 @@ import { stdin } from 'node:process';
 import process from 'node:process';
 
 import { runLocalReview } from './runLocal.js';
-import { stripEnv, type CliInvocation, type CliRunner } from '../review/claudeCli.js';
+import { allowedEnv, type CliInvocation, type CliRunner } from '../review/claudeCli.js';
 import { lensReaderFor } from '../review/readers.js';
 import { DEFAULT_LENS_SOURCE } from '../review/settings.js';
 
@@ -38,15 +38,16 @@ function present(value: string | undefined): string | undefined {
 }
 
 /**
- * The real transport: spawns the actual `claude` CLI with the billed-
- * credential env vars stripped from its environment. The only function in
- * this entire composition that touches `node:child_process` — same
- * separation `review.ts` keeps for `fetch`.
+ * The real transport: spawns the actual `claude` CLI with its environment
+ * built by `allowedEnv` — an allowlist, never the operator's full
+ * environment with a few names removed. The only function in this entire
+ * composition that touches `node:child_process` — same separation
+ * `review.ts` keeps for `fetch`.
  */
 function realClaudeCliRunner(command = 'claude'): CliRunner {
   return (args, input) =>
     new Promise<CliInvocation>((resolve, reject) => {
-      const child = spawn(command, [...args], { env: stripEnv(process.env) });
+      const child = spawn(command, [...args], { env: allowedEnv(process.env) });
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', (chunk: Buffer) => {
@@ -59,8 +60,13 @@ function realClaudeCliRunner(command = 'claude'): CliRunner {
       // distinct from a non-zero exit; claudeCliReviewer treats both as a
       // refusal, never a reason to try anything else.
       child.on('error', reject);
-      child.on('close', (exitCode) => {
-        resolve({ stdout, stderr, exitCode });
+      // `signal` is captured, not discarded: Node sets `exitCode` to `null`
+      // PRECISELY WHEN the child was terminated by a signal, so dropping
+      // this argument is how a SIGKILL-terminated run and a genuine null
+      // exit end up reported as the identical, uninformative "exited with
+      // code null" — see `describeExit` in `review/claudeCli.ts`.
+      child.on('close', (exitCode, signal) => {
+        resolve({ stdout, stderr, exitCode, signal });
       });
       child.stdin.write(input);
       child.stdin.end();
