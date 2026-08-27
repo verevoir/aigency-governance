@@ -41,7 +41,8 @@
       "name": "review",
       "kind": "release",
       "command": ["node", "scripts/review-head.mjs"],
-      "description": "Run the review panel against the HEAD commit, through the claude CLI (claude -p) on a subscription credential rather than the Anthropic API — see scripts/review-head.mjs's own header for why. A release step rather than a gate because it still takes real wall-clock time (one subprocess per lens) and needs the claude CLI installed and logged in; a gate that can fail for reasons unrelated to the code is not a fact about the commit being verified. Requires no ANTHROPIC_API_KEY and reads none: if claude is not usable, the run reports so and exits red without ever falling back to a billed key.",
+      "env": ["CLAUDE_CODE_OAUTH_TOKEN"],
+      "description": "Run the review panel against the HEAD commit, through the claude CLI (claude -p) on a subscription credential rather than the Anthropic API — see scripts/review-head.mjs's own header for why. A release step rather than a gate because it still takes real wall-clock time (one subprocess per lens) and needs the claude CLI installed and logged in; a gate that can fail for reasons unrelated to the code is not a fact about the commit being verified. Requires no ANTHROPIC_API_KEY and reads none: if claude is not usable, the run reports so and exits red without ever falling back to a billed key. Declares CLAUDE_CODE_OAUTH_TOKEN because nothing is inherited by default — AIGENCY_ALLOWED_ENV is a ceiling on what the composition will pass down, and this row is the request; a variable the composition permits but no row asks for is never handed to anything. Without it the child gets PATH, HOME and TMPDIR only, and claude -p answers \"Not logged in · Please run /login\" on every lens: HOME alone is not enough, because on macOS the CLI's own stored credentials live in the Keychain, which a headless child cannot unlock.",
       "timeoutMs": 900000
     }
   ]
