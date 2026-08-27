@@ -389,7 +389,9 @@ export function claudeCliReviewer(run: CliRunner): Reviewer {
       // this composition will reach for. `claude` being unusable (not on
       // PATH, not logged in) is could_not_run for this lens, never a
       // silent retry against a billed key. See the file header.
-      throw new Error(`could not run the claude CLI — ${(cause as Error).message}`);
+      throw new Error(
+        `could not run the claude CLI — ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
     }
     return textFrom(invocation);
   };
@@ -421,6 +423,6 @@ export async function checkClaudeCliAvailable(run: CliRunner): Promise<Availabil
     }
     return { ok: true };
   } catch (cause) {
-    return { ok: false, reason: (cause as Error).message };
+    return { ok: false, reason: cause instanceof Error ? cause.message : String(cause) };
   }
 }

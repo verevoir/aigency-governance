@@ -351,6 +351,18 @@ describe('failures', () => {
     expect(error.message).toContain('ENOENT');
   });
 
+  // THE MUTATION TARGET for the CI review's finding: `CliRunner`'s own type
+  // permits any rejection value, not just an `Error` -- a plain
+  // `(cause as Error).message` on a non-Error rejection reads as `undefined`,
+  // since a string has no `.message` property, and the real cause is thrown
+  // away at exactly the boundary this file's header says never to.
+  it('surfaces a non-Error rejection as its actual content, not the literal string "undefined"', async () => {
+    const run: CliRunner = () => Promise.reject('ETIMEDOUT: spawn claude took too long');
+    const error = await failureOf(claudeCliReviewer(run)('honesty', PROMPT));
+    expect(error.message).toContain('ETIMEDOUT: spawn claude took too long');
+    expect(error.message).not.toContain('undefined');
+  });
+
   it('joins the block into one reply rather than throwing when result is present and non-empty', async () => {
     const run = ok('VERDICT: rejected\nFINDING: the only block');
     const reply = await claudeCliReviewer(run.impl)('honesty', PROMPT);
@@ -387,5 +399,15 @@ describe('checkClaudeCliAvailable', () => {
     const availability = await checkClaudeCliAvailable(run);
     expect(availability.ok).toBe(false);
     expect(availability.reason).toContain('ENOENT');
+  });
+
+  // Same mutation target as claudeCliReviewer's own case above, for this
+  // catch site's copy of the same unguarded cast.
+  it('reports a non-Error rejection as its actual content, not the literal string "undefined"', async () => {
+    const run: CliRunner = () => Promise.reject('ETIMEDOUT: spawn claude took too long');
+    const availability = await checkClaudeCliAvailable(run);
+    expect(availability.ok).toBe(false);
+    expect(availability.reason).toContain('ETIMEDOUT: spawn claude took too long');
+    expect(availability.reason).not.toContain('undefined');
   });
 });
