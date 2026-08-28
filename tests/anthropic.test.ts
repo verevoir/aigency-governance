@@ -14,6 +14,7 @@ import {
   redact,
   type AnthropicConfig,
   type HttpPost,
+  type ServedModelSink,
 } from '../src/review/anthropic.js';
 import { NoRoomToAnswerError } from '../src/review/panel.js';
 import type { Prompt } from '../src/review/prompt.js';
@@ -414,6 +415,61 @@ describe('failures', () => {
     const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
     expect(error.message).toContain('429');
     expect(error.message).toContain('aborted mid-body');
+  });
+});
+
+// The shape fix for Finding Two (aigency-governance PR #11's own review):
+// ServedModelSink used to be one mutable slot, overwritten per call, so a
+// panel served by two different models could only ever report the LAST one
+// observed — indistinguishable, from the sink alone, from every lens having
+// agreed. These prove the replacement can tell the two cases apart, which is
+// the entire point of the fix; see anthropic.ts's own doc comment on
+// ServedModelSink for why arrival order was never a meaningful answer.
+function respondingWithModel(model: string): FakePost {
+  return serving(200, JSON.stringify({ model, content: [{ type: 'text', text: 'ok' }] }));
+}
+
+describe('ServedModelSink', () => {
+  it('accumulates every distinct model observed across calls, not only the last', async () => {
+    const sink: ServedModelSink = { values: new Set() };
+
+    await anthropicReviewer(
+      CONFIG,
+      respondingWithModel('claude-a').impl,
+      sink,
+    )('correctness', PROMPT);
+    await anthropicReviewer(CONFIG, respondingWithModel('claude-b').impl, sink)('honesty', PROMPT);
+
+    // Both survive. A revert to the old single-slot overwrite behaviour —
+    // clearing the set before each add, the effective shape of the bug
+    // this replaces — leaves only 'claude-b' here; this is the assertion
+    // that catches exactly that, mutation-proved by doing precisely that
+    // revert, temporarily, in anthropic.ts itself.
+    expect(sink.values).toEqual(new Set(['claude-a', 'claude-b']));
+  });
+
+  it('does not grow a second entry when two calls agree, so agreement stays distinguishable from disagreement', async () => {
+    const sink: ServedModelSink = { values: new Set() };
+    const post = respondingWithModel('claude-a');
+
+    await anthropicReviewer(CONFIG, post.impl, sink)('correctness', PROMPT);
+    await anthropicReviewer(CONFIG, post.impl, sink)('honesty', PROMPT);
+
+    expect(sink.values).toEqual(new Set(['claude-a']));
+  });
+
+  it('is unaffected by a call that returns no model field at all', async () => {
+    const sink: ServedModelSink = { values: new Set() };
+    const noModel = serving(200, JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }));
+
+    await anthropicReviewer(
+      CONFIG,
+      respondingWithModel('claude-a').impl,
+      sink,
+    )('correctness', PROMPT);
+    await anthropicReviewer(CONFIG, noModel.impl, sink)('honesty', PROMPT);
+
+    expect(sink.values).toEqual(new Set(['claude-a']));
   });
 });
 

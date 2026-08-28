@@ -101,7 +101,7 @@ async function main(): Promise<number> {
       // reused across runs instead of exiting after one. It is not, today
       // — but a fact that happens to be true of how this file is currently
       // invoked is not something to build a shared mutable default on.
-      const servedModel: ServedModelSink = {};
+      const servedModel: ServedModelSink = { values: new Set() };
       return {
         // `settings` is passed straight through to `lensReaderFor` (readers.ts)
         // and nothing else: this file never itself writes an expression naming
@@ -115,7 +115,13 @@ async function main(): Promise<number> {
           (url, init) => fetch(url, init),
           servedModel,
         ),
-        servedModel: () => servedModel.value,
+        // Sorted here, not left to arrival order: the calls this comes from
+        // are dispatched concurrently (panel.ts), so the Set's own
+        // insertion order is which network response happened to land
+        // first — not a fact about the review, and not something a report
+        // should vary by. See report.ts's `ServedModels` for why the
+        // consumer of this needs a stable order at all.
+        servedModel: () => [...servedModel.values].sort(),
       };
     },
     // The real key-file source. Constructed here, at the process boundary,

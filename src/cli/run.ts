@@ -16,7 +16,7 @@ import { loadLensSet } from '../review/load.js';
 import { runPanel } from '../review/panel.js';
 import type { Reviewer } from '../review/panel.js';
 import type { Subject } from '../review/prompt.js';
-import { exitCodeFor, renderReport } from '../review/report.js';
+import { exitCodeFor, renderReport, type ServedModels } from '../review/report.js';
 import type { SourceReader } from '../review/load.js';
 import {
   renderMissing,
@@ -33,15 +33,19 @@ export interface ReviewDeps {
   /** The bar, if the composition could fetch one. */
   readonly practices?: string;
   /**
-   * The model that actually served the panel's calls, if the reviewer this
-   * composition wired can say. Read once, AFTER the panel has run — nothing
-   * has answered yet at the point `deps` itself is constructed, which is why
-   * this is a getter and not a value. Omitted, or returning `undefined`, for
-   * a reviewer that offers no such answer — no calls succeeded, or served-
-   * model observation is not implemented for whatever transport was wired —
-   * never fabricated as equal to the requested model.
+   * Every distinct model that actually served the panel's calls, if the
+   * reviewer this composition wired can say. Read once, AFTER the panel has
+   * run — nothing has answered yet at the point `deps` itself is
+   * constructed, which is why this is a getter and not a value.
+   *
+   * An empty array means nothing was observed — no calls succeeded, or
+   * served-model observation is not implemented for whatever transport was
+   * wired — never fabricated as equal to the requested model.
+   * `nonEmptyServedModels`, below, is where that turns into the absent
+   * field the report actually renders on — the same "nothing to say" state
+   * a composition offering no getter at all already produces.
    */
-  readonly servedModel?: () => string | undefined;
+  readonly servedModel?: () => readonly string[];
 }
 
 export interface ReviewOutcome {
@@ -59,6 +63,25 @@ export interface ReviewOutcome {
  * for the lens set is constructed there rather than here.
  */
 const noKeyFile: KeyFileReader = () => Promise.resolve({ kind: 'absent' });
+
+/**
+ * `wired.servedModel?.()` is a plain, possibly-empty array — cheap for a
+ * composition to construct and cheap to test against.
+ * `ReportContext.servedModel` (report.ts) is the non-empty tuple form,
+ * because an empty array reaching the renderer would mean the same
+ * "nothing observed" state the field's own absence already carries — two
+ * shapes for one meaning. This is the one place that conversion happens.
+ */
+function nonEmptyServedModels(values: readonly string[] | undefined): ServedModels | undefined {
+  if (values === undefined) {
+    return undefined;
+  }
+  const [first, ...rest] = values;
+  if (first === undefined) {
+    return undefined;
+  }
+  return [first, ...rest];
+}
 
 function couldNotRun(subject: string, source: string, reason: string): ReviewOutcome {
   return {
@@ -164,7 +187,7 @@ export async function runReview(
   }
 
   const run = await runPanel(loaded.set, subject, wired.review, wired.practices);
-  const servedModel = wired.servedModel?.();
+  const servedModel = nonEmptyServedModels(wired.servedModel?.());
   return {
     report: renderReport(run.verdict, {
       source: loaded.source,

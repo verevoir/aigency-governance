@@ -315,3 +315,49 @@ describe('renderReport, when a lens has nothing in its scope', () => {
     );
   });
 });
+
+// Finding Two's shape fix (aigency-governance PR #11's own review):
+// ServedModelSink now accumulates every distinct model observed, rather
+// than keeping only the last. These pin what the report actually SAYS for
+// each of the three states that shape can now express — see ServedModels's
+// own doc comment in report.ts for why the type is a non-empty tuple rather
+// than a plain array.
+describe('renderReport, servedModel', () => {
+  it('omits the line entirely when nothing was observed', () => {
+    const report = renderReport(aggregate(DECLARED, DECLARED.map(approved)), CONTEXT);
+    expect(report).not.toContain('Model served');
+  });
+
+  it('reports a single observed model plainly when every call agreed', () => {
+    const report = renderReport(aggregate(DECLARED, DECLARED.map(approved)), {
+      ...CONTEXT,
+      servedModel: ['claude-sonnet-5'] as const,
+    });
+    expect(report).toContain('Model served: `claude-sonnet-5`');
+  });
+
+  // The state the old single-slot shape could not express at all: more than
+  // one distinct value observed. Marked, not merely listed, so a reader
+  // cannot mistake a joined list for the name of one oddly-punctuated model.
+  it('marks disagreement explicitly, naming every distinct value, when more than one model was observed', () => {
+    const report = renderReport(aggregate(DECLARED, DECLARED.map(approved)), {
+      ...CONTEXT,
+      servedModel: ['claude-opus-5', 'claude-sonnet-5'] as const,
+    });
+    expect(report).toContain('Model served: `DISAGREED: claude-opus-5, claude-sonnet-5`');
+  });
+
+  // A one-model report and a two-model report must never read the same —
+  // the exact ambiguity Finding Two exists to remove.
+  it('is never the same text for a one-model run and a two-model run', () => {
+    const oneModel = renderReport(aggregate(DECLARED, DECLARED.map(approved)), {
+      ...CONTEXT,
+      servedModel: ['claude-sonnet-5'] as const,
+    });
+    const twoModel = renderReport(aggregate(DECLARED, DECLARED.map(approved)), {
+      ...CONTEXT,
+      servedModel: ['claude-opus-5', 'claude-sonnet-5'] as const,
+    });
+    expect(oneModel).not.toBe(twoModel);
+  });
+});

@@ -49,16 +49,23 @@ export interface AnthropicConfig {
  * came back, which only a response can say. See `servedModelFrom` for why
  * the two can differ at all.
  *
- * One mutable slot, not a list, and overwritten rather than reconciled: a
- * panel makes several otherwise-identical calls for one run (one per lens),
- * and the ordinary case — every call served by the same snapshot — only
- * needs one value kept. A caller that wants to know whether every lens
- * agreed is not what this composition serves today; if calls ever did
- * disagree, the last one observed is what this reports, silently, and that
- * is a real limit worth knowing about rather than a claim of consensus.
+ * A set of every DISTINCT value observed, not one mutable slot. The
+ * previous shape kept a single slot, overwritten per call — and a panel
+ * makes several otherwise-identical calls for one run (one per lens),
+ * DISPATCHED CONCURRENTLY (see panel.ts's `Promise.allSettled`), so "the
+ * last one to settle" was never a meaningful answer: it depended on
+ * network timing, not on what the calls actually returned. If two lenses
+ * were served by two different snapshots — exactly the silent-downgrade
+ * case this exists to catch — the old shape reported one of them, chosen
+ * by arrival order, with nothing left standing to say a second value was
+ * ever seen. A caller reads `values` once every call has settled: empty
+ * means nothing was observed (see `servedModelFrom` for when that
+ * happens), one entry means every observed call agreed, and more than one
+ * means they did not — now representable, where it used to be silently
+ * overwritten away.
  */
 export interface ServedModelSink {
-  value?: string;
+  readonly values: Set<string>;
 }
 
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
@@ -256,7 +263,7 @@ export function anthropicReviewer(
     if (servedModel !== undefined) {
       const observed = servedModelFrom(raw);
       if (observed !== undefined) {
-        servedModel.value = observed;
+        servedModel.values.add(observed);
       }
     }
 

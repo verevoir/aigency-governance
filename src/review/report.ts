@@ -32,16 +32,34 @@ export interface ReportContext {
    */
   readonly model: string;
   /**
-   * The model a response said actually SERVED a call, if anything in this
-   * run identified one. Absent, not defaulted to `model`: a run where
-   * nothing said so — no lens's response carried the field, or the
-   * composition never captured it — must not be reported as having
-   * confirmed agreement it never actually observed. A request silently
-   * downgraded is exactly the case this field exists to catch, and it can
-   * only catch it by being allowed to disagree with `model`.
+   * The distinct models a response said actually SERVED the panel's calls,
+   * if anything in this run identified one. Absent, not defaulted to
+   * `model`: a run where nothing said so — no lens's response carried the
+   * field, or the composition never captured it — must not be reported as
+   * having confirmed agreement it never actually observed. A request
+   * silently downgraded is exactly the case this field exists to catch,
+   * and it can only catch it by being allowed to disagree with `model`.
+   *
+   * A non-empty tuple, not a plain array — enforced at the type level so
+   * the empty case cannot silently reach the renderer below carrying a
+   * meaning ("nothing observed") that omitting the field already carries.
+   * One entry means every observed call agreed, reported plainly; more
+   * than one means they did not, reported as its own, third, explicitly
+   * marked state — see the rendering below for why that marker is needed
+   * and what it must stay compatible with.
    */
-  readonly servedModel?: string;
+  readonly servedModel?: ServedModels;
 }
+
+/**
+ * Every distinct model observed serving a run's calls. Sorted by whoever
+ * constructs it (see run.ts) rather than by this module, because the calls
+ * this comes from are dispatched concurrently (panel.ts) — arrival order
+ * carries no meaning, and a report that varied only by which network
+ * response happened to land first would be a smaller version of the exact
+ * defect this type replaces.
+ */
+export type ServedModels = readonly [string, ...string[]];
 
 /**
  * The process exit code for an outcome.
@@ -169,9 +187,26 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
   // to report", grep would find nothing to report either way, but the two
   // are worth keeping honestly distinct in the source even though both
   // collapse to "no served model on record" downstream.
+  //
+  // When something WAS observed, this is still exactly one line, still one
+  // backtick-quoted value — checked directly against review.yml's own
+  // extraction (`sed -n 's/^Model served: \`\(.*\)\`$/\1/p' | head -n 1`)
+  // before choosing this shape, so it keeps working unmodified. Agreement
+  // (one distinct value) is printed plainly, as before. Disagreement (more
+  // than one) is printed as every distinct value observed, joined inside
+  // the same pair of backticks and prefixed `DISAGREED:` — a marker a
+  // reader (human, or that same sed line reading the field back out of the
+  // artefact) cannot mistake for the name of one unusually-punctuated
+  // model. This is the third state the single-slot shape this replaced
+  // could not express at all: it could only ever show one value or none.
   lines.push(`Model requested: \`${context.model}\``);
   if (context.servedModel !== undefined) {
-    lines.push(`Model served: \`${context.servedModel}\``);
+    const [first, ...rest] = context.servedModel;
+    lines.push(
+      rest.length === 0
+        ? `Model served: \`${first}\``
+        : `Model served: \`DISAGREED: ${[first, ...rest].join(', ')}\``,
+    );
   }
 
   return lines.join('\n');
