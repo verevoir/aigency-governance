@@ -38,7 +38,7 @@ this repository's `main` on every run.
 - `tests/` — one vitest file per module under `src/review/` and
   `src/practices/`.
 - `.github/workflows/` — `verify.yml` (CI gate: `npm ci && npm run
-  verify`, on push to `main` and every pull request), `review.yml` (the
+verify`, on push to `main` and every pull request), `review.yml` (the
   reusable workflow other repositories call via `workflow_call`; takes
   `governance-ref` and `model` inputs, `anthropic-api-key` and
   `governance-token` secrets), `review-pr.yml` (this repository reviewing
