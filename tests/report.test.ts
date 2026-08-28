@@ -4,7 +4,11 @@ import { exitCodeFor, renderReport } from '../src/review/report.js';
 import { aggregate, type LensResult } from '../src/review/verdict.js';
 
 const DECLARED = ['correctness', 'honesty', 'blast-radius'];
-const CONTEXT = { source: 'review/lenses.json', subject: 'PR #1: add a retry' };
+const CONTEXT = {
+  source: 'review/lenses.json',
+  subject: 'PR #1: add a retry',
+  model: 'claude-sonnet-5',
+};
 
 function approved(lens: string): LensResult {
   return { lens, outcome: 'approved', findings: [] };
@@ -76,11 +80,27 @@ describe('renderReport', () => {
   // Asserts the footer is a footer. The previous version said "footer" and
   // checked "anywhere in the string", so moving the attribution to the top
   // would have passed.
-  it('puts the source and lens count on the last line', () => {
+  // Not "on the last line" any more — see report.ts's own comment above
+  // its `Model requested`/`Model served` push calls: those two lines are
+  // deliberately fixed-format and grepped by exact prefix downstream
+  // (review.yml's Assemble step), and were added, on purpose, AFTER the
+  // attribution line this test used to expect to be last. That is real,
+  // load-bearing production behaviour, not an accident this test happens
+  // to catch — so the fix here is to assert what the report now actually,
+  // correctly ends with, not to move the model line back before the
+  // attribution.
+  it('puts the source and lens count immediately before the model line(s), not last', () => {
     const report = renderReport(aggregate(DECLARED, DECLARED.map(approved)), CONTEXT);
     const lines = report.split('\n');
-    expect(lines[lines.length - 1]).toContain('Judged by 3 lens(es)');
-    expect(lines[lines.length - 1]).toContain('review/lenses.json');
+    const attributionAt = lines.findIndex((line) => line.startsWith('Judged by'));
+    expect(attributionAt).toBeGreaterThan(-1);
+    expect(lines[attributionAt]).toContain('Judged by 3 lens(es)');
+    expect(lines[attributionAt]).toContain('review/lenses.json');
+    // CONTEXT here carries no servedModel, so exactly one fixed-format line
+    // follows the attribution — "Model requested" — and it is the report's
+    // actual last line now.
+    expect(lines[attributionAt + 1]).toBe('Model requested: `claude-sonnet-5`');
+    expect(lines[lines.length - 1]).toBe('Model requested: `claude-sonnet-5`');
   });
 
   it('names the subject', () => {

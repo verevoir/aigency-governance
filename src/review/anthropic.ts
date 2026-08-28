@@ -161,9 +161,7 @@ function servedModelFrom(body: string): string | undefined {
     return undefined;
   }
   const document = parsed as { model?: unknown };
-  return typeof document.model === 'string' && document.model !== ''
-    ? document.model
-    : undefined;
+  return typeof document.model === 'string' && document.model !== '' ? document.model : undefined;
 }
 
 /**
