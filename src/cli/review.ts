@@ -12,6 +12,7 @@ import process from 'node:process';
 
 import { anthropicReviewer, type ServedModelSink } from '../review/anthropic.js';
 import { keyFileReader, lensReaderFor } from '../review/readers.js';
+import { boundaryFailureReport, crashOutcome } from './crashGuard.js';
 import { runReview } from './run.js';
 
 async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
@@ -23,41 +24,33 @@ async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
   return chunks.join('');
 }
 
-// The one report this file ever writes for a failure it did not itself
-// decide — as opposed to `runReview`'s own reports, which are a verdict
-// about the change. Shared by both places that can reach it (the promise
-// rejection below, and the process-level handlers further down) so the
-// wording cannot drift into two different descriptions of the same kind of
-// failure.
-function boundaryFailureReport(cause: unknown): string {
-  return [
-    '## Review: Could not run',
-    '',
-    `Unexpected failure at the process boundary: ${
-      cause instanceof Error ? cause.message : String(cause)
-    }`,
-    '',
-    'This is a defect in the runner, not a verdict about the change.',
-  ].join('\n');
-}
+// `boundaryFailureReport` — the one report this file ever writes for a
+// failure it did not itself decide — and `crashOutcome` — what a crash
+// handler below should do about it, given whether `main()` has already
+// settled — both live in `crashGuard.ts`, imported above, so a test can
+// drive the decision with fakes rather than provoking Node's own crash
+// machinery. See that file for the reasoning; this file only wires it to
+// the real `process.on`, `process.stdout.write` and `process.exit`.
 
 // A crash `main()`'s own promise chain never sees. A synchronous throw before
 // `main()` is even called would be one way; the realistic one is an
 // unhandled rejection from a promise this file never awaited, somewhere
 // deeper in the panel or reviewer stack — `fetch` calls that are started and
-// not properly chained are the likeliest source. Either bypasses
-// `main().then(resolve, reject)` below entirely: left to Node's own default
-// handling, the process would exit 1 and write a stack trace to STDERR,
-// never touching review.md at all — indistinguishable, from anything reading
-// this process's output, from `runReview`'s own designed exit(1) for an
-// ordinary rejected verdict. `report.ts`'s `exitCodeFor` is deliberately,
-// testedly binary (see its own comment: "0 only for an approval... only an
-// approval is zero"), so a third exit code was never going to be able to
-// carry this distinction, and giving it one here would mean widening that
-// invariant for every caller of this binary to serve one workflow's
-// artefact. Reporting it the same way the existing rejection path already
-// does, instead, means anything already parsing this process's stdout for a
-// recognised heading keeps working without needing to know this exists.
+// not properly chained are the likeliest source, and Node's own fetch/undici
+// internals doing late socket cleanup are a documented source of exactly
+// this shape, independent of anything this file's own code does. Either
+// bypasses `main().then(resolve, reject)` below entirely: left to Node's own
+// default handling, the process would exit 1 and write a stack trace to
+// STDERR, never touching review.md at all.
+//
+// `mainSettled` is what makes the two cases below different. Before it is
+// true, nothing else has reported anything — this crash IS the result, and
+// is reported and exited on exactly as before this flag existed. Once true,
+// a verdict already stands, correctly, and this crash is unrelated to it —
+// see `crashGuard.ts`'s `crashOutcome` for the decision itself and why
+// overwriting the verdict (the bug this flag fixes) and silently ignoring
+// the crash (the same defect facing the other way) were both rejected in
+// favour of recording it without touching the verdict or the exit code.
 //
 // Two explicit calls, one per event, rather than a loop over both event
 // names: each event's own listener type differs (`UncaughtExceptionListener`
@@ -74,17 +67,22 @@ function boundaryFailureReport(cause: unknown): string {
 // "Assemble the review artefact" steps are where that residual case is
 // caught instead, from outside this process, by its exit code; see the
 // comments there for exactly what that outer boundary still owns.
-process.on('uncaughtException', (cause: unknown) => {
-  process.stdout.write(`${boundaryFailureReport(cause)}\n`, () => {
-    process.exit(1);
-  });
-});
+let mainSettled = false;
 
-process.on('unhandledRejection', (cause: unknown) => {
-  process.stdout.write(`${boundaryFailureReport(cause)}\n`, () => {
-    process.exit(1);
+function handleBoundaryCrash(cause: unknown): void {
+  const outcome = crashOutcome(cause, mainSettled);
+  const exitCode = outcome.exitCode;
+  if (exitCode === undefined) {
+    process.stdout.write(outcome.text);
+    return;
+  }
+  process.stdout.write(outcome.text, () => {
+    process.exit(exitCode);
   });
-});
+}
+
+process.on('uncaughtException', handleBoundaryCrash);
+process.on('unhandledRejection', handleBoundaryCrash);
 
 async function main(): Promise<number> {
   // The title is what a reader sees at the top of the report. It is an
@@ -133,6 +131,11 @@ async function main(): Promise<number> {
 
 main().then(
   (code) => {
+    // Settled before the exit code is even assigned: the window between
+    // `main()` returning and this line running is a single microtask, and
+    // nothing else can run inside it. See `crashGuard.ts` for what
+    // "settled" changes about how a crash from here on is handled.
+    mainSettled = true;
     process.exitCode = code;
   },
   (cause: unknown) => {
@@ -142,6 +145,7 @@ main().then(
     // into the ordinary could-not-run wording that would make it look
     // handled — via the same shared report as those handlers, so the two
     // paths cannot describe the same kind of failure two different ways.
+    mainSettled = true;
     process.stdout.write(`${boundaryFailureReport(cause)}\n`);
     process.exitCode = 1;
   },
