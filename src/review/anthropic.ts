@@ -31,6 +31,20 @@
 // discarded here, same as before: accounting is its own story with its own
 // shape, and a half-implementation that recorded a total would be worse
 // than none — it would look like accounting exists.
+//
+// WHAT THIS FILE USED TO CARRY AND NO LONGER DOES: `AnthropicConfig.baseUrl`
+// and `DEFAULT_BASE_URL`, an override so a proxy or regional endpoint could
+// stand in for `api.anthropic.com`. Named explicitly here rather than left
+// for a diff to speak for itself. It is not replaced, and the loss is real,
+// but it was never a REACHABLE capability in this repository before this
+// change either — grep confirms neither `settings.ts` nor `review.ts` ever
+// read an env var into it or wired it through; it existed as a field only
+// tests exercised. A future need for a proxy endpoint has to be served by
+// `@verevoir/llm` itself (e.g. its own `ANTHROPIC_BASE_URL`-shaped override,
+// the convention its `resolveBaseUrl` helper already establishes for other
+// providers) rather than resurrected here — restoring it in this file would
+// put transport-endpoint knowledge back in the one place this change exists
+// to remove it from.
 
 import { chat } from '@verevoir/llm/anthropic';
 import type { ChatReply } from '@verevoir/llm';

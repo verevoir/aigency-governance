@@ -262,24 +262,39 @@ describe('resolveSettings, given only a Claude subscription OAuth token', () => 
     expect(settings.apiKey).toBe('sk-from-env');
   });
 
-  // The blank-file problem-reporting this module already does for the other
-  // three sources must not be lost just because the OAuth source is what
-  // ultimately resolves the run: a person who set ANTHROPIC_API_KEY_FILE to
-  // a blank file deserves to know that, even though the run is `ready`
-  // regardless because of the OAuth token.
+  // The panel's second review caught the first version of this test as
+  // vacuous: it called resolveSettings with NO_FILES and never configured
+  // ANTHROPIC_API_KEY_FILE at all, so `apiKeyLookup.blankPaths` was empty
+  // regardless of what the implementation actually did with a genuinely
+  // blank file — the assertion passed for a reason that had nothing to do
+  // with what the test's name and comment claimed to pin. This version
+  // actually configures a blank file and proves, via `fs.asked`, that it was
+  // read — so `result.kind === 'ready'` below is pinning real behaviour, not
+  // an artefact of nothing having been exercised. It also caught a real bug
+  // in the first cut of this branch: pushing the blank path into `problems`
+  // unconditionally flipped a working OAuth-resolved run to `invalid`,
+  // which is fixed in settings.ts alongside this test — see its own comment
+  // there for why that would have been wrong.
   it('is silent about a blank explicit key file when the OAuth token still makes the run ready', async () => {
+    const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: '   \n' } });
+
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value',
+      }),
+      fs.read,
+    );
+
+    // The blank file really was read — proof this test exercises the path
+    // it claims to, unlike the vacuous version it replaces.
+    expect(fs.asked).toEqual(['/keys/anthropic']);
     // No `problems` field exists on a `ready` result at all — readyOf()
     // itself is the assertion that this is a clean ready result and nothing
     // else, matching the equivalent boundary already pinned for the file
     // sources further down this file.
-    const result = await resolveSettings(
-      env({
-        ANTHROPIC_API_KEY: undefined,
-        CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value',
-      }),
-      NO_FILES,
-    );
-
+    readyOf(result);
     expect(result.kind).toBe('ready');
   });
 });

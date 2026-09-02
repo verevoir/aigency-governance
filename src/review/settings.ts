@@ -336,10 +336,21 @@ export async function resolveSettings(
     }
   } else if (present(env['CLAUDE_CODE_OAUTH_TOKEN']) !== undefined) {
     // A fourth source resolved instead — see the file header. `apiKey`
-    // stays undefined; nothing further to do here.
-    for (const path of apiKeyLookup.blankPaths) {
-      problems.push(`the API key file at ${path} was found but was blank`);
-    }
+    // stays undefined, and — unlike the two branches on either side of this
+    // one — `apiKeyLookup.blankPaths` is deliberately NOT pushed into
+    // `problems` here. Every other branch below treats a blank file as
+    // information worth keeping only because, in those branches, the run
+    // could not otherwise proceed: `missing.length > 0` or `problems.length
+    // > 0` at the end of this function both force a red result, and the run
+    // was going to be red anyway, so naming the blank file too is free. Here
+    // it is not free: a run that resolved a real, usable credential from
+    // CLAUDE_CODE_OAUTH_TOKEN is genuinely `ready`, and pushing to
+    // `problems` would flip `kind` to `invalid` at the end of this function
+    // regardless — turning a working run into a blocked one over a stray
+    // file that has nothing to do with the credential actually in use. A
+    // person who set ANTHROPIC_API_KEY_FILE to a blank file *and* has a
+    // working subscription token does not need the review to refuse to run;
+    // they need it to run, which it now correctly does.
   } else {
     missing.push({
       name: 'ANTHROPIC_API_KEY',
