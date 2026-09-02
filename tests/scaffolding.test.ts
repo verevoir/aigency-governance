@@ -21,9 +21,9 @@ import { describe, expect, it } from 'vitest';
 
 import type {
   AnthropicConfig,
+  ChatFn,
   FetchLike,
   Finding,
-  HttpPost,
   KeyFileReader,
   KeyFileResult,
   Lens,
@@ -67,7 +67,7 @@ export type PublishedTypes = [
   ReportContext,
   FetchLike,
   AnthropicConfig,
-  HttpPost,
+  ChatFn,
   KeyFileReader,
   KeyFileResult,
   MissingSetting,

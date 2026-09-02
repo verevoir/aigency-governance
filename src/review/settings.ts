@@ -16,7 +16,8 @@
 // and pointing at the wrong thing entirely. The person needed to be told they
 // had not added a secret.
 //
-// THE API KEY, SPECIFICALLY, HAS THREE SOURCES, TRIED IN A FIXED ORDER:
+// THE API KEY, SPECIFICALLY, HAS THREE SOURCES, TRIED IN A FIXED ORDER —
+// PLUS ONE MORE, DIFFERENT IN KIND, CHECKED ONLY IF ALL THREE COME UP EMPTY:
 //
 //   1. `ANTHROPIC_API_KEY` in the environment, if set and non-blank. This
 //      wins, unconditionally, because it is how GitHub Actions supplies a
@@ -26,6 +27,20 @@
 //   3. Otherwise a conventional default path: `$XDG_CONFIG_HOME/verevoir/
 //      anthropic.key`, or `~/.config/verevoir/anthropic.key` when
 //      `XDG_CONFIG_HOME` is unset.
+//   4. Otherwise `CLAUDE_CODE_OAUTH_TOKEN`, if set and non-blank — a Claude
+//      subscription credential (from `claude setup-token`), and a
+//      perfectly usable one: `@verevoir/llm`'s `chat()`, which the review
+//      calls through, already prefers this exact variable over a metered
+//      key when no BYOK value is supplied to it. This module only checks
+//      that the variable IS SET — it never reads or holds its value. If it
+//      did, and passed it along as if it were an API key, that value would
+//      reach `chat()` as an explicit BYOK override, which wins over
+//      `chat()`'s own (correct) preference for reading the token itself —
+//      turning the one mechanism meant to avoid a metered key into a second,
+//      redundant path to the same fact, with a chance to get it wrong. So
+//      when this is the source that resolves, `apiKey` in the settings this
+//      module returns stays `undefined`, and the caller passes `chat()`
+//      nothing explicit — see `ReviewSettings.apiKey`'s own doc comment.
 //
 // A file is not only a fallback for when the environment fails to arrive — it
 // is the better mechanism, and the environment variable stays first for
@@ -101,7 +116,18 @@ export interface MissingSetting {
 }
 
 export interface ReviewSettings {
-  readonly apiKey: string;
+  /**
+   * Explicit BYOK credential to hand `@verevoir/llm`'s `chat()`, resolved
+   * from `ANTHROPIC_API_KEY` (env or file). `undefined` — key absent
+   * entirely, never present-and-`undefined` — when no such credential was
+   * found but a Claude subscription OAuth token is present instead:
+   * `chat()` reads `CLAUDE_CODE_OAUTH_TOKEN` from the environment itself in
+   * that case, so this module does not re-derive a fact `llm` already
+   * knows how to establish, and never hands it a value that would override
+   * `llm`'s own preference for the subscription token. See the file
+   * header's fourth source.
+   */
+  readonly apiKey?: string;
   readonly model: string;
   readonly maxTokens: number;
   readonly lensSource: string;
@@ -308,16 +334,23 @@ export async function resolveSettings(
     for (const path of apiKeyLookup.blankPaths) {
       problems.push(`the API key file at ${path} was found but was blank`);
     }
+  } else if (present(env['CLAUDE_CODE_OAUTH_TOKEN']) !== undefined) {
+    // A fourth source resolved instead — see the file header. `apiKey`
+    // stays undefined; nothing further to do here.
+    for (const path of apiKeyLookup.blankPaths) {
+      problems.push(`the API key file at ${path} was found but was blank`);
+    }
   } else {
     missing.push({
       name: 'ANTHROPIC_API_KEY',
-      why: 'the review calls a model once per lens, and cannot run without a key',
+      why: 'the review calls a model once per lens, and cannot run without a key or a subscription credential',
       where:
         'GitHub: Settings → Secrets and variables → Actions → New repository secret, ' +
         'named ANTHROPIC_API_KEY. Locally: export ANTHROPIC_API_KEY=sk-..., or set ' +
         'ANTHROPIC_API_KEY_FILE to a path holding the key, or place the key at ' +
         '$XDG_CONFIG_HOME/verevoir/anthropic.key (~/.config/verevoir/anthropic.key ' +
-        'when XDG_CONFIG_HOME is unset).',
+        'when XDG_CONFIG_HOME is unset) — or, to bill a Claude subscription instead of ' +
+        'a metered key, run `claude setup-token` and leave CLAUDE_CODE_OAUTH_TOKEN set.',
     });
     for (const path of apiKeyLookup.blankPaths) {
       problems.push(`the API key file at ${path} was found but was blank`);
@@ -374,7 +407,7 @@ export async function resolveSettings(
   return {
     kind: 'ready',
     settings: {
-      apiKey: apiKey as string,
+      ...(apiKey !== undefined ? { apiKey } : {}),
       model,
       maxTokens,
       lensSource,

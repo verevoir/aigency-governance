@@ -1,19 +1,15 @@
-// No network. Every case runs through a fake `HttpPost` that records what it
-// was handed and answers with whatever the case needs, so the assertions are
-// about the bytes this module produces and the way it reads bytes back.
-//
-// The wire-format group is the load-bearing one. `Prompt` documents an
-// ordering contract — the shared half first, in a cacheable block, the
-// per-lens half after it — that no type can enforce and that, until this
-// module existed, nothing in the repository could check. These tests are the
-// only guard that contract has.
+// No network, and no wire format to assert on any more — `@verevoir/llm`
+// owns that now. Every case here runs through a fake `ChatFn` that records
+// what it was handed and answers with whatever the case needs, so the
+// assertions are about what THIS FILE hands to `chat()` and how it reads
+// back what `chat()` can throw, not about bytes reaching a provider.
 import { describe, expect, it } from 'vitest';
 
 import {
   anthropicReviewer,
   redact,
   type AnthropicConfig,
-  type HttpPost,
+  type ChatFn,
 } from '../src/review/anthropic.js';
 import { NoRoomToAnswerError } from '../src/review/panel.js';
 import type { Prompt } from '../src/review/prompt.js';
@@ -26,6 +22,15 @@ const CONFIG: AnthropicConfig = {
   maxTokens: 1234,
 };
 
+// Same config, deliberately with no `apiKey` key at all — not `apiKey:
+// undefined`, which `exactOptionalPropertyTypes` treats as a different,
+// disallowed shape. This is what `settings.ts` hands `anthropicReviewer`
+// when no BYOK credential was resolved.
+const NO_KEY_CONFIG: AnthropicConfig = {
+  model: 'claude-pinned-for-this-test',
+  maxTokens: 1234,
+};
+
 // Two markers, neither a substring of the other, so `not.toContain` in one
 // direction cannot be satisfied by the other half's text.
 const PROMPT: Prompt = {
@@ -33,82 +38,55 @@ const PROMPT: Prompt = {
   perLens: 'PERLENS-MARKER-9a04: the one dimension this reviewer reads along',
 };
 
-// Everything JSON has an opinion about: newlines, quotes, backslashes, fences
-// and non-ASCII. Verbatim is asserted against this one, so a transport that
-// trimmed, escaped twice or normalised would go red rather than pass on a
-// prompt too tidy to catch it.
-const AWKWARD: Prompt = {
-  shared: '## The bar\n\n"quoted" \\ backslashed — em dash ✅\n\n```diff\n+const a = 1;\n```\n',
-  perLens: '## Your lens: honesty\n\nfocus with a “curly” quote\t and a trailing space \n',
-};
+type CallArgs = Parameters<ChatFn>[0];
 
-type PostResponse = Awaited<ReturnType<HttpPost>>;
-
-interface Sent {
-  readonly url: string;
-  readonly method: string;
-  readonly headers: Record<string, string>;
-  readonly body: string;
+interface FakeCall {
+  readonly impl: ChatFn;
+  /** Every call, in order. */
+  readonly sent: CallArgs[];
 }
 
-interface FakePost {
-  readonly impl: HttpPost;
-  /** Every request, in order. */
-  readonly sent: Sent[];
-}
-
-function fakePost(respond: () => Promise<PostResponse>): FakePost {
-  const sent: Sent[] = [];
+function fakeCall(respond: () => ReturnType<ChatFn>): FakeCall {
+  const sent: CallArgs[] = [];
   return {
     sent,
-    impl: (url, init) => {
-      sent.push({ url, method: init.method, headers: init.headers, body: init.body });
+    impl: (options) => {
+      sent.push(options);
       return respond();
     },
   };
 }
 
-function serving(status: number, body: string): FakePost {
-  return fakePost(() =>
+/** A successful `chat()` reply carrying the given text. */
+function replying(content: string): FakeCall {
+  return fakeCall(() =>
     Promise.resolve({
-      ok: status >= 200 && status < 300,
-      status,
-      text: () => Promise.resolve(body),
+      content,
+      usage: {
+        provider: 'anthropic',
+        model: 'claude-pinned-for-this-test',
+        direction: 'reasoning',
+        route: 'api-key',
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+      stopReason: 'end_turn',
     }),
   );
 }
 
-/** A 200 carrying a well-formed messages-API reply of one text block per argument. */
-function replying(...texts: string[]): FakePost {
-  return serving(200, JSON.stringify({ content: texts.map((text) => ({ type: 'text', text })) }));
+/** A `chat()` call that rejects with an Error carrying the given message. */
+function throwing(message: string): FakeCall {
+  return fakeCall(() => Promise.reject(new Error(message)));
 }
 
-interface SystemBlock {
-  readonly type: string;
-  readonly text: string;
-  readonly cache_control?: { readonly type: string };
-}
-
-interface RequestBody {
-  readonly model: string;
-  readonly max_tokens: number;
-  readonly system: readonly SystemBlock[];
-  readonly messages: readonly { readonly role: string; readonly content: string }[];
-}
-
-/** The single request this reviewer sent, parsed. Throws if it sent none. */
-function bodyOf(post: FakePost): RequestBody {
-  const first = post.sent[0];
+/** The single call this reviewer made, or a failure saying it made none. */
+function only(call: FakeCall): CallArgs {
+  const first = call.sent[0];
   if (first === undefined) {
-    throw new Error('nothing was posted');
-  }
-  return JSON.parse(first.body) as RequestBody;
-}
-
-function only(post: FakePost): Sent {
-  const first = post.sent[0];
-  if (first === undefined) {
-    throw new Error('nothing was posted');
+    throw new Error('chat() was never called');
   }
   return first;
 }
@@ -129,291 +107,149 @@ async function failureOf(work: Promise<unknown>): Promise<Error> {
   throw new Error('expected the call to throw, and it returned');
 }
 
-describe('the wire format', () => {
-  it('sends the shared half as the system block, verbatim', async () => {
-    const post = replying('ok');
-    await anthropicReviewer(CONFIG, post.impl)('honesty', AWKWARD);
-    expect(bodyOf(post).system.map((block) => block.text)).toEqual([AWKWARD.shared]);
+describe('what this file hands to chat()', () => {
+  it('sends the shared half as systemPrompt, verbatim', async () => {
+    const call = replying('ok');
+    await anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT);
+    expect(only(call).systemPrompt).toBe(PROMPT.shared);
   });
 
-  it('sends the per-lens half as the user message, verbatim', async () => {
-    const post = replying('ok');
-    await anthropicReviewer(CONFIG, post.impl)('honesty', AWKWARD);
-    expect(bodyOf(post).messages).toEqual([{ role: 'user', content: AWKWARD.perLens }]);
+  it('sends the per-lens half as the single user turn, verbatim', async () => {
+    const call = replying('ok');
+    await anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT);
+    expect(only(call).turns).toEqual([{ role: 'user', content: PROMPT.perLens }]);
   });
 
   // Both directions, and they are not the same assertion twice. Given the two
   // verbatim checks above, each kills a mutant the other cannot: this one
-  // kills a second system block carrying the per-lens half, and the next kills
-  // a second message — or a message content — carrying the shared half. Each
-  // also asserts its own half IS present, so neither can pass by an empty
-  // container.
-  it('keeps the per-lens half out of the system block entirely', async () => {
-    const post = replying('ok');
-    await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    const system = JSON.stringify(bodyOf(post).system);
-    expect(system).toContain(PROMPT.shared);
-    expect(system).not.toContain(PROMPT.perLens);
+  // kills a systemPrompt that also carried the per-lens half, and the next
+  // kills a turn that carried the shared half instead of (or as well as) the
+  // per-lens one.
+  it('keeps the per-lens half out of systemPrompt entirely', async () => {
+    const call = replying('ok');
+    await anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT);
+    expect(only(call).systemPrompt).not.toContain(PROMPT.perLens);
   });
 
-  it('keeps the shared half out of the messages entirely', async () => {
-    const post = replying('ok');
-    await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    const messages = JSON.stringify(bodyOf(post).messages);
-    expect(messages).toContain(PROMPT.perLens);
-    expect(messages).not.toContain(PROMPT.shared);
-  });
-
-  // The whole reason for the split: the shared prefix is only worth being
-  // identical if it is marked for caching.
-  it('marks the shared block cacheable', async () => {
-    const post = replying('ok');
-    await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    const system = bodyOf(post).system;
-    expect(system).toHaveLength(1);
-    expect(system[0]?.type).toBe('text');
-    expect(system[0]?.cache_control).toEqual({ type: 'ephemeral' });
+  it('keeps the shared half out of the turns entirely', async () => {
+    const call = replying('ok');
+    await anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT);
+    expect(JSON.stringify(only(call).turns)).not.toContain(PROMPT.shared);
   });
 
   // Literals rather than the config fields, so a transport reading the wrong
   // field cannot make the assertion true by supplying its own answer.
   it('sends the configured model and token ceiling, unchanged', async () => {
-    const post = replying('ok');
-    await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    const body = bodyOf(post);
-    expect(body.model).toBe('claude-pinned-for-this-test');
-    expect(body.max_tokens).toBe(1234);
+    const call = replying('ok');
+    await anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT);
+    expect(only(call).model).toBe('claude-pinned-for-this-test');
+    expect(only(call).maxTokens).toBe(1234);
   });
 
-  it('posts to /v1/messages on the provider host by default', async () => {
-    const post = replying('ok');
-    await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    expect(only(post).url).toBe('https://api.anthropic.com/v1/messages');
-    expect(only(post).method).toBe('POST');
+  it('sends the configured apiKey as BYOK', async () => {
+    const call = replying('ok');
+    await anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT);
+    expect(only(call).apiKey).toBe(API_KEY);
   });
 
-  it('posts to the configured baseUrl when one is given', async () => {
-    const post = replying('ok');
-    const config = { ...CONFIG, baseUrl: 'https://proxy.test/anthropic' };
-    await anthropicReviewer(config, post.impl)('honesty', PROMPT);
-    expect(only(post).url).toBe('https://proxy.test/anthropic/v1/messages');
-  });
-
-  it('carries the api version and a JSON content type in the headers', async () => {
-    const post = replying('ok');
-    await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    expect(only(post).headers['anthropic-version']).toBe('2023-06-01');
-    expect(only(post).headers['content-type']).toBe('application/json');
+  // The load-bearing negative: `null`, not merely falsy or omitted, because
+  // `null` is `chat()`'s own documented signal to fall back to a
+  // platform-resolved credential (env `ANTHROPIC_API_KEY`, or —
+  // preferentially — `CLAUDE_CODE_OAUTH_TOKEN`) rather than "no key was
+  // asked for". An implementation that sent `undefined` here would still
+  // typecheck and would still work against the real `chat()`, but would not
+  // be this file DELIBERATELY choosing the documented signal — this test is
+  // what pins that it is.
+  it('sends null when no apiKey is configured, not merely omits the field', async () => {
+    const call = replying('ok');
+    await anthropicReviewer(NO_KEY_CONFIG, call.impl)('honesty', PROMPT);
+    expect(only(call).apiKey).toBeNull();
   });
 
   it('returns the reply text and nothing else', async () => {
-    const post = replying('VERDICT: approved');
-    const reply = await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
+    const call = replying('VERDICT: approved');
+    const reply = await anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT);
     expect(reply).toBe('VERDICT: approved');
   });
 });
 
 describe('the api key', () => {
-  // The positive control. Without it the two redaction tests below could both
-  // pass on a transport that never sent the key anywhere — nothing to leak is
-  // not the same property as nothing leaked.
-  it('is sent in the request headers', async () => {
-    const post = replying('ok');
-    await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    expect(only(post).headers['x-api-key']).toBe(API_KEY);
-  });
-
-  it('never reaches the error from a request that threw with the key in its message', async () => {
-    const post = fakePost(() => Promise.reject(new Error(`connect failed for key ${API_KEY}`)));
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toContain('request failed');
+  it('never reaches the error from a chat() call that threw with the key in its message', async () => {
+    const call = throwing(`upstream said: invalid key ${API_KEY}`);
+    const error = await failureOf(anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT));
     expect(error.message).not.toContain(API_KEY);
-    // The mask proves the key was in the text and was removed, rather than the
-    // message having been discarded wholesale.
+    // The mask proves the key was in the text and was removed, rather than
+    // the message having been discarded wholesale.
     expect(error.message).toContain('***');
   });
 
-  it('never reaches the error from a non-ok response whose body echoed it back', async () => {
-    const post = serving(401, `{"error":{"message":"invalid x-api-key: ${API_KEY}"}}`);
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toContain('401');
-    expect(error.message).not.toContain(API_KEY);
-    expect(error.message).toContain('***');
-  });
-
-  // The empty-secret guard in `redact`, reached the way production reaches it.
-  // Without the guard, an unset key masks between every character and the
-  // reason the call failed is destroyed.
-  it('being empty does not turn an error message into masks', async () => {
-    const post = serving(500, 'upstream exploded');
-    const reviewer = anthropicReviewer({ ...CONFIG, apiKey: '' }, post.impl);
-    const error = await failureOf(reviewer('honesty', PROMPT));
-    expect(error.message).toContain('upstream exploded');
+  // The empty-secrets guard in `redact`, reached the way production reaches
+  // it: no key configured means nothing to redact, and an error message must
+  // survive untouched rather than being masked between every character.
+  it('being unconfigured does not turn an error message into masks', async () => {
+    const call = throwing('upstream exploded');
+    const error = await failureOf(anthropicReviewer(NO_KEY_CONFIG, call.impl)('honesty', PROMPT));
+    expect(error.message).toBe('upstream exploded');
     expect(error.message).not.toContain('***');
   });
 });
 
 describe('failures', () => {
-  it('throws with the status and the body when the response is not ok', async () => {
-    const post = serving(529, 'overloaded_error');
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toContain('529');
-    expect(error.message).toContain('overloaded_error');
+  it('wraps a plain chat() failure as a plain Error, message preserved', async () => {
+    const call = throwing('socket hang up');
+    const error = await failureOf(anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT));
+    expect(error.message).toBe('socket hang up');
+    expect(error).not.toBeInstanceOf(NoRoomToAnswerError);
   });
 
-  it('throws that the response was not JSON when it was not', async () => {
-    const post = serving(200, '<html>502 Bad Gateway</html>');
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe('response was not JSON');
-  });
-
-  it('throws when the body carries no content array', async () => {
-    const post = serving(200, '{"id":"msg_01","role":"assistant"}');
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe('response carried no content array');
-  });
-
-  // A string `content` is JSON, and is not an array. Reading it as one would
-  // give a per-character walk rather than an error.
-  it('throws when content is present but is not an array', async () => {
-    const post = serving(200, '{"content":"approved"}');
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe('response carried no content array');
-  });
-
-  it('throws naming the block count when content is empty', async () => {
-    const post = serving(200, '{"content":[]}');
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe('response carried no text: 0 block(s) [], stop_reason absent');
-  });
-
-  // The case the count is in the message for: blocks arrived, none was text.
-  // Returning `''` here would reach `parseReply` and be reported as an empty
-  // reply, which blames the model for a reply it did send.
-  it('throws rather than returning empty when the only block is a tool_use', async () => {
-    const post = serving(200, '{"content":[{"type":"tool_use","id":"tu_1"}]}');
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe(
-      'response carried no text: 1 block(s) [tool_use], stop_reason absent',
-    );
+  it('wraps a non-Error throw using String()', async () => {
+    const call = fakeCall(() => Promise.reject('a bare string rejection'));
+    const error = await failureOf(anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT));
+    expect(error.message).toBe('a bare string rejection');
   });
 
   // The failure that actually happened on the first real run: four lenses
   // returned one thinking block and nothing else, having hit the token
-  // ceiling before they wrote a word of the verdict. The old message said
-  // "no text (1 block(s))" for this AND for the tool_use case above, so the
-  // run could not be diagnosed from its own output. Both distinguishing
-  // fields are asserted, because either one alone leaves the two cases
-  // telling the same story.
-  it('names the block kind and the stop reason for a truncated thinking block', async () => {
-    const post = serving(200, '{"content":[{"type":"thinking"}],"stop_reason":"max_tokens"}');
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toContain('thinking');
+  // ceiling before they wrote a word of the verdict. `@verevoir/llm`'s own
+  // `chat()` reports this case with `stop_reason=max_tokens` in its error
+  // message — recognised here, translated into the same precise class
+  // `runPanel` has always depended on, so its handling did not need to
+  // change when the transport did.
+  it('throws NoRoomToAnswerError when chat() reports the reply was cut off by the token ceiling', async () => {
+    const call = throwing('anthropic.chat: response had no text content (stop_reason=max_tokens)');
+    const error = await failureOf(anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT));
+    expect(error).toBeInstanceOf(NoRoomToAnswerError);
     expect(error.message).toContain('max_tokens');
   });
 
-  // The distinguishing fix: this exact case - zero text, stop_reason
-  // max_tokens - is not a generic throw. It is precise enough to earn its
-  // own class, so runPanel can report it without borrowing the language of a
-  // transport fault.
-  it('throws NoRoomToAnswerError specifically when max_tokens cut off a reply with no text', async () => {
-    const post = serving(200, '{"content":[{"type":"thinking"}],"stop_reason":"max_tokens"}');
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error).toBeInstanceOf(NoRoomToAnswerError);
-  });
-
-  // The boundary, proven rather than assumed: a no-text reply that stopped
-  // for a different reason (or no stated reason at all) must NOT get this
-  // class - it is not what NoRoomToAnswerError is a claim about, and letting
-  // it through here would make the class mean "no text", not "cut off before
+  // The boundary, proven rather than assumed: a no-text failure for a
+  // DIFFERENT stop reason must NOT get this class — it is not what
+  // NoRoomToAnswerError is a claim about, and letting it through here would
+  // make the class mean "chat() had no text", not "cut off before
   // answering".
-  it('does not classify a no-text tool_use reply as NoRoomToAnswerError', async () => {
-    const post = serving(200, '{"content":[{"type":"tool_use","id":"tu_1"}]}');
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
+  it('does not classify an unrelated "no text content" failure as NoRoomToAnswerError', async () => {
+    const call = throwing('anthropic.chat: response had no text content (stop_reason=tool_use)');
+    const error = await failureOf(anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT));
     expect(error).not.toBeInstanceOf(NoRoomToAnswerError);
   });
 
-  it('joins two text blocks into one reply', async () => {
-    const post = replying('VERDICT: rejected\n', 'FINDING: the second block');
-    const reply = await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    expect(reply).toBe('VERDICT: rejected\nFINDING: the second block');
+  it('does not classify an ordinary transport failure as NoRoomToAnswerError', async () => {
+    const call = throwing('fetch failed');
+    const error = await failureOf(anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT));
+    expect(error).not.toBeInstanceOf(NoRoomToAnswerError);
   });
 
-  // The middle block carries a `text` field of its own, and that is the point:
-  // with a block that has none, dropping the `type === 'text'` filter still
-  // produces the right answer via `?? ''`, and this test would pass against a
-  // transport that concatenated every block it was sent.
-  it('skips a non-text block even when that block carries text of its own', async () => {
-    const post = serving(
-      200,
-      JSON.stringify({
-        content: [
-          { type: 'text', text: 'before ' },
-          { type: 'thinking', thinking: 'private', text: 'NOT-FOR-THE-PARSER' },
-          { type: 'text', text: 'after' },
-        ],
-      }),
+  // Redaction and classification are two different pieces of this function,
+  // and this proves neither one silently disables the other: a
+  // NoRoomToAnswerError must still have the key scrubbed out of it.
+  it('redacts the api key from a NoRoomToAnswerError message too', async () => {
+    const call = throwing(
+      `response had no text content (stop_reason=max_tokens) for key ${API_KEY}`,
     );
-    const reply = await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    expect(reply).toBe('before after');
-    expect(reply).not.toContain('NOT-FOR-THE-PARSER');
-  });
-
-  // The `typeof block.text === 'string'` half of the filter. Without it, `join`
-  // coerces and a reply of `42` reaches the parser as if the model had said it.
-  it('throws rather than coercing a text block whose text is not a string', async () => {
-    const post = serving(200, '{"content":[{"type":"text","text":42}]}');
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe('response carried no text: 1 block(s) [text], stop_reason absent');
-  });
-
-  // The 500-character cap on an echoed error body. Without it a provider that
-  // returns the whole request in its error puts the whole request in ours.
-  it('truncates a long error body rather than echoing all of it', async () => {
-    const post = serving(500, `${'A'.repeat(600)}TAIL-MARKER`);
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toContain('AAAA');
-    expect(error.message).not.toContain('TAIL-MARKER');
-    expect(error.message.length).toBeLessThan(600);
-  });
-
-  // The regression test for the defect the review panel found in this very
-  // file. This test previously pinned the WRONG behaviour, with a comment
-  // explaining that it was doing so: `.catch(() => '')` turned a body that
-  // never arrived into the empty string, which read as `response was not
-  // JSON`. It now pins the right one, and the second assertion is the
-  // load-bearing half — without it a transport that went back to swallowing
-  // the error could satisfy a looser check, and the whole point is that the
-  // broken transport and the malformed body no longer say the same thing.
-  it('reports a 2xx body that failed to read as unreadable, not as non-JSON', async () => {
-    const post = fakePost(() =>
-      Promise.resolve({
-        ok: true,
-        status: 200,
-        text: () => Promise.reject(new Error('aborted mid-body')),
-      }),
-    );
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toBe('response body could not be read: aborted mid-body');
-    expect(error.message).not.toContain('response was not JSON');
-  });
-
-  // The same failure on the other side of the ok check, which is a separate
-  // branch and would otherwise be the one piece of this fix with no test.
-  // The status is the more useful fact and must survive: an unreadable body
-  // on a 429 is still a 429, and reporting only the read failure would lose
-  // the reason to back off.
-  it('keeps the status when a non-ok response also fails to read', async () => {
-    const post = fakePost(() =>
-      Promise.resolve({
-        ok: false,
-        status: 429,
-        text: () => Promise.reject(new Error('aborted mid-body')),
-      }),
-    );
-    const error = await failureOf(anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT));
-    expect(error.message).toContain('429');
-    expect(error.message).toContain('aborted mid-body');
+    const error = await failureOf(anthropicReviewer(CONFIG, call.impl)('honesty', PROMPT));
+    expect(error).toBeInstanceOf(NoRoomToAnswerError);
+    expect(error.message).not.toContain(API_KEY);
+    expect(error.message).toContain('***');
   });
 });
 

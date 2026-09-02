@@ -41,10 +41,19 @@ async function main(): Promise<number> {
       // in the process boundary this file is meant to stay free of. See
       // `lensReaderFor`'s own doc comment for what that omission is worth.
       read: lensReaderFor(settings, fetch),
-      review: anthropicReviewer(
-        { apiKey: settings.apiKey, model: settings.model, maxTokens: settings.maxTokens },
-        (url, init) => fetch(url, init),
-      ),
+      // No transport is supplied here: `anthropicReviewer`'s default calls
+      // `@verevoir/llm/anthropic`'s own `chat()`, which owns the wire format
+      // and the credential choice both — this file no longer knows either.
+      // `apiKey` is spread conditionally rather than written as
+      // `apiKey: settings.apiKey`: under this project's
+      // `exactOptionalPropertyTypes`, an explicit `undefined` is not the same
+      // as an absent key, and absent — letting `chat()` find its own
+      // credential — is what `settings.apiKey` being undefined means.
+      review: anthropicReviewer({
+        ...(settings.apiKey !== undefined ? { apiKey: settings.apiKey } : {}),
+        model: settings.model,
+        maxTokens: settings.maxTokens,
+      }),
     }),
     // The real key-file source. Constructed here, at the process boundary,
     // for the same reason `readerFor` and `anthropicReviewer` are: `run.ts`

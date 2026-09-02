@@ -201,6 +201,89 @@ describe('resolveSettings, given an empty environment', () => {
   });
 });
 
+describe('resolveSettings, given only a Claude subscription OAuth token', () => {
+  it('is ready, with no apiKey field at all, rather than incomplete', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('ready');
+    const settings = readyOf(result);
+    // Not merely `undefined` — actually absent as a key, so a caller
+    // spreading these settings into a call never sends an explicit
+    // `apiKey: undefined`, which this project's `exactOptionalPropertyTypes`
+    // treats as different from omitting the key entirely.
+    expect('apiKey' in settings).toBe(false);
+  });
+
+  it('still reports ANTHROPIC_API_KEY missing when neither credential is set', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(named(missingOf(result), 'ANTHROPIC_API_KEY')).toBeDefined();
+  });
+
+  it('treats a blank CLAUDE_CODE_OAUTH_TOKEN as absent, same as a blank ANTHROPIC_API_KEY', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: '   ' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(named(missingOf(result), 'ANTHROPIC_API_KEY')).toBeDefined();
+  });
+
+  it('mentions CLAUDE_CODE_OAUTH_TOKEN in the missing-key guidance, alongside the other sources', async () => {
+    const missing = missingOf(
+      await resolveSettings(env({ ANTHROPIC_API_KEY: undefined }), NO_FILES),
+    );
+    const entry = named(missing, 'ANTHROPIC_API_KEY');
+
+    expect(entry.where).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(entry.where).toContain('claude setup-token');
+  });
+
+  // The precedence stays what it was: a resolved metered key is still used
+  // even when a subscription token also happens to be sitting in the same
+  // environment — the OAuth source is checked only once the first three
+  // sources have all come up empty.
+  it('still prefers a resolved ANTHROPIC_API_KEY over an also-present OAuth token', async () => {
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: 'sk-from-env', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value' }),
+        NO_FILES,
+      ),
+    );
+
+    expect(settings.apiKey).toBe('sk-from-env');
+  });
+
+  // The blank-file problem-reporting this module already does for the other
+  // three sources must not be lost just because the OAuth source is what
+  // ultimately resolves the run: a person who set ANTHROPIC_API_KEY_FILE to
+  // a blank file deserves to know that, even though the run is `ready`
+  // regardless because of the OAuth token.
+  it('is silent about a blank explicit key file when the OAuth token still makes the run ready', async () => {
+    // No `problems` field exists on a `ready` result at all — readyOf()
+    // itself is the assertion that this is a clean ready result and nothing
+    // else, matching the equivalent boundary already pinned for the file
+    // sources further down this file.
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value',
+      }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('ready');
+  });
+});
+
 describe('resolveSettings, resolving the API key from a file', () => {
   it('prefers the environment variable over ANTHROPIC_API_KEY_FILE, even when both are set', async () => {
     const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: 'sk-from-file' } });
