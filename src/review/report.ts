@@ -13,14 +13,11 @@
 
 import type { Finding, Outcome, Verdict } from './verdict.js';
 
-// `out_of_scope` stays in this map because `Outcome` is shared with
-// LensResult (a single lens can still land there — see verdict.ts's
-// `outOfScope`), and the map must stay total over the type. aggregate() no
-// longer selects it as the PANEL's own outcome for any input: an
-// all-out_of_scope panel now reads as approved (verdict.ts), so this entry
-// is unreachable from `renderReport`'s own `verdict.outcome` today. Left in
-// rather than deleted, because narrowing the map's key type to exclude it
-// would be a bigger, separate change for no behaviour this file needs.
+// `out_of_scope` stays in this map only because `Outcome` (shared with
+// LensResult) still has it as a member — a single lens can land there even
+// though the PANEL's own outcome cannot (aggregate() folds an all-out_of_scope
+// panel into `approved`, verdict.ts). Kept for type totality, not reachable
+// from `renderReport`'s own `verdict.outcome` today.
 const HEADING: Record<Outcome, string> = {
   approved: 'Approved',
   rejected: 'Rejected',
@@ -150,14 +147,27 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
     // lens with something in scope reviewed it" is a vacuous, misleading
     // thing to say when NO lens had anything in scope — that case gets its
     // own sentence rather than reusing the partial-out-of-scope one.
+    //
+    // BLOCKING FINDING FROM THIS PR'S OWN SELF-REVIEW (honesty lens): every
+    // sentence below used to claim "found nothing" / "none had a finding"
+    // unconditionally, so an approval carrying smell findings rendered a
+    // self-contradicting report — the same shape of defect `aggregate()`
+    // itself refuses to accept from a LENS (an `approved` reply that also
+    // reports a finding — see parseReply.ts's APPROVED_WORD guard). Every
+    // branch here now checks `smellCount` before claiming nothing was found.
     const base = allOutOfScope
       ? "Nothing in this change was within any lens's declared scope. Each lens reviewed the " +
         'whole change and completed its judgement; none had anything to evaluate. See above for ' +
         'the reason each lens gave.'
       : verdict.outOfScope.length > 0
-        ? 'Every lens with something in scope reviewed it and found nothing. See above for the ' +
-          'lens(es) that had nothing in scope for this change.'
-        : 'Every lens reviewed and none had a finding.';
+        ? smellCount > 0
+          ? 'Every lens with something in scope reviewed it. Nothing it found held this up. See ' +
+            'above for the lens(es) that had nothing in scope for this change.'
+          : 'Every lens with something in scope reviewed it and found nothing. See above for the ' +
+            'lens(es) that had nothing in scope for this change.'
+        : smellCount > 0
+          ? 'Every lens reviewed. Nothing it found held this up.'
+          : 'Every lens reviewed and none had a finding.';
     // The severity split again, in prose this time: an approval that carries
     // smell findings must not read as silent — a reader who reads only the
     // first line must not come away thinking nothing at all was found.
@@ -166,21 +176,22 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
     // cannot file the follow-up itself — nothing in this system has a
     // create-an-issue capability — so it names the step in words, using the
     // `owner/repo#123` format this codebase already uses elsewhere in
-    // comments (verdict.ts, parseReply.ts) to CITE an already-filed issue.
-    // That is not quite the same thing as this: those are references to
-    // issues that already exist; this is the first place asking that one be
-    // filed. Named honestly as borrowing a format, not as an established
-    // workflow this project already follows for filing review follow-ups.
-    // Either way it is a real, named gap: whoever merges must actually open
-    // the issue by hand, and a merge that skips this step loses the finding
-    // for real.
+    // comments (see verdict.ts, which cites two such issues in its own
+    // comments) to CITE an already-filed issue. That is not quite the same
+    // thing as this: those are references to issues that already exist;
+    // this is the first place asking that one be filed. Named honestly as
+    // borrowing a format, not as an established workflow this project
+    // already follows for filing review follow-ups. Either way it is a
+    // real, named gap: whoever merges must actually open the issue by hand,
+    // and a merge that skips this step loses the finding for real.
     const suffix =
       smellCount > 0
         ? ` ${smellCount} non-blocking finding(s) are listed above; none of them held this up. ` +
           'If this merges as-is, file each as a follow-up issue before merging, referenced ' +
           'as `owner/repo#123` — the tracked-reference format this codebase already uses ' +
-          'elsewhere (see verdict.ts, parseReply.ts), used here for the first time to ask ' +
-          'that an issue actually be filed rather than merely cited.'
+          'elsewhere (see verdict.ts, which cites two such issues in its own comments), used ' +
+          'here for the first time to ask that an issue actually be filed rather than merely ' +
+          'cited.'
         : '';
     lines.push(base + suffix, '');
   }
