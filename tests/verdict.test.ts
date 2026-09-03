@@ -232,6 +232,26 @@ describe('aggregate, severity-weighted', () => {
     expect(verdict.outcome).toBe('rejected');
   });
 
+  // The mirror of the test above, isolating the OTHER half of the OR:
+  // `ordered.some((result) => result.outcome === 'rejected')`. Every
+  // `rejected()`-built fixture elsewhere in this file also attaches a
+  // blocking finding, so `findings.some(blocking)` is already true whenever
+  // `outcome === 'rejected'` is, in every case this suite otherwise
+  // exercises — meaning the OR'd clause could be deleted outright and the
+  // rest of this suite would stay green. Found by this PR's own self-review
+  // (verification lens). This builds the shape parseReply.ts itself refuses
+  // to produce — `outcome: 'rejected'` with no blocking finding at all — the
+  // same "bypassed the contract" scenario as the sibling test above, but for
+  // the direction that clause alone protects against.
+  it('still rejects the panel when a lens reports outcome "rejected" but carries no blocking finding at all', () => {
+    const verdict = aggregate(DECLARED, [
+      { lens: 'correctness', outcome: 'rejected', findings: [] },
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+  });
+
   // A conformance suite only ever exercised against a conformant fixture is a
   // check that has never been seen to reject — exactly the fault this whole
   // project exists to catch, so it is blocking, not a smell.
