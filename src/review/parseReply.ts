@@ -136,9 +136,20 @@ export function parseReply(lens: string, text: string): LensResult {
   // information; an empty marker is a reviewer that was about to say
   // something. Neither may be read as silence.
   const findingLines = taggedLines(lines, FINDING_MARKER);
+  // A line that is a severity tag and nothing else — `FINDING: [blocking]`
+  // with no text following — must count as EMPTY, the same as a bare
+  // `FINDING:` marker. Filtering on `raw !== ''` alone missed this: the raw
+  // text ("[blocking]") is not empty, only what remains after severityOf()
+  // strips the tag is. Left unfixed, this manufactured a real finding with
+  // an empty summary — a blocking verdict with nothing in it for an author
+  // to act on, this project's own signature defect (something absent
+  // reading as present) wearing new clothes. So the empty check runs AFTER
+  // severityOf, on the summary it actually produced, not on the pre-strip
+  // line.
   const findings: Finding[] = findingLines
     .filter((raw) => raw !== '')
-    .map((raw) => severityOf(lens, raw));
+    .map((raw) => severityOf(lens, raw))
+    .filter((finding) => finding.summary !== '');
   const emptyFindings = findingLines.length - findings.length;
   // Severity-weighted: a BLOCKING finding sinks a verdict, a SMELL finding
   // does not (replyContract.ts). Computed once here because both guards

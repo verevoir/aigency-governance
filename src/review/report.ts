@@ -113,9 +113,13 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
   const smellCount = verdict.findings.length - blockingCount;
   if (grouped.size > 0) {
     // The severity split is stated in the heading, not left to be counted from
-    // the tags below, precisely when the two severities are mixed — a reader
-    // who stops at the count must not read "3 findings" as "3 reasons this is
-    // rejected" when only some of them are.
+    // the tags below, whenever at least one finding is non-blocking
+    // (smellCount > 0) — including an approval whose findings are ENTIRELY
+    // smells, where it reads "(0 blocking, N non-blocking)" and tells a
+    // reader who stops at the heading that nothing here held the approval
+    // up. Omitted only when every finding shares blocking's severity
+    // (smellCount === 0): a rejected panel made only of blocking findings
+    // has nothing to split.
     lines.push(
       `### ${verdict.findings.length} finding(s)` +
         (smellCount > 0 ? ` (${blockingCount} blocking, ${smellCount} non-blocking)` : ''),
@@ -160,18 +164,23 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
     // Carry-forward: a smell that survives to merge must not simply vanish
     // once this pull request stops being a place anyone looks. This report
     // cannot file the follow-up itself — nothing in this system has a
-    // create-an-issue capability — so it names the step in words, in the
-    // one convention this codebase already uses for exactly this shape of
-    // thing: a tracked reference of the form `owner/repo#number`, the same
-    // form verdict.ts and parseReply.ts use for their own open items. That
-    // is a real, named gap: whoever merges must actually open the issue by
-    // hand, and a merge that skips this step loses the finding for real.
+    // create-an-issue capability — so it names the step in words, using the
+    // `owner/repo#123` format this codebase already uses elsewhere in
+    // comments (verdict.ts, parseReply.ts) to CITE an already-filed issue.
+    // That is not quite the same thing as this: those are references to
+    // issues that already exist; this is the first place asking that one be
+    // filed. Named honestly as borrowing a format, not as an established
+    // workflow this project already follows for filing review follow-ups.
+    // Either way it is a real, named gap: whoever merges must actually open
+    // the issue by hand, and a merge that skips this step loses the finding
+    // for real.
     const suffix =
       smellCount > 0
         ? ` ${smellCount} non-blocking finding(s) are listed above; none of them held this up. ` +
-          'If this merges as-is, file each as a follow-up issue before merging — ' +
-          "`owner/repo#123` in this codebase's own convention — since a merged pull " +
-          'request stops being a place anyone looks.'
+          'If this merges as-is, file each as a follow-up issue before merging, referenced ' +
+          'as `owner/repo#123` — the tracked-reference format this codebase already uses ' +
+          'elsewhere (see verdict.ts, parseReply.ts), used here for the first time to ask ' +
+          'that an issue actually be filed rather than merely cited.'
         : '';
     lines.push(base + suffix, '');
   }
