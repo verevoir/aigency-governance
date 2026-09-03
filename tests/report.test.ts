@@ -390,6 +390,12 @@ describe('renderReport, severity-weighted findings', () => {
     ]);
     const report = renderReport(verdict, CONTEXT);
     expect(report.split('\n')[0]).toContain('Approved');
-    expect(report).not.toContain('found nothing');
+    // Not a blanket "found nothing" search: the out-of-scope section above
+    // legitimately says a lens "found nothing within its own declared
+    // dimension", which is true and not the contradiction under test. What
+    // must not appear is the SUMMARY sentence claiming the whole approval
+    // found nothing while a finding is listed.
+    expect(report).not.toContain('reviewed it and found nothing');
+    expect(report).toContain('Nothing it found held this up.');
   });
 });
