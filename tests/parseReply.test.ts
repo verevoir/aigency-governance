@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { parseReply } from '../src/review/parseReply.js';
 import {
   APPROVED_WORD,
+  BLOCKING_TAG,
   CANNOT_RUN_WORD,
   FINDING_MARKER,
   OUT_OF_SCOPE_WORD,
   REASON_MARKER,
   REJECTED_WORD,
   REPLY_CONTRACT,
+  SMELL_TAG,
   VERDICT_MARKER,
 } from '../src/review/replyContract.js';
 
@@ -31,9 +33,10 @@ describe('parseReply — the four answers it can give', () => {
       `${FINDING_MARKER} the catch returns a default`,
     );
     expect(result.outcome).toBe('rejected');
+    // No severity tag on either line, so both fail closed to blocking.
     expect(result.findings).toEqual([
-      { lens: LENS, summary: 'the retry loop has no ceiling' },
-      { lens: LENS, summary: 'the catch returns a default' },
+      { lens: LENS, summary: 'the retry loop has no ceiling', blocking: true },
+      { lens: LENS, summary: 'the catch returns a default', blocking: true },
     ]);
   });
 
@@ -137,13 +140,14 @@ describe('parseReply — replies it cannot read', () => {
     expect(result.reason).toContain('unrecognised');
   });
 
-  it('refuses an approval that also reports findings', () => {
+  it('refuses an approval that also reports a blocking finding', () => {
     const result = parse(
       `${VERDICT_MARKER} ${APPROVED_WORD}`,
       `${FINDING_MARKER} but the bound moved`,
     );
     expect(result.outcome).toBe('could_not_run');
-    expect(result.reason).toContain('1 finding(s)');
+    // Untagged, so it fails closed to blocking and trips this guard.
+    expect(result.reason).toContain('1 blocking finding(s)');
   });
 
   // The gap the failure-modes lens found on this PR's own review: outOfScope()
@@ -233,7 +237,7 @@ describe('parseReply — how it reads a line', () => {
       `${VERDICT_MARKER} ${REJECTED_WORD}`,
       `   ${FINDING_MARKER}    the bound moved   `,
     );
-    expect(result.findings).toEqual([{ lens: LENS, summary: 'the bound moved' }]);
+    expect(result.findings).toEqual([{ lens: LENS, summary: 'the bound moved', blocking: true }]);
   });
 
   it('matches an indented reason marker', () => {
@@ -257,6 +261,89 @@ describe('parseReply — how it reads a line', () => {
     for (const input of inputs) {
       expect(() => parseReply(LENS, input)).not.toThrow();
     }
+  });
+});
+
+// Severity tags: what sets `blocking`, and the fail-closed default when it
+// is absent or unrecognised. This is the reviewer-only channel the whole
+// design leans on — see verdict.ts's Finding and replyContract.ts's header.
+describe('parseReply — severity tags on findings', () => {
+  it('reads an explicit [blocking] tag', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} [${BLOCKING_TAG}] the retry loop has no ceiling`,
+    );
+    expect(result.findings).toEqual([
+      { lens: LENS, summary: 'the retry loop has no ceiling', blocking: true },
+    ]);
+  });
+
+  it('reads an explicit [smell] tag as non-blocking, and approves alongside it', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${APPROVED_WORD}`,
+      `${FINDING_MARKER} [${SMELL_TAG}] the naming is inconsistent with the rest of the file`,
+    );
+    expect(result.outcome).toBe('approved');
+    expect(result.findings).toEqual([
+      {
+        lens: LENS,
+        summary: 'the naming is inconsistent with the rest of the file',
+        blocking: false,
+      },
+    ]);
+  });
+
+  it('reads the tag case-insensitively', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${APPROVED_WORD}`,
+      `${FINDING_MARKER} [SMELL] a style nit`,
+    );
+    expect(result.findings[0]?.blocking).toBe(false);
+  });
+
+  // Fails closed, the same direction as every other ambiguity this parser
+  // resolves. An untagged finding is not evidence the reviewer meant smell;
+  // severity is written, never inferred.
+  it('treats a finding with no severity tag as blocking', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} the catch returns a default`,
+    );
+    expect(result.findings[0]?.blocking).toBe(true);
+  });
+
+  it('treats an unrecognised tag as blocking rather than as smell or as absent', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} [minor] the catch returns a default`,
+    );
+    expect(result.findings[0]?.blocking).toBe(true);
+    // The bogus tag stays visible in the summary rather than being silently
+    // consumed — a human reading the report can still see what was written.
+    expect(result.findings[0]?.summary).toContain('[minor]');
+  });
+
+  it('still refuses an approval that carries a blocking finding alongside a smell one', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${APPROVED_WORD}`,
+      `${FINDING_MARKER} [${SMELL_TAG}] a style nit`,
+      `${FINDING_MARKER} [${BLOCKING_TAG}] the retry loop has no ceiling`,
+    );
+    expect(result.outcome).toBe('could_not_run');
+    expect(result.reason).toContain('1 blocking finding(s)');
+  });
+
+  // A rejection made entirely of smells is a contradiction under the new
+  // contract, same family as "rejected without naming a finding" — the
+  // reviewer should have approved with notes instead.
+  it('refuses a rejection whose only findings are non-blocking', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} [${SMELL_TAG}] a style nit`,
+    );
+    expect(result.outcome).toBe('could_not_run');
+    expect(result.reason).toContain('non-blocking');
+    expect(result.reason).toContain('at least one blocking finding');
   });
 });
 
@@ -290,7 +377,14 @@ describe('the contract round-trips', () => {
     for (const marker of [VERDICT_MARKER, FINDING_MARKER, REASON_MARKER]) {
       expect(REPLY_CONTRACT).toContain(marker);
     }
-    for (const word of [APPROVED_WORD, REJECTED_WORD, CANNOT_RUN_WORD, OUT_OF_SCOPE_WORD]) {
+    for (const word of [
+      APPROVED_WORD,
+      REJECTED_WORD,
+      CANNOT_RUN_WORD,
+      OUT_OF_SCOPE_WORD,
+      BLOCKING_TAG,
+      SMELL_TAG,
+    ]) {
       expect(REPLY_CONTRACT).toContain(word);
     }
   });

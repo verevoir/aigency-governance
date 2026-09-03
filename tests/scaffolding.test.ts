@@ -81,6 +81,7 @@ export type PublishedTypes = [
 // publishes and deliberately not the types beside them.
 const PUBLISHED = [
   'APPROVED_WORD',
+  'BLOCKING_TAG',
   'CANNOT_RUN_WORD',
   'DEFAULT_LENS_SOURCE',
   'DEFAULT_MAX_TOKENS',
@@ -94,6 +95,7 @@ const PUBLISHED = [
   'REASON_MARKER',
   'REJECTED_WORD',
   'REPLY_CONTRACT',
+  'SMELL_TAG',
   'SUPPORTED_VERSION',
   'VERDICT_MARKER',
   'aggregate',

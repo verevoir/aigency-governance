@@ -7,33 +7,67 @@
 // could_not_run is loud, wrong at worst, and fixable.
 //
 // Five of the refusals below are stricter than they look, and all five are
-// deliberate:
+// deliberate. Two of them are now scoped to severity rather than to any
+// finding at all — see replyContract.ts and severityOf() below for what sets
+// it, and verdict.ts's aggregate() for what it does to the panel:
 //
-//   Rejected with no findings is refused. A rejection nobody can act on
-//   stalls the change and names nothing to fix.
-//   Approved WITH findings is refused. The reviewer said two things; picking
-//   one means guessing which, and the guess is invisible in the result.
-//   Out of scope WITH findings is refused for the same reason: a lens that
-//   says its dimension has nothing to attach to and then names something
-//   wrong said two contradictory things, not one.
+//   Rejected with no BLOCKING finding is refused. A rejection nobody can act
+//   on stalls the change and names nothing to fix, and one made only of
+//   smells is not a rejection — it is an approval with notes that used the
+//   wrong word.
+//   Approved carrying a BLOCKING finding is refused. The reviewer said two
+//   things; picking one means guessing which, and the guess is invisible in
+//   the result. A SMELL finding is not this contradiction: approved may carry
+//   any number of those.
+//   Out of scope WITH ANY finding, blocking or not, is refused for the same
+//   reason: a lens that says its dimension has nothing to attach to and then
+//   names something wrong said two contradictory things, not one.
 //   An empty VERDICT: line is refused as an empty line, not reported as an
 //   absent one. It was written; saying otherwise is a false statement about
 //   the reply in the string a human reads when debugging a red panel.
 //   An empty FINDING: line under an approval is refused. This one is here
 //   because the code got it wrong first: the marker was dropped, the
-//   approved-with-findings guard never fired, and a reviewer that began to
-//   name a concern was read as approving cleanly.
+//   approved-with-a-blocking-finding guard never fired, and a reviewer that
+//   began to name a concern was read as approving cleanly.
 
 import {
   APPROVED_WORD,
+  BLOCKING_TAG,
   CANNOT_RUN_WORD,
   FINDING_MARKER,
   OUT_OF_SCOPE_WORD,
   REASON_MARKER,
   REJECTED_WORD,
+  SMELL_TAG,
   VERDICT_MARKER,
 } from './replyContract.js';
 import type { Finding, LensResult } from './verdict.js';
+
+// Matches a severity tag at the start of a finding line, once the FINDING:
+// marker itself has already been stripped. Built from the same constants the
+// prompt advertises — replyContract.ts's drift pair, one level deeper.
+const SEVERITY_TAG = new RegExp(`^\\[(${BLOCKING_TAG}|${SMELL_TAG})\\]\\s*`, 'i');
+
+/**
+ * Split a finding line into its severity and its text.
+ *
+ * Fails closed: no tag, or a tag this pattern does not recognise, reads as
+ * ${BLOCKING_TAG} rather than as absent or as non-blocking. Severity is
+ * written by the reviewer, never inferred — an unlabelled concern does not
+ * get to be smaller than one that was labelled, and a typo in the bracket
+ * must not quietly downgrade a real finding.
+ */
+function severityOf(lens: string, raw: string): Finding {
+  const match = SEVERITY_TAG.exec(raw);
+  if (match === null) {
+    return { lens, summary: raw, blocking: true };
+  }
+  return {
+    lens,
+    summary: raw.slice(match[0].length).trim(),
+    blocking: match[1]?.toLowerCase() === BLOCKING_TAG,
+  };
+}
 
 /**
  * Every line carrying this marker, with the marker stripped — **including the
@@ -103,15 +137,20 @@ export function parseReply(lens: string, text: string): LensResult {
   // something. Neither may be read as silence.
   const findingLines = taggedLines(lines, FINDING_MARKER);
   const findings: Finding[] = findingLines
-    .filter((summary) => summary !== '')
-    .map((summary) => ({ lens, summary }));
+    .filter((raw) => raw !== '')
+    .map((raw) => severityOf(lens, raw));
   const emptyFindings = findingLines.length - findings.length;
+  // Severity-weighted: a BLOCKING finding sinks a verdict, a SMELL finding
+  // does not (replyContract.ts). Computed once here because both guards
+  // below need it, in opposite directions — approved refuses this being
+  // non-empty, rejected requires it.
+  const blockingFindings = findings.filter((finding) => finding.blocking);
 
   if (verdict === APPROVED_WORD) {
-    if (findings.length > 0) {
+    if (blockingFindings.length > 0) {
       return cannotRun(
         lens,
-        `reply said ${APPROVED_WORD} while reporting ${findings.length} finding(s)`,
+        `reply said ${APPROVED_WORD} while reporting ${blockingFindings.length} blocking finding(s)`,
       );
     }
     // The path the old code got wrong. A bare marker under an approval is not
@@ -123,16 +162,21 @@ export function parseReply(lens: string, text: string): LensResult {
         `reply said ${APPROVED_WORD} with ${emptyFindings} empty ${FINDING_MARKER} line(s)`,
       );
     }
-    return { lens, outcome: 'approved', findings: [] };
+    // Smell findings, if any, ride along — an approval is not required to have
+    // nothing to say, only nothing that blocks.
+    return { lens, outcome: 'approved', findings };
   }
 
   if (verdict === REJECTED_WORD) {
-    if (findings.length === 0) {
+    if (blockingFindings.length === 0) {
       return cannotRun(
         lens,
-        emptyFindings > 0
-          ? `reply said ${REJECTED_WORD} with ${emptyFindings} empty ${FINDING_MARKER} line(s) and named nothing`
-          : `reply said ${REJECTED_WORD} without naming a finding`,
+        findings.length > 0
+          ? `reply said ${REJECTED_WORD} while naming only non-blocking (${SMELL_TAG}) ` +
+              `finding(s); a rejection requires at least one blocking finding`
+          : emptyFindings > 0
+            ? `reply said ${REJECTED_WORD} with ${emptyFindings} empty ${FINDING_MARKER} line(s) and named nothing`
+            : `reply said ${REJECTED_WORD} without naming a finding`,
       );
     }
     return { lens, outcome: 'rejected', findings };

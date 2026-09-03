@@ -47,7 +47,9 @@ describe('runPanel', () => {
   it('rejects when one lens rejects, carrying its finding', async () => {
     const run = await runPanel(SET, SUBJECT, replying({ honesty: REJECT }));
     expect(run.verdict.outcome).toBe('rejected');
-    expect(run.verdict.findings).toEqual([{ lens: 'honesty', summary: 'a real finding' }]);
+    expect(run.verdict.findings).toEqual([
+      { lens: 'honesty', summary: 'a real finding', blocking: true },
+    ]);
   });
 
   // The reason this uses allSettled rather than all. With `all`, the first
