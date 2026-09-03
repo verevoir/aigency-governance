@@ -62,6 +62,10 @@ async function main(): Promise<number> {
     keyFileReader(),
   );
 
+  for (const warning of outcome.warnings ?? []) {
+    process.stderr.write(`Warning: ${warning}\n`);
+  }
+
   process.stdout.write(`${outcome.report}\n`);
   return outcome.exitCode;
 }

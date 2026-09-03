@@ -262,20 +262,18 @@ describe('resolveSettings, given only a Claude subscription OAuth token', () => 
     expect(settings.apiKey).toBe('sk-from-env');
   });
 
-  // The panel's second review caught the first version of this test as
-  // vacuous: it called resolveSettings with NO_FILES and never configured
-  // ANTHROPIC_API_KEY_FILE at all, so `apiKeyLookup.blankPaths` was empty
-  // regardless of what the implementation actually did with a genuinely
-  // blank file — the assertion passed for a reason that had nothing to do
-  // with what the test's name and comment claimed to pin. This version
-  // actually configures a blank file and proves, via `fs.asked`, that it was
-  // read — so `result.kind === 'ready'` below is pinning real behaviour, not
-  // an artefact of nothing having been exercised. It also caught a real bug
-  // in the first cut of this branch: pushing the blank path into `problems`
-  // unconditionally flipped a working OAuth-resolved run to `invalid`,
-  // which is fixed in settings.ts alongside this test — see its own comment
-  // there for why that would have been wrong.
-  it('is silent about a blank explicit key file when the OAuth token still makes the run ready', async () => {
+  // Two review rounds shaped this test, worth naming because a third
+  // implementation could easily reintroduce either mistake. Round 1's own
+  // review caught the first version as vacuous (NO_FILES, no
+  // ANTHROPIC_API_KEY_FILE configured, so `blankPaths` was empty regardless
+  // of the implementation). The fix that followed made the file genuinely
+  // blank and proved it was read — but ALSO stopped naming the blank file at
+  // all, which round 2's review caught as its own defect: "empty collapses
+  // into absent in exactly the case this lens is meant to catch." This
+  // version asserts the actual fact settings.ts now surfaces — a warning
+  // naming the path and why it did not block the run — rather than merely
+  // that the run stayed ready.
+  it('warns about a blank explicit key file, by name, rather than dropping it, when the OAuth token still makes the run ready', async () => {
     const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: '   \n' } });
 
     const result = await resolveSettings(
@@ -288,13 +286,36 @@ describe('resolveSettings, given only a Claude subscription OAuth token', () => 
     );
 
     // The blank file really was read — proof this test exercises the path
-    // it claims to, unlike the vacuous version it replaces.
+    // it claims to, not an artefact of nothing having been exercised.
     expect(fs.asked).toEqual(['/keys/anthropic']);
-    // No `problems` field exists on a `ready` result at all — readyOf()
-    // itself is the assertion that this is a clean ready result and nothing
-    // else, matching the equivalent boundary already pinned for the file
-    // sources further down this file.
-    readyOf(result);
+
+    const settings = readyOf(result);
+    expect(settings.warnings).toBeDefined();
+    const warnings = settings.warnings ?? [];
+    expect(warnings.some((warning) => warning.includes('/keys/anthropic'))).toBe(true);
+    expect(warnings.some((warning) => warning.includes('blank'))).toBe(true);
+    // Named as non-blocking, not merely non-blocking in effect — a reader of
+    // this warning should not go looking for why the run failed to run.
+    expect(warnings.some((warning) => warning.includes('OAUTH_TOKEN'))).toBe(true);
+  });
+
+  // The channel this is NOT: `warnings` never becomes a reason to refuse.
+  // Distinct from the test above because a future edit that made `warnings`
+  // participate in the `kind` decision (the exact mistake round 1 already
+  // made once, with `problems`) would fail this test specifically, even if
+  // it left the warning's wording untouched.
+  it('never turns a warning into a red result', async () => {
+    const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: '' } });
+
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value',
+      }),
+      fs.read,
+    );
+
     expect(result.kind).toBe('ready');
   });
 });

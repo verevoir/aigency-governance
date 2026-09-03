@@ -384,6 +384,56 @@ describe('runReview, when the panel runs', () => {
   });
 });
 
+describe('runReview, carrying a warning from settings through to the outcome', () => {
+  // Not a settings.ts test wearing a runReview hat: settings.ts is already
+  // proven to produce `warnings` on a ready result (tests/settings.test.ts).
+  // What only runReview itself can answer is whether that field actually
+  // survives the trip through resolveSettings -> the panel run -> the
+  // ReviewOutcome the process boundary reads -- a spread that got dropped
+  // anywhere along that path would leave every settings.ts test green while
+  // the warning never reached anyone.
+  it('surfaces a blank explicit key file as a warning, not a dropped fact, on a successful run', async () => {
+    const fakes = harness();
+    const readKeyFile = (path: string) =>
+      Promise.resolve(
+        path === '/keys/anthropic'
+          ? { kind: 'text' as const, text: '   \n' }
+          : { kind: 'absent' as const },
+      );
+
+    const outcome = await runReview(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value',
+      }),
+      SUBJECT,
+      fakes.deps,
+      readKeyFile,
+    );
+
+    // The run itself is unaffected — a warning must never veto what would
+    // otherwise be a clean approval.
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.warnings).toBeDefined();
+    const warnings = outcome.warnings ?? [];
+    expect(warnings.some((warning) => warning.includes('/keys/anthropic'))).toBe(true);
+  });
+
+  // The far more common run: nothing blank, nothing to warn about. Without
+  // this, a change that always attached `warnings: []` would pass the test
+  // above and go unnoticed here — an empty array is not the same promise as
+  // an absent field to a caller checking `warnings !== undefined`.
+  it('carries no warnings field at all on the ordinary run', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.warnings).toBeUndefined();
+  });
+});
+
 describe('runReview, wiring the dependencies', () => {
   // The factory is handed the RESOLVED settings, defaults included. Handing it
   // the raw environment would mean the composition parsing the token count a

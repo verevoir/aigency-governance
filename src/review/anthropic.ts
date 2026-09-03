@@ -40,11 +40,13 @@
 // change either — grep confirms neither `settings.ts` nor `review.ts` ever
 // read an env var into it or wired it through; it existed as a field only
 // tests exercised. A future need for a proxy endpoint has to be served by
-// `@verevoir/llm` itself (e.g. its own `ANTHROPIC_BASE_URL`-shaped override,
-// the convention its `resolveBaseUrl` helper already establishes for other
-// providers) rather than resurrected here — restoring it in this file would
+// `@verevoir/llm` itself, in whatever form its own maintainers choose to
+// offer it, rather than resurrected here — restoring it in this file would
 // put transport-endpoint knowledge back in the one place this change exists
-// to remove it from.
+// to remove it from. What mechanism, if any, `@verevoir/llm` currently
+// offers for this is not established anywhere in this change and is not
+// claimed here — it is a question to raise with that package if the need
+// actually arises, not a fact this file asserts about code it does not show.
 
 import { chat } from '@verevoir/llm/anthropic';
 import type { ChatReply } from '@verevoir/llm';

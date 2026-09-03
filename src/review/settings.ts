@@ -104,6 +104,23 @@
 // a blank file exactly as before; it now also remembers every path that was
 // blank along the way, and `resolveSettings` names each one in `problems`
 // whenever the key still could not be resolved from any source.
+//
+// `PROBLEMS` AND `WARNINGS` ARE TWO DIFFERENT CHANNELS, NOT ONE RENAMED. A
+// `problem` forces a red result: `kind` becomes `invalid` (or stays
+// `incomplete`, alongside `missing`) whenever `problems` is non-empty, by
+// design, because something present and wrong must be corrected before the
+// run can be trusted. A `warning` cannot do that: it rides only on a `ready`
+// result, for a fact that is real and worth keeping but must not veto a run
+// that otherwise succeeded. The OAuth branch below is the one place this
+// exists today: a blank ANTHROPIC_API_KEY_FILE coinciding with a usable
+// CLAUDE_CODE_OAUTH_TOKEN is neither nothing (the file WAS found, and WAS
+// blank) nor a reason to refuse to run (a working credential is available).
+// An earlier version of this branch pushed it into `problems`, which flipped
+// a working run to `invalid` over a file unrelated to the credential in use;
+// the version after that dropped it entirely, which silently collapsed
+// "found and blank" into "never configured" -- the same collapse `blankPaths`
+// exists to prevent everywhere else in this file, simply missed here first.
+// `warnings` is what closes that gap without reopening the first one.
 
 /** A setting the run needs and does not have. */
 export interface MissingSetting {
@@ -133,6 +150,15 @@ export interface ReviewSettings {
   readonly lensSource: string;
   /** Sent as a bearer token when the lens set is fetched over HTTP. */
   readonly lensToken?: string;
+  /**
+   * Non-blocking facts found while resolving a `ready` result — never a
+   * reason this result is `ready` rather than `invalid`; see the file
+   * header's "PROBLEMS AND WARNINGS" paragraph for why a second channel
+   * exists alongside `problems` at all. Absent, never an empty array, when
+   * there is nothing to say — so a caller checking `warnings !== undefined`
+   * and one checking `warnings.length > 0` agree.
+   */
+  readonly warnings?: readonly string[];
 }
 
 export type SettingsResult =
@@ -321,6 +347,7 @@ export async function resolveSettings(
 ): Promise<SettingsResult> {
   const missing: MissingSetting[] = [];
   const problems: string[] = [];
+  const warnings: string[] = [];
 
   const apiKeyLookup = await resolveApiKey(env, readKeyFile);
   const apiKeyResolution = apiKeyLookup.resolution;
@@ -336,21 +363,20 @@ export async function resolveSettings(
     }
   } else if (present(env['CLAUDE_CODE_OAUTH_TOKEN']) !== undefined) {
     // A fourth source resolved instead — see the file header. `apiKey`
-    // stays undefined, and — unlike the two branches on either side of this
-    // one — `apiKeyLookup.blankPaths` is deliberately NOT pushed into
-    // `problems` here. Every other branch below treats a blank file as
-    // information worth keeping only because, in those branches, the run
-    // could not otherwise proceed: `missing.length > 0` or `problems.length
-    // > 0` at the end of this function both force a red result, and the run
-    // was going to be red anyway, so naming the blank file too is free. Here
-    // it is not free: a run that resolved a real, usable credential from
-    // CLAUDE_CODE_OAUTH_TOKEN is genuinely `ready`, and pushing to
-    // `problems` would flip `kind` to `invalid` at the end of this function
-    // regardless — turning a working run into a blocked one over a stray
-    // file that has nothing to do with the credential actually in use. A
-    // person who set ANTHROPIC_API_KEY_FILE to a blank file *and* has a
-    // working subscription token does not need the review to refuse to run;
-    // they need it to run, which it now correctly does.
+    // stays undefined. `apiKeyLookup.blankPaths` goes to `warnings`, not
+    // `problems`, on this branch specifically — see the file header's
+    // "PROBLEMS AND WARNINGS" paragraph for the two things that go wrong if
+    // either channel alone is used: pushing to `problems` flips a working,
+    // OAuth-resolved run to `invalid` over a file unrelated to the
+    // credential actually in use; dropping it entirely collapses "found and
+    // blank" into "never configured", indistinguishable from a person who
+    // never set ANTHROPIC_API_KEY_FILE at all.
+    for (const path of apiKeyLookup.blankPaths) {
+      warnings.push(
+        `the API key file at ${path} was found but was blank (a Claude subscription ` +
+          'token, CLAUDE_CODE_OAUTH_TOKEN, is in use instead, so this did not block the run)',
+      );
+    }
   } else {
     missing.push({
       name: 'ANTHROPIC_API_KEY',
@@ -423,6 +449,7 @@ export async function resolveSettings(
       maxTokens,
       lensSource,
       ...(lensToken !== undefined ? { lensToken } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
     },
   };
 }
