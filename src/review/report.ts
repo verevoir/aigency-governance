@@ -13,15 +13,15 @@
 
 import type { Finding, Outcome, Verdict } from './verdict.js';
 
-// `out_of_scope` stays in this map only because `Outcome` (shared with
-// LensResult) still has it as a member — a single lens can land there even
-// though the PANEL's own outcome cannot (aggregate() folds an all-out_of_scope
-// panel into `approved`, verdict.ts). Kept for type totality, not reachable
-// from `renderReport`'s own `verdict.outcome` today.
 const HEADING: Record<Outcome, string> = {
   approved: 'Approved',
   rejected: 'Rejected',
   could_not_run: 'Could not run',
+  // Deliberately not "Approved": see exitCodeFor below and verdict.ts's
+  // "FAIL NOISY, DO NOT BLOCK" comment. A panel where every lens found
+  // nothing in its own scope does not block a merge, but it is not the same
+  // statement as a real review that found nothing wrong, and a reader must
+  // be able to tell the two apart from this line alone.
   out_of_scope: 'Nothing in scope',
 };
 
@@ -35,19 +35,23 @@ export interface ReportContext {
 /**
  * The process exit code for an outcome.
  *
- * Only `approved` is zero. `could_not_run` is red because a review that did
- * not happen must not be reported in the same colour as one that happened and
- * approved — a green badge over a review that never ran is worse than a red
- * one over a review that failed, because nobody investigates green.
- * `out_of_scope` is likewise non-zero, though `aggregate` (verdict.ts) no
- * longer produces it as a PANEL's own outcome for any input — an
- * all-out_of_scope panel reads as `approved` now. Kept here rather than
- * dropped: this function does not know that, and should not need to; if a
- * future `aggregate` ever hands back `out_of_scope` again, this still gives
- * the right, non-zero answer without anyone having to remember to update it.
+ * `approved` and `out_of_scope` are both zero — FAIL NOISY, DO NOT BLOCK
+ * (operator resolution; see verdict.ts's `aggregate` for the full account).
+ * A panel where every declared lens found nothing in its own scope must not
+ * stop a merge (verevoir/aigency-harness#8), even though it is reported
+ * under its own outcome word and heading rather than folded into `approved`
+ * — the two questions ("does this block?" and "is this the same fact as a
+ * real review that found nothing wrong?") get two separate answers instead
+ * of one shared word standing in for both.
+ *
+ * `could_not_run` is red because a review that did not happen must not be
+ * reported in the same colour as one that happened and approved — a green
+ * badge over a review that never ran is worse than a red one over a review
+ * that failed, because nobody investigates green. `rejected` is red for the
+ * obvious reason.
  */
 export function exitCodeFor(outcome: Outcome): number {
-  return outcome === 'approved' ? 0 : 1;
+  return outcome === 'approved' || outcome === 'out_of_scope' ? 0 : 1;
 }
 
 function findingsByLens(findings: readonly Finding[]): Map<string, Finding[]> {
@@ -139,27 +143,39 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
     }
   }
 
-  if (verdict.outcome === 'approved') {
-    const allOutOfScope =
-      verdict.outOfScope.length > 0 && verdict.outOfScope.length === verdict.results.length;
-    // Must not overclaim (see the file header): "every lens reviewed" is false
-    // the moment one of them reported nothing in scope instead, and "every
-    // lens with something in scope reviewed it" is a vacuous, misleading
-    // thing to say when NO lens had anything in scope — that case gets its
-    // own sentence rather than reusing the partial-out-of-scope one.
-    //
-    // BLOCKING FINDING FROM THIS PR'S OWN SELF-REVIEW (honesty lens): every
-    // sentence below used to claim "found nothing" / "none had a finding"
-    // unconditionally, so an approval carrying smell findings rendered a
-    // self-contradicting report — the same shape of defect `aggregate()`
-    // itself refuses to accept from a LENS (an `approved` reply that also
-    // reports a finding — see parseReply.ts's APPROVED_WORD guard). Every
-    // branch here now checks `smellCount` before claiming nothing was found.
-    const base = allOutOfScope
-      ? "Nothing in this change was within any lens's declared scope. Each lens reviewed the " +
+  // FAIL NOISY, DO NOT BLOCK: this is its own branch, not a case inside
+  // `verdict.outcome === 'approved'` below, precisely because it must NOT
+  // read like one. `exitCodeFor` (above) still treats it as non-blocking —
+  // see verdict.ts's `aggregate` for the full account of why the two
+  // questions ("does this stop a merge?" and "is this the same fact as a
+  // clean review?") get separate answers rather than one shared word.
+  if (verdict.outcome === 'out_of_scope') {
+    lines.push(
+      "Nothing in this change was within any lens's declared scope. Each lens reviewed the " +
         'whole change and completed its judgement; none had anything to evaluate. See above for ' +
-        'the reason each lens gave.'
-      : verdict.outOfScope.length > 0
+        'the reason each lens gave.',
+      '',
+    );
+  }
+
+  if (verdict.outcome === 'approved') {
+    // Must not overclaim (see the file header): "every lens reviewed" is
+    // false the moment one of them reported nothing in scope instead, and
+    // this branch itself cannot be reached by an ALL-out-of-scope panel any
+    // more — that now has its own outcome word, above — so the only
+    // remaining case with any out-of-scope lenses here is a PARTIAL one,
+    // where at least one lens did review something.
+    //
+    // The approved-outcome sentence must not claim "found nothing" / "none
+    // had a finding" when the approval is carrying a finding: an approval
+    // whose findings are entirely smells is a real approval, but a report
+    // that both lists a finding and states nothing was found is the same
+    // shape of self-contradiction `aggregate()` itself refuses to accept
+    // from a LENS (an `approved` reply that also reports a finding — see
+    // parseReply.ts's APPROVED_WORD guard). Every branch below checks
+    // `smellCount` before claiming nothing was found.
+    const base =
+      verdict.outOfScope.length > 0
         ? smellCount > 0
           ? 'Every lens with something in scope reviewed it. Nothing it found held this up. See ' +
             'above for the lens(es) that had nothing in scope for this change.'
@@ -176,20 +192,20 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
     // cannot file the follow-up itself — nothing in this system has a
     // create-an-issue capability — so it names the step in words, using the
     // `owner/repo#123` format this codebase already uses elsewhere in
-    // comments (see verdict.ts, which cites two such issues in its own
-    // comments) to CITE an already-filed issue. That is not quite the same
-    // thing as this: those are references to issues that already exist;
-    // this is the first place asking that one be filed. Named honestly as
-    // borrowing a format, not as an established workflow this project
-    // already follows for filing review follow-ups. Either way it is a
-    // real, named gap: whoever merges must actually open the issue by hand,
-    // and a merge that skips this step loses the finding for real.
+    // comments (see verdict.ts, which cites issues in its own comments) to
+    // CITE an already-filed issue. That is not quite the same thing as
+    // this: those are references to issues that already exist; this is the
+    // first place asking that one be filed. Named honestly as borrowing a
+    // format, not as an established workflow this project already follows
+    // for filing review follow-ups. Either way it is a real, named gap:
+    // whoever merges must actually open the issue by hand, and a merge that
+    // skips this step loses the finding for real.
     const suffix =
       smellCount > 0
         ? ` ${smellCount} non-blocking finding(s) are listed above; none of them held this up. ` +
           'If this merges as-is, file each as a follow-up issue before merging, referenced ' +
           'as `owner/repo#123` — the tracked-reference format this codebase already uses ' +
-          'elsewhere (see verdict.ts, which cites two such issues in its own comments), used ' +
+          'elsewhere (see verdict.ts, which cites such issues in its own comments), used ' +
           'here for the first time to ask that an issue actually be filed rather than merely ' +
           'cited.'
         : '';

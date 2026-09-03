@@ -18,9 +18,9 @@
 // that run's job summary, which has no API.
 // `out_of_scope` holds the completed-but-empty case apart from a genuine
 // failure: it does not hold up the panel the way an unrun lens does. Whether
-// an ALL-out-of-scope panel counts as approved or as its own separate
-// non-green result is a policy decision, not a technical one, and it is
-// isolated to one line in `aggregate` below — see the comment there.
+// an ALL-out-of-scope panel is reported as its own outcome, and whether that
+// outcome blocks a merge, are two SEPARATE questions — see the "FAIL NOISY,
+// DO NOT BLOCK" comment in `aggregate` below for how this resolves both.
 
 export type Outcome = 'approved' | 'rejected' | 'could_not_run' | 'out_of_scope';
 
@@ -116,30 +116,36 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
     }
   }
 
+  // Every declared lens landed on out_of_scope: nothing in the change was
+  // within anything's declared dimension.
+  const allOutOfScope = outOfScope.length > 0 && outOfScope.length === ordered.length;
+
   // could_not_run still outranks everything (S25, unchanged): any lens that
   // did not review at all holds up the whole panel, regardless of what
   // anything else says.
   //
-  // OPERATOR DECISION, MADE (was isolated to one line here and pending — see
-  // verevoir/aigency-harness#8): an all-out_of_scope panel now reads as
-  // approved. A change nothing had anything to evaluate is a completed
-  // judgement, not a failure, and must not be reported the same colour as a
-  // review that did not happen. Per-lens out_of_scope results are still
-  // tracked in `outOfScope` above and reported in full by report.ts; this
-  // only decided what the PANEL's own outcome read as when every declared
-  // lens landed there, and it now falls out of the same rule as any other
-  // clean panel below rather than needing a branch of its own.
+  // FAIL NOISY, DO NOT BLOCK — the operator's resolution of a disagreement
+  // this PR's own self-review had with itself. Round 1 folded an
+  // all-out_of_scope panel into 'approved' outright (verevoir/aigency-harness#8:
+  // nothing in scope must not stop a merge). The failure-modes lens then
+  // correctly objected that doing so erased a real distinction — "no lens
+  // found anything to review" is not the same statement as "reviewed and
+  // found nothing wrong" — at exactly the two places a machine consumer
+  // looks: `verdict.outcome` and report.ts's `exitCodeFor`. Both were right,
+  // and the fix is not to pick a side: an all-out_of_scope panel keeps its
+  // OWN outcome word, 'out_of_scope', below, distinct from 'approved' —
+  // while report.ts's `exitCodeFor` maps THAT outcome to the same
+  // non-blocking exit code as 'approved'. The gate never blocks on it; the
+  // outcome and the rendered report never claim it is the same thing as a
+  // real review that found nothing wrong.
   //
-  // MACHINE DISTINGUISHABILITY (raised by this PR's own self-review,
-  // failure-modes lens): a consumer reading only `verdict.outcome` (or
-  // report.ts's `exitCodeFor`) can no longer tell "reviewed and clean" apart
-  // from "nothing to review at all" — both are now `'approved'`, exit code
-  // 0. Not lost, only moved: `verdict.outOfScope` still names every lens
-  // that landed there, so a consumer wanting the distinction can check
-  // `verdict.outOfScope.length === verdict.results.length` (all of them, the
-  // case this decision affects) versus `0` (none). A dedicated `Outcome`
-  // value for this case would be a real, separate change and is left as a
-  // follow-up rather than done here.
+  // A second, separate limitation surfaced alongside this one, named here
+  // rather than acted on: an all-out_of_scope result on a change like a
+  // design document is often really "the lens set has nothing built to
+  // judge prose", not "there was nothing worth judging". Fixing that would
+  // mean a lens that can review an argument rather than a diff, which is a
+  // real, separate piece of work — out of scope for this change, which is
+  // about aggregation policy, not sensor coverage.
   //
   // SEVERITY-WEIGHTED: the panel is rejected when a BLOCKING finding exists
   // among what was actually collected, checked directly rather than trusted
@@ -159,7 +165,9 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
       : findings.some((finding) => finding.blocking) ||
           ordered.some((result) => result.outcome === 'rejected')
         ? 'rejected'
-        : 'approved';
+        : allOutOfScope
+          ? 'out_of_scope'
+          : 'approved';
 
   return { outcome, results: ordered, findings, unran, outOfScope };
 }
