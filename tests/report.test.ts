@@ -360,4 +360,36 @@ describe('renderReport, severity-weighted findings', () => {
     const report = renderReport(verdict, CONTEXT);
     expect(report).toContain('2 finding(s) (0 blocking, 2 non-blocking)');
   });
+
+  // THE regression test for this round's blocking finding (honesty lens):
+  // the approved-outcome sentence used to claim "found nothing" / "none had
+  // a finding" unconditionally, so an approval carrying a smell finding
+  // rendered a self-contradicting report — approving while stating, in the
+  // very same paragraph, that nothing was found. This asserts the negative
+  // directly rather than trusting the positive wording elsewhere: neither
+  // phrase may appear anywhere in a report that also lists a finding.
+  it('never claims "found nothing" or "none had a finding" when the approval carries any finding', () => {
+    const verdict = aggregate(DECLARED, [
+      approvedWithSmell('correctness', 'a naming nit'),
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report).not.toContain('found nothing');
+    expect(report).not.toContain('none had a finding');
+  });
+
+  // The same contradiction, in the partial-out-of-scope branch: a smell
+  // riding alongside a lens that had nothing in scope must not produce
+  // "reviewed it and found nothing" either.
+  it('never claims "found nothing" when approving with both a smell and an out-of-scope lens', () => {
+    const verdict = aggregate(DECLARED, [
+      approvedWithSmell('correctness', 'a naming nit'),
+      approved('honesty'),
+      outOfScope('blast-radius', 'nothing to judge'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report.split('\n')[0]).toContain('Approved');
+    expect(report).not.toContain('found nothing');
+  });
 });
