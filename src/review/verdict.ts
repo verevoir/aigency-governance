@@ -130,6 +130,17 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
   // lens landed there, and it now falls out of the same rule as any other
   // clean panel below rather than needing a branch of its own.
   //
+  // MACHINE DISTINGUISHABILITY (raised by this PR's own self-review,
+  // failure-modes lens): a consumer reading only `verdict.outcome` (or
+  // report.ts's `exitCodeFor`) can no longer tell "reviewed and clean" apart
+  // from "nothing to review at all" — both are now `'approved'`, exit code
+  // 0. Not lost, only moved: `verdict.outOfScope` still names every lens
+  // that landed there, so a consumer wanting the distinction can check
+  // `verdict.outOfScope.length === verdict.results.length` (all of them, the
+  // case this decision affects) versus `0` (none). A dedicated `Outcome`
+  // value for this case would be a real, separate change and is left as a
+  // follow-up rather than done here.
+  //
   // SEVERITY-WEIGHTED: the panel is rejected when a BLOCKING finding exists
   // among what was actually collected, checked directly rather than trusted
   // solely from a lens's own verdict word — so a Reviewer implementation
