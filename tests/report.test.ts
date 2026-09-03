@@ -31,10 +31,10 @@ function outOfScope(lens: string, reason: string): LensResult {
 }
 
 describe('exitCodeFor', () => {
-  // Named for what it checks. The universal — that ONLY an approval is zero —
-  // is carried by the two tests below, and this one passed a mutation that
-  // broke it. A test name asserting more than its body is the same defect as
-  // a comment doing so.
+  // Named for what it checks. The universal — that ONLY `rejected` and
+  // `could_not_run` are non-zero — is carried by the tests below, and this
+  // one passed a mutation that broke it. A test name asserting more than its
+  // body is the same defect as a comment doing so.
   it('is zero for an approval', () => {
     expect(exitCodeFor('approved')).toBe(0);
   });
@@ -49,10 +49,15 @@ describe('exitCodeFor', () => {
     expect(exitCodeFor('could_not_run')).toBe(1);
   });
 
-  // The operator decision (verdict.ts, aggregate): a change nothing actually
-  // evaluated is not reported the same colour as one that passed.
-  it('is non-zero for out_of_scope', () => {
-    expect(exitCodeFor('out_of_scope')).toBe(1);
+  // FAIL NOISY, DO NOT BLOCK (operator resolution; see verdict.ts's
+  // `aggregate`): a panel where every declared lens found nothing in its own
+  // scope must not stop a merge, so this matches `approved`'s exit code —
+  // even though it is a DIFFERENT outcome word and heading (see
+  // renderReport's tests below), because "nothing to review" and "reviewed
+  // and found nothing wrong" are different facts that both happen to be
+  // fine to merge.
+  it('is zero for out_of_scope, matching approved — it must not block a merge', () => {
+    expect(exitCodeFor('out_of_scope')).toBe(0);
   });
 });
 
@@ -70,17 +75,19 @@ describe('renderReport', () => {
 
   // A reader who stops at the heading must not come away with the wrong
   // impression, so the word for one outcome must not appear in another's
-  // heading line.
-  // Both non-approving outcomes, not just one. A `could_not_run` heading
-  // reading "Approved with gaps" would have passed the previous version.
-  // The all-out_of_scope panel is deliberately excluded from this list: since
-  // the operator decision in verdict.ts's aggregate(), it IS an approval, so
-  // asserting the negative for it here would pin the very overclaim this
-  // suite exists to catch. It gets its own positive assertion below, in
-  // 'renderReport, when a lens has nothing in its scope'.
+  // heading line. Includes the all-out_of_scope panel: it does not block a
+  // merge, but it is not an approval either, and must not read as one.
   it('never puts the word Approved in a heading that is not an approval', () => {
-    for (const results of [[rejected('correctness', 'x')], [approved('correctness')]]) {
-      const report = renderReport(aggregate(DECLARED, results), CONTEXT);
+    for (const results of [
+      [rejected('correctness', 'x')],
+      [approved('correctness')],
+      DECLARED.map((lens) => outOfScope(lens, 'nothing to judge')),
+    ]) {
+      const verdict = aggregate(DECLARED, results);
+      // Guards the test itself: every case in this list must actually be a
+      // non-approval, or the assertion below would be vacuously true.
+      expect(verdict.outcome).not.toBe('approved');
+      const report = renderReport(verdict, CONTEXT);
       expect(report.split('\n')[0]).not.toContain('Approved');
     }
   });
@@ -208,24 +215,27 @@ describe('renderReport', () => {
 // scope is named — by lens and reason — the same way an unrun lens is, but
 // must not be mistaken for one, and must not make an approval overclaim.
 describe('renderReport, when a lens has nothing in its scope', () => {
-  // Flipped by the operator decision made in verdict.ts's aggregate():
-  // nothing in scope anywhere is a completed judgement, not a failure, and
-  // reads as an approval. verevoir/aigency-harness#8.
-  it('states "Approved" in the first line when every lens is out of scope', () => {
-    const report = renderReport(
-      aggregate(
-        DECLARED,
-        DECLARED.map((lens) => outOfScope(lens, 'nothing to judge')),
-      ),
-      CONTEXT,
+  // FAIL NOISY, DO NOT BLOCK (operator resolution; see verdict.ts's
+  // `aggregate`): an all-out_of_scope panel gets its OWN heading, not
+  // "Approved" — it must not read as a real review that found nothing
+  // wrong, even though (see exitCodeFor's tests above) it does not block a
+  // merge either. verevoir/aigency-harness#8.
+  it('states "Nothing in scope", not "Approved", in the first line when every lens is out of scope', () => {
+    const verdict = aggregate(
+      DECLARED,
+      DECLARED.map((lens) => outOfScope(lens, 'nothing to judge')),
     );
-    expect(report.split('\n')[0]).toContain('Approved');
+    const report = renderReport(verdict, CONTEXT);
+    expect(report.split('\n')[0]).toContain('Nothing in scope');
+    expect(report.split('\n')[0]).not.toContain('Approved');
+    // And it still does not block: the two questions get separate answers.
+    expect(exitCodeFor(verdict.outcome)).toBe(0);
   });
 
-  // The message body for the all-out-of-scope approval — its own sentence,
-  // not a reuse of the partial-out-of-scope one, which would read as a
-  // vacuous "every lens with something in scope" when there were none.
-  it("says explicitly that nothing was in any lens's scope, in words, while still approving", () => {
+  // The message body for the all-out-of-scope case — its own sentence, not
+  // a reuse of the partial-out-of-scope one, which would read as a vacuous
+  // "every lens with something in scope" when there were none.
+  it("says explicitly that nothing was in any lens's scope, in words", () => {
     const report = renderReport(
       aggregate(
         DECLARED,
@@ -258,8 +268,9 @@ describe('renderReport, when a lens has nothing in its scope', () => {
   });
 
   // The collapse this story exists to undo, at the report layer: one lens
-  // opting out must not read as an incomplete review.
-  it('still reads Approved, not Could not run, when only one lens is out_of_scope and the rest approve', () => {
+  // opting out (a PARTIAL out-of-scope panel, not all of them) must not read
+  // as an incomplete review, and must still read as a genuine approval.
+  it('still reads Approved, not Could not run or Nothing in scope, when only one lens is out_of_scope and the rest approve', () => {
     const report = renderReport(
       aggregate(DECLARED, [
         approved('correctness'),
@@ -348,9 +359,10 @@ describe('renderReport, severity-weighted findings', () => {
 
   // Found by this PR's own self-review (correctness + verification lenses):
   // the heading-split condition is `smellCount > 0` alone, not "the two
-  // severities are mixed" as the neighbouring comment in report.ts used to
-  // claim -- an all-smell approval (blockingCount === 0, smellCount > 0) was
-  // an untested branch where the code and its own comment disagreed.
+  // severities are mixed" as an earlier version of the neighbouring comment
+  // in report.ts used to claim -- an all-smell approval (blockingCount ===
+  // 0, smellCount > 0) was an untested branch where the code and its own
+  // comment disagreed.
   it('names the split even when every finding is non-blocking (an all-smell panel)', () => {
     const verdict = aggregate(DECLARED, [
       approvedWithSmell('correctness', 'a naming nit', 'a stray blank line'),
@@ -361,13 +373,14 @@ describe('renderReport, severity-weighted findings', () => {
     expect(report).toContain('2 finding(s) (0 blocking, 2 non-blocking)');
   });
 
-  // THE regression test for this round's blocking finding (honesty lens):
-  // the approved-outcome sentence used to claim "found nothing" / "none had
-  // a finding" unconditionally, so an approval carrying a smell finding
-  // rendered a self-contradicting report — approving while stating, in the
-  // very same paragraph, that nothing was found. This asserts the negative
-  // directly rather than trusting the positive wording elsewhere: neither
-  // phrase may appear anywhere in a report that also lists a finding.
+  // THE regression test for a blocking finding this PR's own self-review
+  // raised (honesty lens): the approved-outcome sentence used to claim
+  // "found nothing" / "none had a finding" unconditionally, so an approval
+  // carrying a smell finding rendered a self-contradicting report --
+  // approving while stating, in the very same paragraph, that nothing was
+  // found. This asserts the negative directly rather than trusting the
+  // positive wording elsewhere: neither phrase may appear anywhere in a
+  // report that also lists a finding.
   it('never claims "found nothing" or "none had a finding" when the approval carries any finding', () => {
     const verdict = aggregate(DECLARED, [
       approvedWithSmell('correctness', 'a naming nit'),

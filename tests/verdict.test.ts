@@ -173,16 +173,30 @@ describe('aggregate, when a lens has nothing in its scope', () => {
     expect(verdict.outcome).toBe('rejected');
   });
 
-  // The operator decision, made: all lenses out of scope is a completed
-  // judgement with nothing wrong found — it reads as approved, not as its
-  // own non-green result. verevoir/aigency-harness#8.
-  it('approves, rather than reporting its own outcome, when every declared lens is out_of_scope', () => {
+  // FAIL NOISY, DO NOT BLOCK (operator resolution, superseding the plain
+  // fold-into-'approved' this test used to pin): an all-out_of_scope panel
+  // is its OWN outcome, distinguishable from a real 'approved', even though
+  // (per exitCodeFor in report.test.ts) it does not block a merge either.
+  // verevoir/aigency-harness#8.
+  it('reports its own out_of_scope outcome, not approved, when every declared lens is out_of_scope', () => {
     const verdict = aggregate(
       DECLARED,
       DECLARED.map((lens) => outOfScope(lens, 'nothing to judge')),
     );
-    expect(verdict.outcome).toBe('approved');
+    expect(verdict.outcome).toBe('out_of_scope');
     expect(verdict.outOfScope).toHaveLength(3);
+  });
+
+  // could_not_run still outranks the all-out_of_scope case too — a lens
+  // that never reviewed at all holds up the panel regardless of what every
+  // other lens reports.
+  it('still lets could_not_run outrank an all-out_of_scope panel', () => {
+    const verdict = aggregate(DECLARED, [
+      outOfScope('correctness', 'nothing to judge'),
+      outOfScope('honesty', 'nothing to judge'),
+      couldNotRun('blast-radius', 'model returned no content'),
+    ]);
+    expect(verdict.outcome).toBe('could_not_run');
   });
 
   it('supplies a reason for an out_of_scope that gave none', () => {
