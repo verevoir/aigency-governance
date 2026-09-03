@@ -323,6 +323,29 @@ describe('parseReply — severity tags on findings', () => {
     expect(result.findings[0]?.summary).toContain('[minor]');
   });
 
+  // Found by this PR's own self-review (failure-modes lens): a finding line
+  // that is a severity tag and nothing else -- no text after `[blocking]` or
+  // `[smell]` -- used to survive as a real finding with an empty summary,
+  // because the empty-line check ran on the raw text ("[blocking]", not
+  // empty) rather than on what severityOf() actually produced after
+  // stripping the tag (empty). A blocking verdict with an empty summary is
+  // exactly this project's signature defect: something absent reading as
+  // something present.
+  it('treats a tag-only finding line, with no text after the tag, as empty rather than as a real finding', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${APPROVED_WORD}`,
+      `${FINDING_MARKER} [${BLOCKING_TAG}]`,
+    );
+    expect(result.outcome).toBe('could_not_run');
+    expect(result.reason).toContain(`empty ${FINDING_MARKER} line`);
+  });
+
+  it('treats a tag-only finding line as empty under a rejection too', () => {
+    const result = parse(`${VERDICT_MARKER} ${REJECTED_WORD}`, `${FINDING_MARKER} [${SMELL_TAG}]`);
+    expect(result.outcome).toBe('could_not_run');
+    expect(result.reason).toContain('named nothing');
+  });
+
   it('still refuses an approval that carries a blocking finding alongside a smell one', () => {
     const result = parse(
       `${VERDICT_MARKER} ${APPROVED_WORD}`,
