@@ -10,7 +10,18 @@ function approved(lens: string): LensResult {
   return { lens, outcome: 'approved', findings: [] };
 }
 function rejected(lens: string, ...summaries: string[]): LensResult {
-  return { lens, outcome: 'rejected', findings: summaries.map((summary) => ({ lens, summary })) };
+  return {
+    lens,
+    outcome: 'rejected',
+    findings: summaries.map((summary) => ({ lens, summary, blocking: true })),
+  };
+}
+function approvedWithSmell(lens: string, ...summaries: string[]): LensResult {
+  return {
+    lens,
+    outcome: 'approved',
+    findings: summaries.map((summary) => ({ lens, summary, blocking: false })),
+  };
 }
 function couldNotRun(lens: string, reason: string): LensResult {
   return { lens, outcome: 'could_not_run', findings: [], reason };
@@ -62,12 +73,13 @@ describe('renderReport', () => {
   // heading line.
   // Both non-approving outcomes, not just one. A `could_not_run` heading
   // reading "Approved with gaps" would have passed the previous version.
+  // The all-out_of_scope panel is deliberately excluded from this list: since
+  // the operator decision in verdict.ts's aggregate(), it IS an approval, so
+  // asserting the negative for it here would pin the very overclaim this
+  // suite exists to catch. It gets its own positive assertion below, in
+  // 'renderReport, when a lens has nothing in its scope'.
   it('never puts the word Approved in a heading that is not an approval', () => {
-    for (const results of [
-      [rejected('correctness', 'x')],
-      [approved('correctness')],
-      DECLARED.map((lens) => outOfScope(lens, 'nothing to judge')),
-    ]) {
+    for (const results of [[rejected('correctness', 'x')], [approved('correctness')]]) {
       const report = renderReport(aggregate(DECLARED, results), CONTEXT);
       expect(report.split('\n')[0]).not.toContain('Approved');
     }
@@ -125,7 +137,9 @@ describe('renderReport', () => {
       {
         lens: 'correctness',
         outcome: 'rejected',
-        findings: [{ lens: 'correctness', summary: 's', detail: 'the long version' }],
+        findings: [
+          { lens: 'correctness', summary: 's', detail: 'the long version', blocking: true },
+        ],
       },
     ]);
     expect(renderReport(verdict, CONTEXT)).toContain('the long version');
@@ -140,7 +154,7 @@ describe('renderReport', () => {
       {
         lens: 'correctness',
         outcome: 'rejected',
-        findings: [{ lens: 'correctness', summary: 'the summary', detail: '' }],
+        findings: [{ lens: 'correctness', summary: 'the summary', detail: '', blocking: true }],
       },
     ]);
     const lines = renderReport(verdict, CONTEXT).split('\n');
@@ -194,7 +208,10 @@ describe('renderReport', () => {
 // scope is named — by lens and reason — the same way an unrun lens is, but
 // must not be mistaken for one, and must not make an approval overclaim.
 describe('renderReport, when a lens has nothing in its scope', () => {
-  it('states "Nothing in scope" in the first line when every lens is out of scope', () => {
+  // Flipped by the operator decision made in verdict.ts's aggregate():
+  // nothing in scope anywhere is a completed judgement, not a failure, and
+  // reads as an approval. verevoir/aigency-harness#8.
+  it('states "Approved" in the first line when every lens is out of scope', () => {
     const report = renderReport(
       aggregate(
         DECLARED,
@@ -202,17 +219,13 @@ describe('renderReport, when a lens has nothing in its scope', () => {
       ),
       CONTEXT,
     );
-    expect(report.split('\n')[0]).toContain('Nothing in scope');
+    expect(report.split('\n')[0]).toContain('Approved');
   });
 
-  // The message body for a fully out-of-scope review — the paragraph under
-  // the heading, not the heading word itself. Found missing by this PR's own
-  // review (verification lens, PR #8): every test in this block checked the
-  // heading, the bullet list, or the absence of the old overclaim string, but
-  // none asserted the message report.ts actually prints for this outcome.
-  // Deleting or garbling it in report.ts's `out_of_scope` branch left every
-  // test here green.
-  it('says explicitly that every lens found nothing within scope, in words', () => {
+  // The message body for the all-out-of-scope approval — its own sentence,
+  // not a reuse of the partial-out-of-scope one, which would read as a
+  // vacuous "every lens with something in scope" when there were none.
+  it("says explicitly that nothing was in any lens's scope, in words, while still approving", () => {
     const report = renderReport(
       aggregate(
         DECLARED,
@@ -220,9 +233,7 @@ describe('renderReport, when a lens has nothing in its scope', () => {
       ),
       CONTEXT,
     );
-    expect(report).toContain(
-      'Every lens looked at the whole change and found nothing within its declared scope.',
-    );
+    expect(report).toContain("Nothing in this change was within any lens's declared scope.");
   });
 
   it('names a lens that had nothing in scope, with its reason, before any findings', () => {
@@ -293,5 +304,45 @@ describe('renderReport, when a lens has nothing in its scope', () => {
       'Every lens with something in scope reviewed it and found nothing. See above for the ' +
         'lens(es) that had nothing in scope for this change.',
     );
+  });
+});
+
+// Severity-weighted approval must not become severity-weighted invisibility:
+// a smell finding does not sink the verdict, but it must still be SEEN.
+describe('renderReport, severity-weighted findings', () => {
+  it('approves while still printing a non-blocking finding, tagged', () => {
+    const verdict = aggregate(DECLARED, [
+      approvedWithSmell('correctness', 'stray trailing-newline edit to README'),
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report.split('\n')[0]).toContain('Approved');
+    expect(report).toContain('[smell] stray trailing-newline edit to README');
+  });
+
+  it('names the blocking/non-blocking split in the heading when the two are mixed', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'a real defect'),
+      approvedWithSmell('honesty', 'a naming nit'),
+      approved('blast-radius'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report).toContain('2 finding(s) (1 blocking, 1 non-blocking)');
+  });
+
+  it('does not name a split when every finding is the same severity', () => {
+    const report = renderReport(aggregate(DECLARED, [rejected('correctness', 'x')]), CONTEXT);
+    expect(report).toContain('1 finding(s)');
+    expect(report).not.toContain('blocking, ');
+  });
+
+  it('says in prose that a listed smell finding did not hold the approval up', () => {
+    const verdict = aggregate(DECLARED, [
+      approvedWithSmell('correctness', 'a naming nit'),
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    expect(renderReport(verdict, CONTEXT)).toContain('1 non-blocking finding(s) are listed above');
   });
 });

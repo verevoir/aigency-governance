@@ -13,6 +13,14 @@
 
 import type { Finding, Outcome, Verdict } from './verdict.js';
 
+// `out_of_scope` stays in this map because `Outcome` is shared with
+// LensResult (a single lens can still land there — see verdict.ts's
+// `outOfScope`), and the map must stay total over the type. aggregate() no
+// longer selects it as the PANEL's own outcome for any input: an
+// all-out_of_scope panel now reads as approved (verdict.ts), so this entry
+// is unreachable from `renderReport`'s own `verdict.outcome` today. Left in
+// rather than deleted, because narrowing the map's key type to exclude it
+// would be a bigger, separate change for no behaviour this file needs.
 const HEADING: Record<Outcome, string> = {
   approved: 'Approved',
   rejected: 'Rejected',
@@ -34,10 +42,12 @@ export interface ReportContext {
  * not happen must not be reported in the same colour as one that happened and
  * approved — a green badge over a review that never ran is worse than a red
  * one over a review that failed, because nobody investigates green.
- * `out_of_scope` is red too, by an operator decision made once, in a single
- * line inside `aggregate` (verdict.ts) — see the comment there. This function
- * does not encode that decision a second time: it falls out of "only approved
- * is zero" automatically, so flipping that one line is sufficient on its own.
+ * `out_of_scope` is likewise non-zero, though `aggregate` (verdict.ts) no
+ * longer produces it as a PANEL's own outcome for any input — an
+ * all-out_of_scope panel reads as `approved` now. Kept here rather than
+ * dropped: this function does not know that, and should not need to; if a
+ * future `aggregate` ever hands back `out_of_scope` again, this still gives
+ * the right, non-zero answer without anyone having to remember to update it.
  */
 export function exitCodeFor(outcome: Outcome): number {
   return outcome === 'approved' ? 0 : 1;
@@ -99,12 +109,27 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
   }
 
   const grouped = findingsByLens(verdict.findings);
+  const blockingCount = verdict.findings.filter((finding) => finding.blocking).length;
+  const smellCount = verdict.findings.length - blockingCount;
   if (grouped.size > 0) {
-    lines.push(`### ${verdict.findings.length} finding(s)`, '');
+    // The severity split is stated in the heading, not left to be counted from
+    // the tags below, precisely when the two severities are mixed — a reader
+    // who stops at the count must not read "3 findings" as "3 reasons this is
+    // rejected" when only some of them are.
+    lines.push(
+      `### ${verdict.findings.length} finding(s)` +
+        (smellCount > 0 ? ` (${blockingCount} blocking, ${smellCount} non-blocking)` : ''),
+      '',
+    );
     for (const [lens, findings] of grouped) {
       lines.push(`#### ${lens}`, '');
       for (const finding of findings) {
-        lines.push(`- ${finding.summary}`);
+        // Reported loudly regardless of severity (constraint: a non-blocking
+        // finding must still be SEEN). The tag is what a reader uses to tell
+        // "fix this" from "worth a look" — a finding rendered with no severity
+        // at all would be the exact blindness a smell-vs-blocking split exists
+        // to avoid re-introducing.
+        lines.push(`- [${finding.blocking ? 'blocking' : 'smell'}] ${finding.summary}`);
         if (finding.detail !== undefined && finding.detail !== '') {
           lines.push(`  ${finding.detail}`);
         }
@@ -114,24 +139,41 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
   }
 
   if (verdict.outcome === 'approved') {
+    const allOutOfScope =
+      verdict.outOfScope.length > 0 && verdict.outOfScope.length === verdict.results.length;
     // Must not overclaim (see the file header): "every lens reviewed" is false
-    // the moment one of them reported nothing in scope instead.
-    lines.push(
-      verdict.outOfScope.length > 0
+    // the moment one of them reported nothing in scope instead, and "every
+    // lens with something in scope reviewed it" is a vacuous, misleading
+    // thing to say when NO lens had anything in scope — that case gets its
+    // own sentence rather than reusing the partial-out-of-scope one.
+    const base = allOutOfScope
+      ? "Nothing in this change was within any lens's declared scope. Each lens reviewed the " +
+        'whole change and completed its judgement; none had anything to evaluate. See above for ' +
+        'the reason each lens gave.'
+      : verdict.outOfScope.length > 0
         ? 'Every lens with something in scope reviewed it and found nothing. See above for the ' +
-            'lens(es) that had nothing in scope for this change.'
-        : 'Every lens reviewed and none had a finding.',
-      '',
-    );
-  }
-
-  if (verdict.outcome === 'out_of_scope') {
-    lines.push(
-      'Every lens looked at the whole change and found nothing within its declared scope.',
-      'Nothing was evaluated, so this is reported as its own result rather than as an',
-      "approval — see verdict.ts's aggregate() for the single line that decides this.",
-      '',
-    );
+          'lens(es) that had nothing in scope for this change.'
+        : 'Every lens reviewed and none had a finding.';
+    // The severity split again, in prose this time: an approval that carries
+    // smell findings must not read as silent — a reader who reads only the
+    // first line must not come away thinking nothing at all was found.
+    // Carry-forward: a smell that survives to merge must not simply vanish
+    // once this pull request stops being a place anyone looks. This report
+    // cannot file the follow-up itself — nothing in this system has a
+    // create-an-issue capability — so it names the step in words, in the
+    // one convention this codebase already uses for exactly this shape of
+    // thing: a tracked reference of the form `owner/repo#number`, the same
+    // form verdict.ts and parseReply.ts use for their own open items. That
+    // is a real, named gap: whoever merges must actually open the issue by
+    // hand, and a merge that skips this step loses the finding for real.
+    const suffix =
+      smellCount > 0
+        ? ` ${smellCount} non-blocking finding(s) are listed above; none of them held this up. ` +
+          'If this merges as-is, file each as a follow-up issue before merging — ' +
+          "`owner/repo#123` in this codebase's own convention — since a merged pull " +
+          'request stops being a place anyone looks.'
+        : '';
+    lines.push(base + suffix, '');
   }
 
   // Whose idea of correct, and how much of it ran. A reader who cannot tell
