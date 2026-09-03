@@ -345,4 +345,19 @@ describe('renderReport, severity-weighted findings', () => {
     ]);
     expect(renderReport(verdict, CONTEXT)).toContain('1 non-blocking finding(s) are listed above');
   });
+
+  // Found by this PR's own self-review (correctness + verification lenses):
+  // the heading-split condition is `smellCount > 0` alone, not "the two
+  // severities are mixed" as the neighbouring comment in report.ts used to
+  // claim -- an all-smell approval (blockingCount === 0, smellCount > 0) was
+  // an untested branch where the code and its own comment disagreed.
+  it('names the split even when every finding is non-blocking (an all-smell panel)', () => {
+    const verdict = aggregate(DECLARED, [
+      approvedWithSmell('correctness', 'a naming nit', 'a stray blank line'),
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report).toContain('2 finding(s) (0 blocking, 2 non-blocking)');
+  });
 });
