@@ -411,4 +411,22 @@ describe('renderReport, severity-weighted findings', () => {
     expect(report).not.toContain('reviewed it and found nothing');
     expect(report).toContain('Nothing it found held this up.');
   });
+
+  // Found by this PR's own self-review (verification lens): every prior test
+  // that inspects bullet text either checked a SMELL finding's exact string
+  // or checked a blocking finding's text without asserting its severity tag,
+  // so a mutant that hardcodes the rendered tag to 'smell' regardless of
+  // `finding.blocking` passed the whole suite. This asserts the positive
+  // half directly: a genuinely blocking finding's bullet must carry
+  // `[blocking]`, not `[smell]`.
+  it('renders a genuinely blocking finding with the [blocking] tag, not [smell]', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'the retry loop has no ceiling'),
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report).toContain('[blocking] the retry loop has no ceiling');
+    expect(report).not.toContain('[smell] the retry loop has no ceiling');
+  });
 });

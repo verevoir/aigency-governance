@@ -171,9 +171,11 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
     // whose findings are entirely smells is a real approval, but a report
     // that both lists a finding and states nothing was found is the same
     // shape of self-contradiction `aggregate()` itself refuses to accept
-    // from a LENS (an `approved` reply that also reports a finding — see
-    // parseReply.ts's APPROVED_WORD guard). Every branch below checks
-    // `smellCount` before claiming nothing was found.
+    // from a LENS — specifically, an `approved` reply that also reports a
+    // BLOCKING finding (see parseReply.ts's APPROVED_WORD guard, which
+    // refuses exactly that combination and no more: an approved reply
+    // carrying only smell findings is accepted there, same as here). Every
+    // branch below checks `smellCount` before claiming nothing was found.
     const base =
       verdict.outOfScope.length > 0
         ? smellCount > 0

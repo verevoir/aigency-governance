@@ -56,6 +56,17 @@ const SEVERITY_TAG = new RegExp(`^\\[(${BLOCKING_TAG}|${SMELL_TAG})\\]\\s*`, 'i'
  * written by the reviewer, never inferred — an unlabelled concern does not
  * get to be smaller than one that was labelled, and a typo in the bracket
  * must not quietly downgrade a real finding.
+ *
+ * NAMED LIMITATION (found by this PR's own self-review, failure-modes
+ * lens): an absent tag and a malformed one (`[minor]`, `[blcoking]`) both
+ * land here as identical `blocking: true` findings, with no structured
+ * signal that the tag was unrecognised rather than never written — only
+ * the raw bracket text surviving inside `summary` hints at it. Elsewhere
+ * this codebase is careful to keep "absent" and "malformed" as distinct,
+ * explicitly-named reasons (see this file's header on the empty-VERDICT-
+ * line guard). Not fixed here: no information is lost (the raw text is
+ * preserved) and the fail-closed direction is the safe one either way, so
+ * this is recorded as a real, accepted gap rather than built around.
  */
 function severityOf(lens: string, raw: string): Finding {
   const match = SEVERITY_TAG.exec(raw);
