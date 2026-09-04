@@ -16,12 +16,14 @@ export {
 } from './review/verdict.js';
 export {
   APPROVED_WORD,
+  BLOCKING_TAG,
   CANNOT_RUN_WORD,
   FINDING_MARKER,
   OUT_OF_SCOPE_WORD,
   REASON_MARKER,
   REJECTED_WORD,
   REPLY_CONTRACT,
+  SMELL_TAG,
   VERDICT_MARKER,
 } from './review/replyContract.js';
 export {

@@ -18,9 +18,9 @@
 // that run's job summary, which has no API.
 // `out_of_scope` holds the completed-but-empty case apart from a genuine
 // failure: it does not hold up the panel the way an unrun lens does. Whether
-// an ALL-out-of-scope panel counts as approved or as its own separate
-// non-green result is a policy decision, not a technical one, and it is
-// isolated to one line in `aggregate` below — see the comment there.
+// an ALL-out-of-scope panel is reported as its own outcome, and whether that
+// outcome blocks a merge, are two SEPARATE questions — see the "FAIL NOISY,
+// DO NOT BLOCK" comment in `aggregate` below for how this resolves both.
 
 export type Outcome = 'approved' | 'rejected' | 'could_not_run' | 'out_of_scope';
 
@@ -28,6 +28,16 @@ export interface Finding {
   readonly lens: string;
   readonly summary: string;
   readonly detail?: string;
+  /**
+   * Whether this finding, on its own, must sink the verdict. A rejection
+   * requires at least one; an approval may carry any number so long as none
+   * of them are. Set exactly once, by the reviewing lens, when its reply is
+   * parsed — see parseReply.ts and replyContract.ts's severity tags. Never
+   * inferred from the diff, never defaulted to false, and never settable by
+   * whoever authored the change under review: severity is the reviewer's
+   * call or it means nothing at all.
+   */
+  readonly blocking: boolean;
 }
 
 export interface LensResult {
@@ -106,24 +116,56 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
     }
   }
 
+  // Every declared lens landed on out_of_scope: nothing in the change was
+  // within anything's declared dimension.
+  const allOutOfScope = outOfScope.length > 0 && outOfScope.length === ordered.length;
+
   // could_not_run still outranks everything (S25, unchanged): any lens that
   // did not review at all holds up the whole panel, regardless of what
-  // anything else says. A rejection outranks an approval, as before.
+  // anything else says.
+  //
+  // FAIL NOISY, DO NOT BLOCK — the operator's resolution of a disagreement
+  // this PR's own self-review had with itself. Round 1 folded an
+  // all-out_of_scope panel into 'approved' outright (verevoir/aigency-harness#8:
+  // nothing in scope must not stop a merge). The failure-modes lens then
+  // correctly objected that doing so erased a real distinction — "no lens
+  // found anything to review" is not the same statement as "reviewed and
+  // found nothing wrong" — at exactly the two places a machine consumer
+  // looks: `verdict.outcome` and report.ts's `exitCodeFor`. Both were right,
+  // and the fix is not to pick a side: an all-out_of_scope panel keeps its
+  // OWN outcome word, 'out_of_scope', below, distinct from 'approved' —
+  // while report.ts's `exitCodeFor` maps THAT outcome to the same
+  // non-blocking exit code as 'approved'. The gate never blocks on it; the
+  // outcome and the rendered report never claim it is the same thing as a
+  // real review that found nothing wrong.
+  //
+  // A second, separate limitation surfaced alongside this one, named here
+  // rather than acted on: an all-out_of_scope result on a change like a
+  // design document is often really "the lens set has nothing built to
+  // judge prose", not "there was nothing worth judging". Fixing that would
+  // mean a lens that can review an argument rather than a diff, which is a
+  // real, separate piece of work — out of scope for this change, which is
+  // about aggregation policy, not sensor coverage.
+  //
+  // SEVERITY-WEIGHTED: the panel is rejected when a BLOCKING finding exists
+  // among what was actually collected, checked directly rather than trusted
+  // solely from a lens's own verdict word — so a Reviewer implementation
+  // that bypasses parseReply's contract cannot smuggle a blocking finding
+  // through under a lens that claims 'approved'. `result.outcome ===
+  // 'rejected'` is kept as a second, OR'd condition rather than dropped:
+  // parseReply guarantees a rejection always carries a blocking finding, so
+  // the two agree on every reply that came through the real contract, and
+  // this is an independent check on the same fact, not a redundant one. A
+  // non-blocking (smell) finding trips neither condition — it does not set a
+  // lens's outcome to 'rejected' (parseReply.ts) and it is not blocking — so
+  // it is collected into `findings` above and reported, and never sinks this.
   const outcome: Outcome =
     unran.length > 0
       ? 'could_not_run'
-      : ordered.some((result) => result.outcome === 'rejected')
+      : findings.some((finding) => finding.blocking) ||
+          ordered.some((result) => result.outcome === 'rejected')
         ? 'rejected'
-        : // OPERATOR DECISION, ISOLATED TO THIS ONE LINE: when every declared
-          // lens came back out_of_scope, the verdict reads as its own non-green
-          // result rather than as an approval — a change nothing actually
-          // evaluated should not read as one that passed. To make it read as
-          // an approval instead, change the string literal on the line below
-          // from 'out_of_scope' to 'approved'. Nothing else needs to move:
-          // report.ts's exitCodeFor already treats anything other than
-          // 'approved' as red, and its HEADING map already has an entry for
-          // this outcome.
-          outOfScope.length === declared.length
+        : allOutOfScope
           ? 'out_of_scope'
           : 'approved';
 

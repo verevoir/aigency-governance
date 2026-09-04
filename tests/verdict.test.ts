@@ -8,13 +8,18 @@ function approved(lens: string): LensResult {
   return { lens, outcome: 'approved', findings: [] };
 }
 function rejected(lens: string, summary: string): LensResult {
-  return { lens, outcome: 'rejected', findings: [{ lens, summary }] };
+  return { lens, outcome: 'rejected', findings: [{ lens, summary, blocking: true }] };
 }
 function couldNotRun(lens: string, reason: string): LensResult {
   return { lens, outcome: 'could_not_run', findings: [], reason };
 }
 function outOfScope(lens: string, reason: string): LensResult {
   return { lens, outcome: 'out_of_scope', findings: [], reason };
+}
+// An approval carrying only smell (non-blocking) findings — the shape a
+// well-formed reply produces for the placeholder-test calibration case.
+function approvedWithSmell(lens: string, summary: string): LensResult {
+  return { lens, outcome: 'approved', findings: [{ lens, summary, blocking: false }] };
 }
 
 describe('aggregate', () => {
@@ -168,9 +173,12 @@ describe('aggregate, when a lens has nothing in its scope', () => {
     expect(verdict.outcome).toBe('rejected');
   });
 
-  // The operator-decision branch, built as specified: all lenses out of scope
-  // reads as its own non-green outcome, not as an approval.
-  it('reports its own outcome, not approved, when every declared lens is out_of_scope', () => {
+  // FAIL NOISY, DO NOT BLOCK (operator resolution, superseding the plain
+  // fold-into-'approved' this test used to pin): an all-out_of_scope panel
+  // is its OWN outcome, distinguishable from a real 'approved', even though
+  // (per exitCodeFor in report.test.ts) it does not block a merge either.
+  // verevoir/aigency-harness#8.
+  it('reports its own out_of_scope outcome, not approved, when every declared lens is out_of_scope', () => {
     const verdict = aggregate(
       DECLARED,
       DECLARED.map((lens) => outOfScope(lens, 'nothing to judge')),
@@ -179,11 +187,124 @@ describe('aggregate, when a lens has nothing in its scope', () => {
     expect(verdict.outOfScope).toHaveLength(3);
   });
 
+  // could_not_run still outranks the all-out_of_scope case too — a lens
+  // that never reviewed at all holds up the panel regardless of what every
+  // other lens reports.
+  it('still lets could_not_run outrank an all-out_of_scope panel', () => {
+    const verdict = aggregate(DECLARED, [
+      outOfScope('correctness', 'nothing to judge'),
+      outOfScope('honesty', 'nothing to judge'),
+      couldNotRun('blast-radius', 'model returned no content'),
+    ]);
+    expect(verdict.outcome).toBe('could_not_run');
+  });
+
   it('supplies a reason for an out_of_scope that gave none', () => {
     const verdict = aggregate(
       ['correctness'],
       [{ lens: 'correctness', outcome: 'out_of_scope', findings: [] }],
     );
     expect(verdict.outOfScope).toEqual([{ lens: 'correctness', reason: 'no reason given' }]);
+  });
+});
+
+// Severity-weighted approval: a blocking finding sinks the panel, a
+// non-blocking (smell) one is reported and does not. Proven directly against
+// aggregate() with hand-built LensResults, independent of parseReply, so
+// this pins the AGGREGATION policy itself rather than merely the parser that
+// happens to feed it today.
+describe('aggregate, severity-weighted', () => {
+  it('approves a lens that carries only smell findings', () => {
+    const verdict = aggregate(DECLARED, [
+      approvedWithSmell(
+        'correctness',
+        "placeholder test: honestly named, doesn't assert anything real",
+      ),
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('approved');
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.findings[0]?.blocking).toBe(false);
+  });
+
+  // Defense in depth: aggregate() does not merely trust a lens's own outcome
+  // word. If a Reviewer implementation ever bypassed parseReply's contract
+  // and produced a lens that claims 'approved' while still carrying a
+  // blocking finding (parseReply itself refuses to construct this shape —
+  // see parseReply.test.ts), the panel must not read as approved anyway.
+  it('still rejects the panel when a blocking finding arrives on a lens marked approved', () => {
+    const verdict = aggregate(DECLARED, [
+      {
+        lens: 'correctness',
+        outcome: 'approved',
+        findings: [{ lens: 'correctness', summary: 'smuggled past the contract', blocking: true }],
+      },
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+  });
+
+  // The mirror of the test above, isolating the OTHER half of the OR:
+  // `ordered.some((result) => result.outcome === 'rejected')`. Every
+  // `rejected()`-built fixture elsewhere in this file also attaches a
+  // blocking finding, so `findings.some(blocking)` is already true whenever
+  // `outcome === 'rejected'` is, in every case this suite otherwise
+  // exercises — meaning the OR'd clause could be deleted outright and the
+  // rest of this suite would stay green. Found by this PR's own self-review
+  // (verification lens). This builds the shape parseReply.ts itself refuses
+  // to produce — `outcome: 'rejected'` with no blocking finding at all — the
+  // same "bypassed the contract" scenario as the sibling test above, but for
+  // the direction that clause alone protects against.
+  it('still rejects the panel when a lens reports outcome "rejected" but carries no blocking finding at all', () => {
+    const verdict = aggregate(DECLARED, [
+      { lens: 'correctness', outcome: 'rejected', findings: [] },
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+  });
+
+  // A conformance suite only ever exercised against a conformant fixture is a
+  // check that has never been seen to reject — exactly the fault this whole
+  // project exists to catch, so it is blocking, not a smell.
+  it('rejects for a blocking finding naming a check that has never been seen to reject', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'conformance suite only ever run against a conformant fixture'),
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+  });
+
+  // A stray, out-of-scope trailing-newline edit to a README, fired five times
+  // across one pull request — a smell each time, not a reason to hold up an
+  // otherwise-sound change.
+  it('approves despite five repeated non-blocking findings', () => {
+    const smells = Array.from({ length: 5 }, (_, i) => ({
+      lens: 'blast-radius',
+      summary: `stray trailing-newline edit to README (${i + 1})`,
+      blocking: false,
+    }));
+    const verdict = aggregate(DECLARED, [
+      approved('correctness'),
+      approved('honesty'),
+      { lens: 'blast-radius', outcome: 'approved', findings: smells },
+    ]);
+    expect(verdict.outcome).toBe('approved');
+    expect(verdict.findings).toHaveLength(5);
+  });
+
+  // could_not_run still outranks a smell-only panel, same as it outranks a
+  // rejection — absence of a blocking finding is not evidence of soundness
+  // when a lens never looked at all.
+  it('still reports could_not_run over an approval-with-smells when another lens did not review', () => {
+    const verdict = aggregate(DECLARED, [
+      approvedWithSmell('correctness', 'a style nit'),
+      couldNotRun('honesty', 'model returned no content'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('could_not_run');
   });
 });

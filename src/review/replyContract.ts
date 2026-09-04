@@ -18,6 +18,18 @@ export const REASON_MARKER = 'REASON:';
 export const APPROVED_WORD = 'approved';
 export const REJECTED_WORD = 'rejected';
 export const CANNOT_RUN_WORD = 'could_not_run';
+
+// The two severities a finding can carry. Written in brackets right after
+// FINDING_MARKER — `FINDING: [blocking] ...` or `FINDING: [smell] ...` — so a
+// reviewer states severity explicitly on the same line the finding itself is
+// written on, rather than it living in a separate marker a reply could omit
+// without looking incomplete. BLOCKING_TAG sinks the verdict; SMELL_TAG is
+// reported and does not. Neither is a default the AUTHOR of a change gets to
+// reach for: they are the reviewing lens's own words, read only out of that
+// lens's reply by parseReply.ts, and an untagged or unrecognised finding
+// reads as BLOCKING_TAG — see parseReply.ts's severityOf.
+export const BLOCKING_TAG = 'blocking';
+export const SMELL_TAG = 'smell';
 // A peer of the three above, not a softer spelling of CANNOT_RUN_WORD. The
 // distinction this word exists to make: could_not_run is a review that was
 // OWED and did not happen — a genuine failure, and it holds up the whole
@@ -57,11 +69,26 @@ One verdict line, and only one:
 
 Rules that decide whether your reply can be read at all:
 
-- ${REJECTED_WORD} requires at least one finding. Write each as its own line
-  beginning ${FINDING_MARKER}, stating what is wrong in one sentence. A
-  rejection nobody can act on is not a rejection and will be discarded.
-- ${APPROVED_WORD} requires no findings at all. If you have something to
-  report, you are rejecting. Do not approve and then list concerns.
+- Every finding line carries its own severity, written in brackets right
+  after ${FINDING_MARKER}:
+
+    ${FINDING_MARKER} [${BLOCKING_TAG}] <what is wrong, one sentence>
+    ${FINDING_MARKER} [${SMELL_TAG}] <what is wrong, one sentence>
+
+  ${BLOCKING_TAG} means this change must not be approved as it stands.
+  ${SMELL_TAG} means it is worth a person's attention but does not, on its
+  own, justify holding up the change — a style nit, an inconsistency,
+  something that could be better but is not wrong. This is your judgement to
+  state, not ours to infer: a finding with the tag left off, or an
+  unrecognised one, is read as ${BLOCKING_TAG}. Silence does not shrink a
+  concern.
+- ${REJECTED_WORD} requires at least one ${BLOCKING_TAG} finding. If every
+  finding you have is ${SMELL_TAG}, you are approving with notes, not
+  rejecting — use ${APPROVED_WORD} and list them there. A rejection nobody
+  can act on is not a rejection and will be discarded.
+- ${APPROVED_WORD} may carry ${SMELL_TAG} findings. It must carry no
+  ${BLOCKING_TAG} finding — if any finding is ${BLOCKING_TAG}, you are
+  rejecting, not approving with concerns.
 - ${CANNOT_RUN_WORD} is the honest answer when you TRIED to review and could
   not — the diff was truncated, something you needed in order to judge it was
   missing or corrupted, or you otherwise have no basis for a judgement at
