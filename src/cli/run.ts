@@ -38,6 +38,16 @@ export interface ReviewOutcome {
   readonly report: string;
   /** 0 only for an approval. Everything else, including "could not run", is red. */
   readonly exitCode: number;
+  /**
+   * Non-blocking facts `resolveSettings` found while still reaching `ready`
+   * — see `ReviewSettings.warnings`'s own doc comment. Absent, never an
+   * empty array, when there is nothing to say. Not part of `report`: the
+   * report is what a reviewer judges the change against, and a warning
+   * about this repository's OWN configuration is not a fact about the
+   * change under review — it belongs at the process boundary (stderr),
+   * which is where `review.ts` sends it.
+   */
+  readonly warnings?: readonly string[];
 }
 
 /**
@@ -50,7 +60,12 @@ export interface ReviewOutcome {
  */
 const noKeyFile: KeyFileReader = () => Promise.resolve({ kind: 'absent' });
 
-function couldNotRun(subject: string, source: string, reason: string): ReviewOutcome {
+function couldNotRun(
+  subject: string,
+  source: string,
+  reason: string,
+  warnings?: readonly string[],
+): ReviewOutcome {
   return {
     report: [
       '## Review: Could not run',
@@ -68,6 +83,7 @@ function couldNotRun(subject: string, source: string, reason: string): ReviewOut
       `Lens set: \`${source}\`.`,
     ].join('\n'),
     exitCode: 1,
+    ...(warnings !== undefined ? { warnings } : {}),
   };
 }
 
@@ -136,6 +152,7 @@ export async function runReview(
         'Nothing was reviewed. This is a red result and not a passing one.',
       ].join('\n'),
       exitCode: 1,
+      ...(settings.warnings !== undefined ? { warnings: settings.warnings } : {}),
     };
   }
 
@@ -150,6 +167,7 @@ export async function runReview(
       subject.title,
       loaded.source,
       `The lens set could not be read (${loaded.why}): ${loaded.reason}`,
+      settings.warnings,
     );
   }
 
@@ -157,5 +175,6 @@ export async function runReview(
   return {
     report: renderReport(run.verdict, { source: loaded.source, subject: subject.title }),
     exitCode: exitCodeFor(run.verdict.outcome),
+    ...(settings.warnings !== undefined ? { warnings: settings.warnings } : {}),
   };
 }

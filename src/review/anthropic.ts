@@ -1,60 +1,113 @@
-// The transport: one lens, one model call.
+// The transport: one lens, one model call — via `@verevoir/llm`, never a
+// hand-rolled request to a provider. Only `@verevoir/llm` may talk to a
+// model provider's SDK/API in this project; this file used to violate that
+// boundary directly against `api.anthropic.com` with a raw `fetch`, in the
+// tool that judges every repository's changes, including this one's.
 //
-// This is the only file in the repository that talks to a provider, and it is
-// where the prompt split stops being a convention and becomes a wire format.
-// `shared` goes in the `system` block, marked cacheable; `perLens` goes in the
-// user message. That ordering is the contract `Prompt` documents and no type
-// can enforce — here it is enforced by a test, because here there is finally
-// something to test.
+// This file's job is now narrower than it was: shape ONE model call
+// correctly (the shared/per-lens split `Prompt` documents), and translate
+// what `@verevoir/llm`'s `chat()` can throw into what `runPanel` already
+// knows how to read — a `NoRoomToAnswerError` when the model was cut off by
+// its own token ceiling before it could answer, a plain `Error` otherwise.
 //
-// It returns raw reply text and nothing else. What a reply MEANS is the
-// parser's job; a transport that started interpreting would give the system
-// two places where a verdict is decided.
+// WHICH CREDENTIAL IS USED IS `llm`'S DECISION, NOT THIS FILE'S. This file
+// hands `chat()` an explicit `apiKey` only when `settings.ts` resolved one
+// (from `ANTHROPIC_API_KEY`, env or file) — BYOK, which wins outright. When
+// none was found, `config.apiKey` is `undefined` and this file passes
+// `null`, which is `chat()`'s documented "no BYOK — use the platform
+// default" signal: `chat()` then reads `CLAUDE_CODE_OAUTH_TOKEN` from the
+// environment itself, ahead of a metered `ANTHROPIC_API_KEY`, so the exact
+// same call — CI or a laptop, no branch here at all — bills a Claude
+// subscription rather than the metered key whenever one is available. That
+// is what "the transport choice stops being its concern at all" means in
+// practice: this file never asks which credential is in play, and could not
+// tell you which one served any given call.
 //
-// Usage figures come back on every response and are deliberately discarded
-// here. Accounting is its own story with its own shape (four numbers kept
-// apart, per provider call), and a half-implementation that recorded a total
-// would be worse than none — it would look like accounting exists.
+// It returns raw reply text and nothing else, same as before. What a reply
+// MEANS is the parser's job; a transport that started interpreting would
+// give the system two places where a verdict is decided.
+//
+// Usage figures come back on every `chat()` reply and are deliberately
+// discarded here, same as before: accounting is its own story with its own
+// shape, and a half-implementation that recorded a total would be worse
+// than none — it would look like accounting exists.
+//
+// WHAT THIS FILE USED TO CARRY AND NO LONGER DOES: `AnthropicConfig.baseUrl`
+// and `DEFAULT_BASE_URL`, an override so a proxy or regional endpoint could
+// stand in for `api.anthropic.com`. Named explicitly here rather than left
+// for a diff to speak for itself. It is not replaced, and the loss is real,
+// but it was never a REACHABLE capability in this repository before this
+// change either — grep confirms neither `settings.ts` nor `review.ts` ever
+// read an env var into it or wired it through; it existed as a field only
+// tests exercised. A future need for a proxy endpoint has to be served by
+// `@verevoir/llm` itself, in whatever form its own maintainers choose to
+// offer it, rather than resurrected here — restoring it in this file would
+// put transport-endpoint knowledge back in the one place this change exists
+// to remove it from. What mechanism, if any, `@verevoir/llm` currently
+// offers for this is not established anywhere in this change and is not
+// claimed here — it is a question to raise with that package if the need
+// actually arises, not a fact this file asserts about code it does not show.
+
+import { chat } from '@verevoir/llm/anthropic';
+import type { ChatReply } from '@verevoir/llm';
 
 import type { Prompt } from './prompt.js';
 import { NoRoomToAnswerError, type Reviewer } from './panel.js';
 
-/** A POST, shaped so the global `fetch` satisfies it without adaptation. */
-export type HttpPost = (
-  url: string,
-  init: {
-    readonly method: string;
-    readonly headers: Record<string, string>;
-    readonly body: string;
-  },
-) => Promise<{ readonly ok: boolean; readonly status: number; text(): Promise<string> }>;
+/**
+ * What this file actually calls, injected so a test never makes a real
+ * model call. Deliberately narrower than `@verevoir/llm`'s own
+ * `ChatOptions` — this file only ever sends a single user turn and never
+ * touches retries, progress or abort — but every field named here is a
+ * real `ChatOptions` field with the same meaning, so the real `chat`
+ * (`@verevoir/llm/anthropic`'s, the default) satisfies this type without
+ * adaptation: it accepts every field `ChatOptions` requires and more,
+ * structurally compatible with this narrower shape.
+ */
+export type ChatFn = (options: {
+  readonly systemPrompt: string;
+  // A mutable array, not `readonly ...[]`, to structurally match
+  // `@verevoir/llm`'s own `Turn[]` — `chat()` never mutates what it is
+  // handed, but a readonly array is not assignable to a mutable parameter
+  // type, so this shape has to match exactly for the real `chat` to satisfy
+  // this type as its default.
+  readonly turns: { readonly role: 'user'; readonly content: string }[];
+  readonly apiKey?: string | null;
+  readonly model: string;
+  readonly maxTokens: number;
+}) => Promise<ChatReply>;
 
 export interface AnthropicConfig {
-  readonly apiKey: string;
+  /**
+   * BYOK credential, when `settings.ts` resolved one. `undefined` — never an
+   * empty string, since `settings.ts`'s own `present()` treats blank as
+   * absent — means "no explicit credential; let `@verevoir/llm` find one
+   * itself" (see the file header).
+   */
+  readonly apiKey?: string;
   /**
    * Pinned, never defaulted by the caller's environment. CI and a laptop must
    * judge the same commit with the same model or the two runs are not
    * comparable — and a judge that varies silently is a bar that moves.
+   * Passed to `chat()` as the exact-id override, so the pin holds regardless
+   * of which credential route `chat()` chooses internally.
    */
   readonly model: string;
   readonly maxTokens: number;
-  /** Overridable for tests and for a proxy. */
-  readonly baseUrl?: string;
 }
-
-const DEFAULT_BASE_URL = 'https://api.anthropic.com';
-const ANTHROPIC_VERSION = '2023-06-01';
 
 /**
  * Remove anything secret from text that is about to be thrown, logged or
  * returned.
  *
  * This is a heuristic and must be documented as one: it replaces exact
- * occurrences of the strings it is given. A provider that returned half a key,
- * or one transformed in any way, would defeat it. It is here because the
+ * occurrences of the strings it is given. A provider that returned half a
+ * key, or one transformed in any way, would defeat it. It is here because the
  * alternative — trusting that a key never appears in an error — is a hope, and
  * an error message is the single most likely place for a request to be echoed
- * back at us.
+ * back at us. Kept even though `chat()` now owns the wire format: an explicit
+ * BYOK key still passes through this file on every call, and an error
+ * `chat()` throws could in principle echo it back.
  */
 export function redact(text: string, secrets: readonly string[]): string {
   let out = text;
@@ -66,145 +119,51 @@ export function redact(text: string, secrets: readonly string[]): string {
   return out;
 }
 
-interface TextBlock {
-  readonly type: string;
-  readonly text?: string;
-}
-
 /**
- * Pull the reply text out of a response body.
- *
- * Throws rather than returning `''` when there is no text. An empty string
- * would travel to `parseReply`, which would correctly call it `reply was
- * empty` — a true statement about the reply and a false one about what
- * happened, because the reply never arrived. The two are different failures
- * and only one of them is the model's fault.
+ * The substring `@verevoir/llm/anthropic`'s own `chat()` puts in its error
+ * message specifically when a reply carried no text because the token
+ * ceiling was hit before the model wrote an answer — that package's
+ * `anthropic.chat: response had no text content (stop_reason=...)`, with
+ * `stop_reason` interpolated as `max_tokens` in exactly this case. Matched
+ * as a substring rather than parsed, because this file has no access to
+ * `chat()`'s internals beyond the message it throws; if `llm` ever changes
+ * this wording, the failure degrades to a plain `Error` (still reported,
+ * still correct, just not distinguished as precisely) rather than throwing
+ * on a message it no longer recognises.
  */
-function textFrom(body: string): string {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    throw new Error('response was not JSON');
-  }
-  const document = parsed as { content?: unknown; stop_reason?: unknown };
-  const content = document.content;
-  if (!Array.isArray(content)) {
-    throw new Error('response carried no content array');
-  }
-  const text = (content as TextBlock[])
-    .filter((block) => block.type === 'text' && typeof block.text === 'string')
-    .map((block) => block.text ?? '')
-    .join('');
-  if (text === '') {
-    // Name the block kinds and the stop reason. The first version said only
-    // "no text (N block(s))", which is true and undiagnosable: four lenses
-    // failed with it and the cause could not be established from the message.
-    // A reply that is one thinking block truncated at the token ceiling and a
-    // reply that is one tool_use block are different problems, and the two
-    // fields that separate them were both already in the response.
-    const kinds = (content as TextBlock[]).map((block) => block.type).join(', ');
-    const stop = typeof document.stop_reason === 'string' ? document.stop_reason : 'absent';
-    const message = `response carried no text: ${String(content.length)} block(s) [${kinds}], stop_reason ${stop}`;
-    // stop_reason max_tokens with zero text is a specific, recognisable fact:
-    // the entire output budget went to reasoning and nothing was left to
-    // answer with. That is not the provider being unreachable and not the
-    // model answering badly - it is the model being cut off before it could
-    // answer - and NoRoomToAnswerError says so precisely rather than arriving
-    // at the panel wearing the generic word "threw", which reads as a
-    // transport fault and sent an earlier investigation looking for one. Any
-    // other stop reason with no text (a bare tool_use block, an absent
-    // stop_reason) stays a plain Error: this class is reserved for the one
-    // case it is actually true of.
-    throw stop === 'max_tokens' ? new NoRoomToAnswerError(message) : new Error(message);
-  }
-  return text;
-}
+const MAX_TOKENS_STOP_REASON = 'stop_reason=max_tokens';
 
 /**
- * A `Reviewer` backed by the Anthropic messages API.
+ * A `Reviewer` backed by `@verevoir/llm/anthropic`'s `chat()`.
  *
  * Every failure throws. `runPanel` turns a throw into `could_not_run` for that
  * lens and lets the others finish, which is exactly the handling this wants —
  * so there is nothing to gain here from catching, and something to lose: a
  * caught error that returned a string would be parsed as a reply.
  */
-export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Reviewer {
-  const url = `${config.baseUrl ?? DEFAULT_BASE_URL}/v1/messages`;
-  const secrets = [config.apiKey];
+export function anthropicReviewer(config: AnthropicConfig, call: ChatFn = chat): Reviewer {
+  const secrets = config.apiKey !== undefined ? [config.apiKey] : [];
 
   return async (_lensId: string, prompt: Prompt): Promise<string> => {
-    const body = JSON.stringify({
-      model: config.model,
-      max_tokens: config.maxTokens,
-      // The shared half, marked cacheable. This is the ordering contract from
-      // `Prompt` made real: identical bytes for every lens, sent first, so a
-      // five-lens panel pays for the diff once.
-      system: [{ type: 'text', text: prompt.shared, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: prompt.perLens }],
-    });
-
-    let response: Awaited<ReturnType<HttpPost>>;
+    let reply: ChatReply;
     try {
-      response = await post(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'anthropic-version': ANTHROPIC_VERSION,
-          'x-api-key': config.apiKey,
-        },
-        body,
+      reply = await call({
+        systemPrompt: prompt.shared,
+        turns: [{ role: 'user', content: prompt.perLens }],
+        apiKey: config.apiKey ?? null,
+        model: config.model,
+        maxTokens: config.maxTokens,
       });
     } catch (cause) {
-      throw new Error(redact(`request failed: ${(cause as Error).message}`, secrets));
-    }
-
-    // Three outcomes, not two, and the panel reviewing this file on its first
-    // real run is what found that. The previous version was
-    // `await response.text().catch(() => '')` — a body that failed to arrive
-    // became the empty string, which reached `textFrom` and was reported as
-    // "response was not JSON": the same words a genuinely malformed body
-    // produces. That collapses "the transport broke mid-response" and "the
-    // provider sent us garbage" into one message, and they are fixed by
-    // different people. It was also the exact catch-that-returns-a-default
-    // this module warns against two functions down, in the file that warns
-    // about it.
-    let raw = '';
-    let bodyError: string | undefined;
-    try {
-      raw = await response.text();
-    } catch (cause) {
-      bodyError = (cause as Error).message;
-    }
-
-    if (!response.ok) {
-      // Status first. It is the more useful fact, and a body that also failed
-      // to read is a detail on top of it rather than a replacement for it.
-      throw new Error(
-        redact(
-          bodyError === undefined
-            ? `HTTP ${String(response.status)}: ${raw.slice(0, 500)}`
-            : `HTTP ${String(response.status)}, and the body could not be read: ${bodyError}`,
-          secrets,
-        ),
-      );
-    }
-
-    if (bodyError !== undefined) {
-      throw new Error(redact(`response body could not be read: ${bodyError}`, secrets));
-    }
-
-    try {
-      return textFrom(raw);
-    } catch (cause) {
-      const message = redact((cause as Error).message, secrets);
-      // Preserve the class through redaction rather than rewrap into a plain
-      // Error: a NoRoomToAnswerError that lost its type here would still say
-      // the right words but stop being distinguishable to anything reading
-      // the exception itself, only to something re-parsing the message.
-      throw cause instanceof NoRoomToAnswerError
+      const message = redact(cause instanceof Error ? cause.message : String(cause), secrets);
+      // See MAX_TOKENS_STOP_REASON's own doc comment: this is the one case
+      // `runPanel` reports with its own precise language ("no room to
+      // answer") rather than the generic "reviewer threw" that would send a
+      // reader looking for a flaky connection instead of a token ceiling.
+      throw message.includes(MAX_TOKENS_STOP_REASON)
         ? new NoRoomToAnswerError(message)
         : new Error(message);
     }
+    return reply.content;
   };
 }

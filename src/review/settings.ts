@@ -16,7 +16,8 @@
 // and pointing at the wrong thing entirely. The person needed to be told they
 // had not added a secret.
 //
-// THE API KEY, SPECIFICALLY, HAS THREE SOURCES, TRIED IN A FIXED ORDER:
+// THE API KEY, SPECIFICALLY, HAS THREE SOURCES, TRIED IN A FIXED ORDER —
+// PLUS ONE MORE, DIFFERENT IN KIND, CHECKED ONLY IF ALL THREE COME UP EMPTY:
 //
 //   1. `ANTHROPIC_API_KEY` in the environment, if set and non-blank. This
 //      wins, unconditionally, because it is how GitHub Actions supplies a
@@ -26,6 +27,20 @@
 //   3. Otherwise a conventional default path: `$XDG_CONFIG_HOME/verevoir/
 //      anthropic.key`, or `~/.config/verevoir/anthropic.key` when
 //      `XDG_CONFIG_HOME` is unset.
+//   4. Otherwise `CLAUDE_CODE_OAUTH_TOKEN`, if set and non-blank — a Claude
+//      subscription credential (from `claude setup-token`), and a
+//      perfectly usable one: `@verevoir/llm`'s `chat()`, which the review
+//      calls through, already prefers this exact variable over a metered
+//      key when no BYOK value is supplied to it. This module only checks
+//      that the variable IS SET — it never reads or holds its value. If it
+//      did, and passed it along as if it were an API key, that value would
+//      reach `chat()` as an explicit BYOK override, which wins over
+//      `chat()`'s own (correct) preference for reading the token itself —
+//      turning the one mechanism meant to avoid a metered key into a second,
+//      redundant path to the same fact, with a chance to get it wrong. So
+//      when this is the source that resolves, `apiKey` in the settings this
+//      module returns stays `undefined`, and the caller passes `chat()`
+//      nothing explicit — see `ReviewSettings.apiKey`'s own doc comment.
 //
 // A file is not only a fallback for when the environment fails to arrive — it
 // is the better mechanism, and the environment variable stays first for
@@ -89,6 +104,23 @@
 // a blank file exactly as before; it now also remembers every path that was
 // blank along the way, and `resolveSettings` names each one in `problems`
 // whenever the key still could not be resolved from any source.
+//
+// `PROBLEMS` AND `WARNINGS` ARE TWO DIFFERENT CHANNELS, NOT ONE RENAMED. A
+// `problem` forces a red result: `kind` becomes `invalid` (or stays
+// `incomplete`, alongside `missing`) whenever `problems` is non-empty, by
+// design, because something present and wrong must be corrected before the
+// run can be trusted. A `warning` cannot do that: it rides only on a `ready`
+// result, for a fact that is real and worth keeping but must not veto a run
+// that otherwise succeeded. The OAuth branch below is the one place this
+// exists today: a blank ANTHROPIC_API_KEY_FILE coinciding with a usable
+// CLAUDE_CODE_OAUTH_TOKEN is neither nothing (the file WAS found, and WAS
+// blank) nor a reason to refuse to run (a working credential is available).
+// An earlier version of this branch pushed it into `problems`, which flipped
+// a working run to `invalid` over a file unrelated to the credential in use;
+// the version after that dropped it entirely, which silently collapsed
+// "found and blank" into "never configured" -- the same collapse `blankPaths`
+// exists to prevent everywhere else in this file, simply missed here first.
+// `warnings` is what closes that gap without reopening the first one.
 
 /** A setting the run needs and does not have. */
 export interface MissingSetting {
@@ -101,12 +133,32 @@ export interface MissingSetting {
 }
 
 export interface ReviewSettings {
-  readonly apiKey: string;
+  /**
+   * Explicit BYOK credential to hand `@verevoir/llm`'s `chat()`, resolved
+   * from `ANTHROPIC_API_KEY` (env or file). `undefined` — key absent
+   * entirely, never present-and-`undefined` — when no such credential was
+   * found but a Claude subscription OAuth token is present instead:
+   * `chat()` reads `CLAUDE_CODE_OAUTH_TOKEN` from the environment itself in
+   * that case, so this module does not re-derive a fact `llm` already
+   * knows how to establish, and never hands it a value that would override
+   * `llm`'s own preference for the subscription token. See the file
+   * header's fourth source.
+   */
+  readonly apiKey?: string;
   readonly model: string;
   readonly maxTokens: number;
   readonly lensSource: string;
   /** Sent as a bearer token when the lens set is fetched over HTTP. */
   readonly lensToken?: string;
+  /**
+   * Non-blocking facts found while resolving a `ready` result — never a
+   * reason this result is `ready` rather than `invalid`; see the file
+   * header's "PROBLEMS AND WARNINGS" paragraph for why a second channel
+   * exists alongside `problems` at all. Absent, never an empty array, when
+   * there is nothing to say — so a caller checking `warnings !== undefined`
+   * and one checking `warnings.length > 0` agree.
+   */
+  readonly warnings?: readonly string[];
 }
 
 export type SettingsResult =
@@ -295,6 +347,7 @@ export async function resolveSettings(
 ): Promise<SettingsResult> {
   const missing: MissingSetting[] = [];
   const problems: string[] = [];
+  const warnings: string[] = [];
 
   const apiKeyLookup = await resolveApiKey(env, readKeyFile);
   const apiKeyResolution = apiKeyLookup.resolution;
@@ -308,16 +361,33 @@ export async function resolveSettings(
     for (const path of apiKeyLookup.blankPaths) {
       problems.push(`the API key file at ${path} was found but was blank`);
     }
+  } else if (present(env['CLAUDE_CODE_OAUTH_TOKEN']) !== undefined) {
+    // A fourth source resolved instead — see the file header. `apiKey`
+    // stays undefined. `apiKeyLookup.blankPaths` goes to `warnings`, not
+    // `problems`, on this branch specifically — see the file header's
+    // "PROBLEMS AND WARNINGS" paragraph for the two things that go wrong if
+    // either channel alone is used: pushing to `problems` flips a working,
+    // OAuth-resolved run to `invalid` over a file unrelated to the
+    // credential actually in use; dropping it entirely collapses "found and
+    // blank" into "never configured", indistinguishable from a person who
+    // never set ANTHROPIC_API_KEY_FILE at all.
+    for (const path of apiKeyLookup.blankPaths) {
+      warnings.push(
+        `the API key file at ${path} was found but was blank (a Claude subscription ` +
+          'token, CLAUDE_CODE_OAUTH_TOKEN, is in use instead, so this did not block the run)',
+      );
+    }
   } else {
     missing.push({
       name: 'ANTHROPIC_API_KEY',
-      why: 'the review calls a model once per lens, and cannot run without a key',
+      why: 'the review calls a model once per lens, and cannot run without a key or a subscription credential',
       where:
         'GitHub: Settings → Secrets and variables → Actions → New repository secret, ' +
         'named ANTHROPIC_API_KEY. Locally: export ANTHROPIC_API_KEY=sk-..., or set ' +
         'ANTHROPIC_API_KEY_FILE to a path holding the key, or place the key at ' +
         '$XDG_CONFIG_HOME/verevoir/anthropic.key (~/.config/verevoir/anthropic.key ' +
-        'when XDG_CONFIG_HOME is unset).',
+        'when XDG_CONFIG_HOME is unset) — or, to bill a Claude subscription instead of ' +
+        'a metered key, run `claude setup-token` and leave CLAUDE_CODE_OAUTH_TOKEN set.',
     });
     for (const path of apiKeyLookup.blankPaths) {
       problems.push(`the API key file at ${path} was found but was blank`);
@@ -374,11 +444,12 @@ export async function resolveSettings(
   return {
     kind: 'ready',
     settings: {
-      apiKey: apiKey as string,
+      ...(apiKey !== undefined ? { apiKey } : {}),
       model,
       maxTokens,
       lensSource,
       ...(lensToken !== undefined ? { lensToken } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
     },
   };
 }

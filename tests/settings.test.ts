@@ -201,6 +201,125 @@ describe('resolveSettings, given an empty environment', () => {
   });
 });
 
+describe('resolveSettings, given only a Claude subscription OAuth token', () => {
+  it('is ready, with no apiKey field at all, rather than incomplete', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('ready');
+    const settings = readyOf(result);
+    // Not merely `undefined` — actually absent as a key, so a caller
+    // spreading these settings into a call never sends an explicit
+    // `apiKey: undefined`, which this project's `exactOptionalPropertyTypes`
+    // treats as different from omitting the key entirely.
+    expect('apiKey' in settings).toBe(false);
+  });
+
+  it('still reports ANTHROPIC_API_KEY missing when neither credential is set', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(named(missingOf(result), 'ANTHROPIC_API_KEY')).toBeDefined();
+  });
+
+  it('treats a blank CLAUDE_CODE_OAUTH_TOKEN as absent, same as a blank ANTHROPIC_API_KEY', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: '   ' }),
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(named(missingOf(result), 'ANTHROPIC_API_KEY')).toBeDefined();
+  });
+
+  it('mentions CLAUDE_CODE_OAUTH_TOKEN in the missing-key guidance, alongside the other sources', async () => {
+    const missing = missingOf(
+      await resolveSettings(env({ ANTHROPIC_API_KEY: undefined }), NO_FILES),
+    );
+    const entry = named(missing, 'ANTHROPIC_API_KEY');
+
+    expect(entry.where).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(entry.where).toContain('claude setup-token');
+  });
+
+  // The precedence stays what it was: a resolved metered key is still used
+  // even when a subscription token also happens to be sitting in the same
+  // environment — the OAuth source is checked only once the first three
+  // sources have all come up empty.
+  it('still prefers a resolved ANTHROPIC_API_KEY over an also-present OAuth token', async () => {
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: 'sk-from-env', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value' }),
+        NO_FILES,
+      ),
+    );
+
+    expect(settings.apiKey).toBe('sk-from-env');
+  });
+
+  // Two review rounds shaped this test, worth naming because a third
+  // implementation could easily reintroduce either mistake. Round 1's own
+  // review caught the first version as vacuous (NO_FILES, no
+  // ANTHROPIC_API_KEY_FILE configured, so `blankPaths` was empty regardless
+  // of the implementation). The fix that followed made the file genuinely
+  // blank and proved it was read — but ALSO stopped naming the blank file at
+  // all, which round 2's review caught as its own defect: "empty collapses
+  // into absent in exactly the case this lens is meant to catch." This
+  // version asserts the actual fact settings.ts now surfaces — a warning
+  // naming the path and why it did not block the run — rather than merely
+  // that the run stayed ready.
+  it('warns about a blank explicit key file, by name, rather than dropping it, when the OAuth token still makes the run ready', async () => {
+    const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: '   \n' } });
+
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value',
+      }),
+      fs.read,
+    );
+
+    // The blank file really was read — proof this test exercises the path
+    // it claims to, not an artefact of nothing having been exercised.
+    expect(fs.asked).toEqual(['/keys/anthropic']);
+
+    const settings = readyOf(result);
+    expect(settings.warnings).toBeDefined();
+    const warnings = settings.warnings ?? [];
+    expect(warnings.some((warning) => warning.includes('/keys/anthropic'))).toBe(true);
+    expect(warnings.some((warning) => warning.includes('blank'))).toBe(true);
+    // Named as non-blocking, not merely non-blocking in effect — a reader of
+    // this warning should not go looking for why the run failed to run.
+    expect(warnings.some((warning) => warning.includes('OAUTH_TOKEN'))).toBe(true);
+  });
+
+  // The channel this is NOT: `warnings` never becomes a reason to refuse.
+  // Distinct from the test above because a future edit that made `warnings`
+  // participate in the `kind` decision (the exact mistake round 1 already
+  // made once, with `problems`) would fail this test specifically, even if
+  // it left the warning's wording untouched.
+  it('never turns a warning into a red result', async () => {
+    const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: '' } });
+
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-value',
+      }),
+      fs.read,
+    );
+
+    expect(result.kind).toBe('ready');
+  });
+});
+
 describe('resolveSettings, resolving the API key from a file', () => {
   it('prefers the environment variable over ANTHROPIC_API_KEY_FILE, even when both are set', async () => {
     const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: 'sk-from-file' } });

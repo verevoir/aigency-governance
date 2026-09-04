@@ -47,7 +47,7 @@ export {
   anthropicReviewer,
   redact,
   type AnthropicConfig,
-  type HttpPost,
+  type ChatFn,
 } from './review/anthropic.js';
 export {
   DEFAULT_LENS_SOURCE,
