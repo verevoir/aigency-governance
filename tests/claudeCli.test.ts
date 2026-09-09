@@ -29,9 +29,7 @@ describe('the wire format', () => {
   it('sends the shared half as the system prompt, verbatim', async () => {
     chat.mockResolvedValue({ content: 'VERDICT: approved', usage: {}, stopReason: 'end_turn' });
     await claudeCliReviewer()('honesty', PROMPT);
-    expect(chat).toHaveBeenCalledWith(
-      expect.objectContaining({ systemPrompt: PROMPT.shared }),
-    );
+    expect(chat).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: PROMPT.shared }));
   });
 
   it('sends the per-lens half as the single user turn, verbatim', async () => {

@@ -371,7 +371,10 @@ export async function resolveSettings(
 
   return {
     kind: 'ready',
-    settings: apiKey === undefined ? { route: 'keyless', ...common } : { route: 'billed', apiKey, ...common },
+    settings:
+      apiKey === undefined
+        ? { route: 'keyless', ...common }
+        : { route: 'billed', apiKey, ...common },
   };
 }
 

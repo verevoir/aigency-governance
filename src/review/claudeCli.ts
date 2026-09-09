@@ -105,7 +105,7 @@ export function augmentBareExit(message: string): string {
     'interactive `claude` login. This is a GUESS, not a decoded reason: as of ' +
     "@verevoir/llm 0.26.0, its claude-cli adapter does not read the CLI's own stdout on a " +
     'non-zero exit, so the true reason (if this guess is wrong) cannot be recovered here. ' +
-    "See this repository's README, \"Running it locally\", for the upstream gap this works " +
+    'See this repository\'s README, "Running it locally", for the upstream gap this works ' +
     'around.'
   );
 }
