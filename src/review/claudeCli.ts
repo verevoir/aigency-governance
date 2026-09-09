@@ -64,7 +64,7 @@
 
 import { chat } from '@verevoir/llm/claude-cli';
 
-import type { Reviewer } from './panel.js';
+import { NoRoomToAnswerError, type Reviewer } from './panel.js';
 import type { Prompt } from './prompt.js';
 
 /**
@@ -146,8 +146,16 @@ export function claudeCliReviewer(options: ClaudeCliOptions = {}): Reviewer {
       });
       return reply.content;
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      throw new Error(augmentBareExit(message));
+      const message = augmentBareExit(cause instanceof Error ? cause.message : String(cause));
+      // Preserve the class through augmentation rather than rewrap into a
+      // plain Error - mirrors anthropic.ts's own catch. Nothing on this
+      // transport constructs a NoRoomToAnswerError itself (an empty reply is
+      // caught one layer up, by the shared parseReply - see the file
+      // header), but a future caller's rejection should not lose the class
+      // on its way through this one.
+      throw cause instanceof NoRoomToAnswerError
+        ? new NoRoomToAnswerError(message)
+        : new Error(message);
     }
   };
 }
