@@ -155,6 +155,35 @@ try {
   await rm(keyDir, { recursive: true, force: true });
 }
 
+// Scenario 3: no key configured anywhere — not ANTHROPIC_API_KEY, not
+// ANTHROPIC_API_KEY_FILE, and HOME pointed at a directory with no
+// ~/.config/verevoir/anthropic.key in it, so the default path genuinely
+// finds nothing either. This is the laptop default settings.ts's route
+// selection exists for: before it, this exact environment reported
+// ANTHROPIC_API_KEY as unconfigured and refused before reaching here. Now it
+// must resolve to the keyless route and reach the same empty-diff guard the
+// two billed scenarios do — proving `review.ts` actually wires the keyless
+// path through, not merely that `resolveSettings` can be told to return it
+// against an injected fake (settings.test.ts already covers that half).
+const noKeyDir = await mkdtemp(join(tmpdir(), 'aigency-review-cli-check-nokey-'));
+try {
+  const noKey = await runEmptyDiff({
+    ANTHROPIC_API_KEY: undefined,
+    ANTHROPIC_API_KEY_FILE: undefined,
+    XDG_CONFIG_HOME: undefined,
+    HOME: noKeyDir,
+  });
+  const out = checkRefused('no key configured (keyless route)', noKey);
+  if (out.includes('ANTHROPIC_API_KEY')) {
+    problems.push(
+      '[no key configured] the report mentions ANTHROPIC_API_KEY as unconfigured — an ' +
+        'absent key should resolve to the keyless route now, not block the run',
+    );
+  }
+} finally {
+  await rm(noKeyDir, { recursive: true, force: true });
+}
+
 if (problems.length > 0) {
   console.error(
     `The binary ran and did the wrong thing:\n${problems.map((p) => `  - ${p}`).join('\n')}`,
@@ -163,5 +192,6 @@ if (problems.length > 0) {
 }
 
 console.log(
-  `${BIN} started, resolved the key from both an env var and a file on disk, and refused an empty diff both times.`,
+  `${BIN} started, resolved the key from an env var and a file on disk, resolved to the ` +
+    'keyless route with no key configured at all, and refused an empty diff every time.',
 );
