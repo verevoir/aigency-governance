@@ -344,54 +344,58 @@ describe('resolveSettings, resolving the API key from a file', () => {
   // covered where it is real: `redact()` in tests/anthropic.test.ts, tested
   // against a value that actually is the key.
 
-  it('treats empty file contents as blank, falling through to the next source', async () => {
+  // Reviewed and reversed: a blank file someone pointed at used to be folded
+  // into `absent` and fall through to whatever the next source supplied —
+  // here, a WORKING default-path key — so this exact setup used to resolve
+  // to a clean, silent `ready`/`billed` result. That is precisely the
+  // failure named in the file header: a broken billed setup silently
+  // rescued by a route it never asked for, with no trace left anywhere that
+  // the file the caller actually pointed at was empty. It now blocks
+  // instead — the default path is never even consulted.
+  it('blocks on a blank explicit key file rather than falling through to a working default path', async () => {
     const fs = filesystem({
       '/keys/anthropic': { kind: 'text', text: '' },
       '/home/it/.config/verevoir/anthropic.key': { kind: 'text', text: 'sk-from-default-path' },
     });
 
-    const settings = readyOf(
-      await resolveSettings(
-        env({
-          ANTHROPIC_API_KEY: undefined,
-          ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
-          HOME: '/home/it',
-        }),
-        fs.read,
-      ),
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        HOME: '/home/it',
+      }),
+      fs.read,
     );
 
-    expect(apiKeyOf(settings)).toBe('sk-from-default-path');
+    expect(result.kind).toBe('invalid');
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
+    expect(problems.some((problem) => problem.includes('blank'))).toBe(true);
+    // The default path was never even asked for — resolution stopped at the
+    // blank explicit file, exactly as it does for an unreadable one.
+    expect(fs.asked).toEqual(['/keys/anthropic']);
   });
 
-  it('treats whitespace-only file contents as blank, falling through to the next source', async () => {
+  it('blocks on whitespace-only explicit file contents the same way, not merely on a literally empty file', async () => {
     const fs = filesystem({
       '/keys/anthropic': { kind: 'text', text: '  \n\t  \n' },
       '/home/it/.config/verevoir/anthropic.key': { kind: 'text', text: 'sk-from-default-path' },
     });
 
-    const settings = readyOf(
-      await resolveSettings(
-        env({
-          ANTHROPIC_API_KEY: undefined,
-          ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
-          HOME: '/home/it',
-        }),
-        fs.read,
-      ),
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        HOME: '/home/it',
+      }),
+      fs.read,
     );
 
-    expect(apiKeyOf(settings)).toBe('sk-from-default-path');
+    expect(result.kind).toBe('invalid');
+    expect(problemsOf(result).some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
   });
 
-  // The explicit file is blank AND nothing else supplies a key either — the
-  // whole chain comes up empty. This used to be `incomplete`, naming the
-  // blank file as a problem; it now runs keyless, silently, exactly as if
-  // no ANTHROPIC_API_KEY_FILE had been set at all. A blank file and an
-  // absent one are the same fact from this module's point of view once
-  // nothing downstream supplies a key either: "this source had nothing to
-  // offer".
-  it('resolves to ready, keyless, when the explicit key file is blank and nothing else supplies a key', async () => {
+  it('blocks (invalid) when the explicit key file is blank and nothing else would have supplied a key either', async () => {
     const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: '   \n' } });
 
     const result = await resolveSettings(
@@ -399,13 +403,14 @@ describe('resolveSettings, resolving the API key from a file', () => {
       fs.read,
     );
 
-    expect(readyOf(result).route).toBe('keyless');
+    expect(result.kind).toBe('invalid');
+    expect(problemsOf(result).some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
   });
 
   // The same case at the default path rather than the explicit one —
   // resolveApiKey threads both branches through the same `keyFromPath`, and
   // this proves the second one independently rather than assuming symmetry.
-  it('resolves to ready, keyless, when the default key file is blank and no explicit path was even set', async () => {
+  it('blocks (invalid) when the default key file is blank, even though no explicit path was ever set', async () => {
     const fs = filesystem({
       '/home/it/.config/verevoir/anthropic.key': { kind: 'text', text: '' },
     });
@@ -415,28 +420,35 @@ describe('resolveSettings, resolving the API key from a file', () => {
       fs.read,
     );
 
-    expect(readyOf(result).route).toBe('keyless');
+    expect(result.kind).toBe('invalid');
+    expect(
+      problemsOf(result).some((problem) =>
+        problem.includes('/home/it/.config/verevoir/anthropic.key'),
+      ),
+    ).toBe(true);
   });
 
-  it('stays a clean ready/billed result when the fallback past a blank explicit file succeeds', async () => {
-    const fs = filesystem({
-      '/keys/anthropic': { kind: 'text', text: '' },
-      '/home/it/.config/verevoir/anthropic.key': { kind: 'text', text: 'sk-from-default-path' },
-    });
+  // The same "a problem survives alongside a missing setting" property
+  // already pinned for an unreadable file, restated for a blank one — the
+  // two block through the same code path but are distinct facts, and a
+  // rewrite that collapsed them back together should fail this.
+  it('keeps the blank-file problem even though something else is also missing', async () => {
+    const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: '' } });
 
-    const settings = readyOf(
-      await resolveSettings(
-        env({
-          ANTHROPIC_API_KEY: undefined,
-          ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
-          HOME: '/home/it',
-        }),
-        fs.read,
-      ),
+    const result = await resolveSettings(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        AIGENCY_REVIEW_LENSES_TOKEN: undefined,
+      },
+      fs.read,
     );
 
-    expect(settings.route).toBe('billed');
-    expect(apiKeyOf(settings)).toBe('sk-from-default-path');
+    expect(result.kind).toBe('incomplete');
+    expect(missingOf(result).map((setting) => setting.name)).toEqual([
+      'AIGENCY_REVIEW_LENSES_TOKEN',
+    ]);
+    expect(problemsOf(result).some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
   });
 
   // The asymmetry that matters most in this feature: a file is trimmed, the

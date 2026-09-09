@@ -31,15 +31,31 @@
 // decide which reviewer to construct; nothing else in this module or its
 // caller needs to re-derive that decision.
 //
-// A KEY FILE THAT IS UNREADABLE STILL BLOCKS. The reversal above applies
-// only to a key being ABSENT — nobody configured one, so there is nothing to
-// report beyond "this run is keyless". A key file someone DID point at
-// (`ANTHROPIC_API_KEY_FILE`, or the conventional default path) that exists
-// and could not be opened (`EACCES`, `EISDIR`, any other real I/O error) is
-// a different fact: a person already tried to set up the billed path and it
-// is broken. Silently falling back to keyless there would hide a real
-// misconfiguration behind a route that happens to still run. That case
-// stays `invalid`, exactly as it always has.
+// A KEY FILE THAT IS UNREADABLE — OR PRESENT AND BLANK — STILL BLOCKS. The
+// reversal above applies only to a key being ABSENT — nobody configured
+// one, so there is nothing to report beyond "this run is keyless". A key
+// file someone DID point at (`ANTHROPIC_API_KEY_FILE`, or the conventional
+// default path) that exists and could not be opened (`EACCES`, `EISDIR`,
+// any other real I/O error) is a different fact: a person already tried to
+// set up the billed path and it is broken. Silently falling back to
+// keyless there would hide a real misconfiguration behind a route that
+// happens to still run. That case stays `invalid`, exactly as it always
+// has — and a file that WAS opened and found BLANK is the same fact by a
+// different mechanism: something wrote to that path (or truncated it) and
+// left no key in it. Blank-but-present is not the same fact as absent: an
+// absent file is "nobody has set this up yet", the ordinary case on a
+// fresh machine; a blank one is "somebody's setup produced nothing",
+// closer in kind to a broken read than to nothing having been tried at
+// all. An earlier version of this file collapsed blank into absent so it
+// fell through to the next source (or to keyless) exactly like a missing
+// file — the panel's review of that version named the resulting silent
+// failure directly: someone who configured the billed route and left the
+// file empty (a mistyped write, an interrupted `echo`) got a successful
+// KEYLESS run instead of any signal that their configuration did not take.
+// Blank now blocks, exactly like unreadable — even when a later source in
+// the chain (the default path, say) could have supplied a working key; a
+// broken billed setup must never be silently rescued by a route it never
+// asked for.
 //
 // THE API KEY, SPECIFICALLY, HAS THREE SOURCES, TRIED IN A FIXED ORDER:
 //
@@ -226,13 +242,15 @@ function defaultKeyFilePath(env: Record<string, string | undefined>): string | u
 type ApiKeyResolution =
   | { readonly kind: 'found'; readonly value: string }
   | { readonly kind: 'absent' }
+  | { readonly kind: 'blank'; readonly path: string }
   | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string };
 
-/** Reads and classifies one candidate file: genuinely absent or blank (both
- * `absent` — see the file header on why a blank file is no longer worth
- * distinguishing from one that was never written, now that "nothing
- * supplied a key" means keyless rather than blocked), found, or a real
- * problem the reader could not get past. */
+/** Reads and classifies one candidate file: genuinely absent (this source
+ * has nothing to offer, resolution moves on), found, or a real problem the
+ * reader could not get past — unreadable, or present-and-blank. Blank is no
+ * longer folded into absent: see the file header for why a file someone
+ * pointed at and found empty must block rather than silently resolve to
+ * keyless. */
 async function keyFromPath(path: string, readKeyFile: KeyFileReader): Promise<ApiKeyResolution> {
   const found = await readKeyFile(path);
   if (found.kind === 'absent') {
@@ -246,13 +264,15 @@ async function keyFromPath(path: string, readKeyFile: KeyFileReader): Promise<Ap
   // place a file's content is treated differently from the environment's, and
   // the difference is deliberate — see the file header.
   const trimmed = found.text.trim();
-  return trimmed === '' ? { kind: 'absent' } : { kind: 'found', value: trimmed };
+  return trimmed === '' ? { kind: 'blank', path } : { kind: 'found', value: trimmed };
 }
 
 /** The three sources, tried in order, stopping at the first that supplies a
- * value or hits a real problem. `absent` — genuinely missing, or present and
- * blank — is what lets resolution try the next source; `unreadable` is not,
- * because it is a problem with a source someone already configured. */
+ * value or hits a real problem. Only `absent` — genuinely missing — lets
+ * resolution try the next source; `blank` and `unreadable` both stop it,
+ * because both are a problem with a source someone already configured (see
+ * the file header for why blank no longer falls through the way absent
+ * does). */
 async function resolveApiKey(
   env: Record<string, string | undefined>,
   readKeyFile: KeyFileReader,
@@ -307,6 +327,13 @@ export async function resolveSettings(
   } else if (apiKeyResolution.kind === 'unreadable') {
     problems.push(
       `the API key file at ${apiKeyResolution.path} could not be read: ` + apiKeyResolution.reason,
+    );
+  } else if (apiKeyResolution.kind === 'blank') {
+    problems.push(
+      `the API key file at ${apiKeyResolution.path} exists but is blank — if it was meant to ` +
+        'supply ANTHROPIC_API_KEY, whatever wrote it left no key in it; if it was not meant to, ' +
+        'remove it. (An absent file resolves to the keyless route; a blank one blocks instead, ' +
+        'so a broken billed setup is never silently mistaken for a deliberate keyless one.)',
     );
   }
   // `apiKeyResolution.kind === 'absent'`: nothing to report here at all. This

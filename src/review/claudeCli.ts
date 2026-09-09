@@ -71,6 +71,26 @@
 // `parseReply` — shared by both transports — already reports empty text as
 // `could_not_run`, "reply was empty", regardless of which transport
 // produced it.)
+//
+// A TRUNCATED REPLY NEVER BECOMES A COMPLETE ONE, EITHER. `chat()`'s own
+// `stopReason` and `usage` are READ, not discarded — a review of an earlier
+// version of this file found they were pulled off `reply` and then never
+// looked at, so a reply cut off by `claude -p`'s own output-token ceiling
+// read identically to a normal, finished one: the same defect class as an
+// unreachable `claude` reading as a clean review, one step later in the
+// pipeline — a PARTIAL review must not read as a WHOLE one either. When
+// `stopReason` is `'max_tokens'`, `claudeCliReviewer` throws
+// `NoRoomToAnswerError` — the same class `anthropic.ts` throws for its own
+// zero-text/max_tokens case — naming the output tokens actually spent and
+// how much text arrived, rather than returning the cut-off text as though
+// it were a finished verdict. Unlike `anthropic.ts`, which only raises this
+// when NO text came back at all, this checks `stopReason` regardless of
+// whether content is present: `claude -p`'s own ceiling is not confirmed to
+// always produce an empty reply the way a zero-text `max_tokens` response
+// does on the billed route (see PAYLOAD CONTRACT in `@verevoir/llm`'s own
+// `claude-cli` adapter), so this transport cannot rely on emptiness alone
+// as the signal — it must be at least as loud as the billed route, not
+// merely as loud in the one case the two transports happen to share.
 
 import { chat } from '@verevoir/llm/claude-cli';
 
@@ -147,6 +167,15 @@ export interface ClaudeCliOptions {
  * credential, and `@verevoir/llm`'s own `chat()` refuses outright if one
  * is passed.
  */
+/**
+ * The `stopReason` `@verevoir/llm/claude-cli`'s `chat()` reports when
+ * `claude -p`'s own output-token ceiling cut the reply off before it
+ * finished — mirrors the Anthropic Messages API's own `stop_reason` value
+ * of the same name, which `anthropic.ts`'s `textFrom` already checks for
+ * its own zero-text case. See the file header's TRUNCATED REPLY paragraph.
+ */
+const TRUNCATED_STOP_REASON = 'max_tokens';
+
 export function claudeCliReviewer(options: ClaudeCliOptions = {}): Reviewer {
   return async (_lensId: string, prompt: Prompt): Promise<string> => {
     try {
@@ -155,6 +184,19 @@ export function claudeCliReviewer(options: ClaudeCliOptions = {}): Reviewer {
         turns: [{ role: 'user', content: prompt.perLens }],
         ...(options.model === undefined ? {} : { model: options.model }),
       });
+      if (reply.stopReason === TRUNCATED_STOP_REASON) {
+        // Refused, not returned — see the file header's TRUNCATED REPLY
+        // paragraph. `usage.outputTokens` and `content.length` are named so
+        // a reader can tell a ceiling hit early (little text, budget
+        // exhausted on reasoning — the same shape PR #1's own review found)
+        // from one hit late (most of the answer arrived, only the tail was
+        // cut).
+        throw new NoRoomToAnswerError(
+          `no room to answer: stop_reason ${TRUNCATED_STOP_REASON} (${String(reply.usage.outputTokens)} ` +
+            `output token(s) spent before the ceiling cut the reply off, ${String(reply.content.length)} ` +
+            'character(s) of reply text had arrived)',
+        );
+      }
       return reply.content;
     } catch (cause) {
       const message = augmentBareExit(cause instanceof Error ? cause.message : String(cause));

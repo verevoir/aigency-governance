@@ -39,14 +39,23 @@ async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
 
 /**
  * The one branch this file exists to hold: which client `settings.route`
- * says to build. Not itself unit-tested — this file is deliberately kept
- * free of anything a unit test could exercise (see the file header) — but
- * every fact it depends on (`settings.route`'s own resolution) is, in
- * `tests/settings.test.ts`, and the wiring downstream of it is exercised
- * end to end against the real compiled binary by the `cli` gate
- * (`scripts/check-cli.mjs`).
+ * says to build.
+ *
+ * Exported and driven directly in `tests/review.test.ts` — an earlier
+ * version of this comment claimed the wiring here was "exercised end to
+ * end against the real compiled binary by the `cli` gate
+ * (`scripts/check-cli.mjs`)", which a review found false: that gate's
+ * scenarios all use an EMPTY diff, which makes `runReview` return before
+ * `reviewerFor`'s result is ever called (see run.ts's empty-diff guard), so
+ * the gate proves `settings.route` reaches `ready`/`keyless` and that
+ * construction doesn't throw at import time — nothing about which reviewer
+ * actually gets built or what it sends once invoked. `tests/review.test.ts`
+ * calls the `Reviewer` this returns, against a stubbed `fetch` (billed) or
+ * a mocked `@verevoir/llm/claude-cli` `chat()` (keyless), and asserts what
+ * was actually sent — the route, the model, the key. `settings.route`'s
+ * own resolution stays covered separately, in `tests/settings.test.ts`.
  */
-function reviewerFor(settings: ReviewSettings): ReviewDeps['review'] {
+export function reviewerFor(settings: ReviewSettings): ReviewDeps['review'] {
   return settings.route === 'billed'
     ? anthropicReviewer(
         { apiKey: settings.apiKey, model: settings.model, maxTokens: settings.maxTokens },

@@ -188,6 +188,83 @@ describe('augmentBareExit', () => {
   });
 });
 
+describe('a truncated reply is refused, not returned as though it were complete', () => {
+  it('throws NoRoomToAnswerError when stopReason is max_tokens, even though content arrived', async () => {
+    chat.mockResolvedValue({
+      content: 'VERDICT: appro',
+      usage: {
+        outputTokens: 65536,
+        inputTokens: 900,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+      stopReason: 'max_tokens',
+    });
+
+    const error = await failureOf(claudeCliReviewer()('honesty', PROMPT));
+
+    expect(error).toBeInstanceOf(NoRoomToAnswerError);
+    expect(error.message).toContain('no room to answer');
+    expect(error.message).toContain('max_tokens');
+    // The output tokens actually spent, and how much text arrived, both
+    // named — stopReason and usage read and acted on, not pulled off the
+    // reply and discarded.
+    expect(error.message).toContain('65536');
+    expect(error.message).toContain('14'); // 'VERDICT: appro'.length
+  });
+
+  it('is not fooled by an EMPTY reply at max_tokens either — the same case anthropic.ts catches', async () => {
+    chat.mockResolvedValue({
+      content: '',
+      usage: {
+        outputTokens: 65536,
+        inputTokens: 900,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+      stopReason: 'max_tokens',
+    });
+
+    const error = await failureOf(claudeCliReviewer()('honesty', PROMPT));
+
+    expect(error).toBeInstanceOf(NoRoomToAnswerError);
+  });
+
+  it('returns the content normally for any other stopReason', async () => {
+    chat.mockResolvedValue({
+      content: 'VERDICT: approved',
+      usage: {
+        outputTokens: 12,
+        inputTokens: 900,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+      stopReason: 'end_turn',
+    });
+
+    const reply = await claudeCliReviewer()('honesty', PROMPT);
+
+    expect(reply).toBe('VERDICT: approved');
+  });
+
+  it('does not fire on a stopReason that merely contains "max_tokens" as a substring', async () => {
+    chat.mockResolvedValue({
+      content: 'VERDICT: approved',
+      usage: {
+        outputTokens: 12,
+        inputTokens: 900,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+      stopReason: 'not_max_tokens_really',
+    });
+
+    const reply = await claudeCliReviewer()('honesty', PROMPT);
+
+    expect(reply).toBe('VERDICT: approved');
+  });
+});
+
 // A sanity check that this suite is actually exercising the module under
 // test's own exported symbols, and NoRoomToAnswerError travels unharmed
 // alongside — this transport never constructs one itself (see the file
