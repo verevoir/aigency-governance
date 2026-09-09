@@ -149,7 +149,7 @@ machine for something else.
 **A known, permanent limitation, and the workaround this repository ships for
 it — read this before assuming a bare failure means nothing more than "try
 again".** `@verevoir/llm`'s `claude-cli` adapter (0.26.0, the version this
-repository depends on) reads the CLI's own `stdout` only on a *clean* exit.
+repository depends on) reads the CLI's own `stdout` only on a _clean_ exit.
 On a non-zero exit it reports only the bare exit code (or terminating
 signal) plus `stderr` — and the single most likely first-run failure, `claude
 -p` not being logged into any subscription, exits 1 with `stderr` **empty**
@@ -230,13 +230,13 @@ fully-uncovered modules passes.
 
 ## Settings
 
-| Variable                      | Default                            | Notes                                                                                                                                                                                                                                                                       |
-| ----------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Variable                      | Default                            | Notes                                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ANTHROPIC_API_KEY`           | — (keyless when unset)             | Not required. Configured (directly, via `ANTHROPIC_API_KEY_FILE`, or at the default key-file path) selects the billed Anthropic API route; left unset on every source selects the keyless `claude -p` route by default (via `@verevoir/llm/claude-cli`) — see "Running it locally" above for the permanent upstream gap that route works around. |
-| `AIGENCY_REVIEW_LENSES`       | the published `review/lenses.json` | A URL or a path.                                                                                                                                                                                                                                                            |
-| `AIGENCY_REVIEW_LENSES_TOKEN` | `GITHUB_TOKEN`                     | Only needed when the lens set comes from `raw.githubusercontent.com`, which is the published default. Any other `https://` source is fetched anonymously and no token is sent.                                                                                              |
-| `AIGENCY_REVIEW_MODEL`        | pinned in `src/review/settings.ts` | Leave it alone unless you know why. The same commit judged by two models is two verdicts.                                                                                                                                                                                   |
-| `AIGENCY_REVIEW_MAX_TOKENS`   | 65536                              | A value that is present and not a positive whole number is refused, never silently replaced by this default. Raised from 4096 on direct evidence: this repository's own review check hit the old default on a large diff and lost four of five lenses to a truncated reply. |
+| `AIGENCY_REVIEW_LENSES`       | the published `review/lenses.json` | A URL or a path.                                                                                                                                                                                                                                                                                                                                 |
+| `AIGENCY_REVIEW_LENSES_TOKEN` | `GITHUB_TOKEN`                     | Only needed when the lens set comes from `raw.githubusercontent.com`, which is the published default. Any other `https://` source is fetched anonymously and no token is sent.                                                                                                                                                                   |
+| `AIGENCY_REVIEW_MODEL`        | pinned in `src/review/settings.ts` | Leave it alone unless you know why. The same commit judged by two models is two verdicts.                                                                                                                                                                                                                                                        |
+| `AIGENCY_REVIEW_MAX_TOKENS`   | 65536                              | A value that is present and not a positive whole number is refused, never silently replaced by this default. Raised from 4096 on direct evidence: this repository's own review check hit the old default on a large diff and lost four of five lenses to a truncated reply.                                                                      |
 
 ## If the diff is empty
 
