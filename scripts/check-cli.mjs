@@ -21,14 +21,17 @@
 // keys below are deliberately not real ones, and if this ever starts needing
 // one, something has moved that should not have.
 //
-// Two scenarios, not one. The panel's first real review found that nothing
+// Three scenarios, not one. The panel's first real review found that nothing
 // in this repository actually proves `review.ts` WIRES `keyFileReader()`
 // into `runReview` — every unit test drives `resolveSettings` or `runReview`
 // directly with an injected fake, and none of them touch the process
 // boundary where that wiring either happens or doesn't. `review.ts` is
 // deliberately kept free of anything a unit test could exercise (see its own
 // header), so the only honest place to prove the wiring is here, running the
-// real compiled binary against a real file on disk.
+// real compiled binary against a real file on disk. The third scenario
+// proves the newer half of that same wiring: that no key configured at all
+// resolves to the keyless route rather than blocking the run — see its own
+// comment below.
 
 import { spawn } from 'node:child_process';
 // Imported, not assumed. The flat config declares no environment globals, and
@@ -84,6 +87,15 @@ if (firstLine !== EXPECTED_SHEBANG) {
 // Not covered here, and worth knowing: this runs `node <path>`, not the
 // installed `aigency-review`. tsc does not set the execute bit; npm sets it
 // when it links `bin`. The path everyone will actually use is unproven.
+//
+// The env passed to the child is built from scratch here — PATH and
+// AIGENCY_REVIEW_LENSES plus whatever `extraEnv` names — never a spread of
+// this process's own `process.env`. That is what makes "no key configured"
+// (scenario 3, below) actually mean that to the child: a variable simply
+// left out of `extraEnv` is absent to the child, not merely unset in a
+// caller-visible way, so there is no accidental leak of this process's own
+// environment (an ANTHROPIC_API_KEY that happens to be set on the machine
+// running this gate, say) into a scenario meant to have none.
 function runEmptyDiff(extraEnv) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [BIN, 'the cli smoke test'], {
@@ -155,24 +167,22 @@ try {
   await rm(keyDir, { recursive: true, force: true });
 }
 
-// Scenario 3: no key configured anywhere — not ANTHROPIC_API_KEY, not
-// ANTHROPIC_API_KEY_FILE, and HOME pointed at a directory with no
-// ~/.config/verevoir/anthropic.key in it, so the default path genuinely
-// finds nothing either. This is the laptop default settings.ts's route
-// selection exists for: before it, this exact environment reported
-// ANTHROPIC_API_KEY as unconfigured and refused before reaching here. Now it
-// must resolve to the keyless route and reach the same empty-diff guard the
-// two billed scenarios do — proving `review.ts` actually wires the keyless
-// path through, not merely that `resolveSettings` can be told to return it
-// against an injected fake (settings.test.ts already covers that half).
+// Scenario 3: no key configured anywhere. `extraEnv` names only `HOME`,
+// pointed at a fresh, empty directory — ANTHROPIC_API_KEY and
+// ANTHROPIC_API_KEY_FILE are simply never named, which (per runEmptyDiff's
+// own comment above) is what makes them genuinely absent to the child, and
+// the empty HOME means the conventional default path
+// (~/.config/verevoir/anthropic.key) finds nothing either. This is the
+// laptop default settings.ts's route selection exists for: before it, this
+// exact environment reported ANTHROPIC_API_KEY as unconfigured and refused
+// before ever reaching the empty-diff guard. Now it must resolve to the
+// keyless route and reach that same guard — proving `review.ts` actually
+// wires the keyless path through end to end, not merely that
+// `resolveSettings` CAN be told to return it against an injected fake
+// (settings.test.ts already covers that half in isolation).
 const noKeyDir = await mkdtemp(join(tmpdir(), 'aigency-review-cli-check-nokey-'));
 try {
-  const noKey = await runEmptyDiff({
-    ANTHROPIC_API_KEY: undefined,
-    ANTHROPIC_API_KEY_FILE: undefined,
-    XDG_CONFIG_HOME: undefined,
-    HOME: noKeyDir,
-  });
+  const noKey = await runEmptyDiff({ HOME: noKeyDir });
   const out = checkRefused('no key configured (keyless route)', noKey);
   if (out.includes('ANTHROPIC_API_KEY')) {
     problems.push(
