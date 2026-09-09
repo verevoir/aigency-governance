@@ -26,29 +26,39 @@
 // reached on the keyless route, and never accepts or forwards a key — see
 // `claudeCliReviewer` below.
 //
-// THE KNOWN GAP IN @verevoir/llm 0.26.0, DISCLOSED RATHER THAN SILENTLY
-// WORKED AROUND. `chat()` reads `stdout` only on a CLEAN exit. On a
-// non-zero exit it reports `describeExit(...)` plus `stderr` and nothing
-// else (verevoir/llm src/claude-cli/index.ts, the `spawned.exitCode !== 0`
-// branch). The single most likely real failure a first-time local user
-// hits — `claude -p` not logged into any subscription — exits 1 with
-// `stderr` EMPTY and the actual reason ("Not logged in · Please run
-// /login") sitting in the JSON envelope's `result` field on `stdout`,
-// which that branch never looks at. The result: that one failure surfaces
-// from `chat()` as the bare `"claude -p exited with code 1"`, with nothing
-// telling a reader why.
+// THE PERMANENT GAP IN @verevoir/llm, DISCLOSED RATHER THAN SILENTLY WORKED
+// AROUND — AND THIS IS A WORKAROUND, NOT A DESIGN. `chat()` (0.26.0, the
+// version this repository depends on) reads `stdout` only on a CLEAN exit.
+// On a non-zero exit it reports `describeExit(...)` plus `stderr` and
+// nothing else (verevoir/llm src/claude-cli/index.ts, the
+// `spawned.exitCode !== 0` branch). The single most likely real failure a
+// first-time local user hits — `claude -p` not logged into any
+// subscription — exits 1 with `stderr` EMPTY and the actual reason ("Not
+// logged in · Please run /login") sitting in the JSON envelope's `result`
+// field on `stdout`, which that branch never looks at. The result: that
+// one failure surfaces from `chat()` as the bare `"claude -p exited with
+// code 1"`, with nothing telling a reader why.
 //
-// Fixing `chat()` itself needs a code change and a publish in
-// `@verevoir/llm` — not this repository's call to make, and NOT done here;
-// see this repository's README for where that is recorded for the
-// operator. `augmentBareExit` below is a disclosed, LOCAL, best-effort
-// HINT, not a decoded reason: it matches only the exact reason-less shape
-// `chat()` produces on this specific gap and appends a labelled guess at
-// the likely cause. It never touches any other failure message — a
-// spawn-level failure (`claude` missing from PATH entirely) already
-// carries its own distinct, legible wording from `chat()`
+// THE OPERATOR HAS RULED THIS WILL NOT BE FIXED OR REPUBLISHED. This is not
+// this repository's call to make regardless, but it is worth being exact
+// about the standing of the gap: it is not merely undone, or scheduled, or
+// awaiting a future @verevoir/llm release that would make `augmentBareExit`
+// below obsolete — it is a considered decision that a publish carrying this
+// fix is not worth what it would cost. So the gap is PERMANENT for the
+// version this repository depends on, and `augmentBareExit` is not a
+// stopgap either: it is the durable answer this codebase gives to a
+// dropped-reason failure, until that standing decision itself changes.
+// `augmentBareExit` below is a disclosed, LOCAL, best-effort HINT, not a
+// decoded reason: it matches only the exact reason-less shape `chat()`
+// produces on this specific gap and appends a labelled guess at the likely
+// cause. It never touches any other failure message — a spawn-level
+// failure (`claude` missing from PATH entirely) already carries its own
+// distinct, legible wording from `chat()`
 // (`claudeCli.chat(): could not run the claude CLI — …`) and is left
-// exactly as `chat()` produced it.
+// exactly as `chat()` produced it. NO SPAWN IS HAND-ROLLED to get around
+// this either — the fix stays a hint layered on top of `@verevoir/llm`'s
+// own `chat()`, not a second `claude -p` implementation built to route
+// around the first.
 //
 // A FAILURE NEVER BECOMES A REPLY. Every branch below throws (mirroring
 // `anthropic.ts`'s own `Reviewer`); `runPanel` (panel.ts) turns a throw into
@@ -102,9 +112,10 @@ export function augmentBareExit(message: string): string {
   return (
     `${message} (no further detail was available from the CLI). This most often means ` +
     'the `claude` CLI is not logged into a subscription — try `claude setup-token`, or an ' +
-    'interactive `claude` login. This is a GUESS, not a decoded reason: as of ' +
-    "@verevoir/llm 0.26.0, its claude-cli adapter does not read the CLI's own stdout on a " +
-    'non-zero exit, so the true reason (if this guess is wrong) cannot be recovered here. ' +
+    'interactive `claude` login. This is a GUESS, not a decoded reason: ' +
+    "@verevoir/llm's claude-cli adapter (0.26.0) does not read the CLI's own stdout on a " +
+    'non-zero exit, the operator has decided this will not be fixed or republished, and so ' +
+    'the true reason (if this guess is wrong) cannot be recovered here — not just today. ' +
     'See this repository\'s README, "Running it locally", for the upstream gap this works ' +
     'around.'
   );
