@@ -25,6 +25,25 @@ beforeEach(() => {
   chat.mockReset();
 });
 
+/**
+ * The error a call threw, or a failure saying it did not throw.
+ *
+ * `claudeCliReviewer()(...)` resolves `Promise<string>` — `.catch((e) => e as
+ * Error)` on it types the whole chain as `Promise<string | Error>`, which does
+ * not typecheck once `.message` is read back off it. This awaits properly and
+ * returns what was actually thrown, typed as `Error` because it genuinely is
+ * one by the time this returns: every case in this file rejects with either an
+ * `Error` or a `NoRoomToAnswerError`, never a bare string.
+ */
+async function failureOf(work: Promise<unknown>): Promise<Error> {
+  try {
+    await work;
+  } catch (cause) {
+    return cause as Error;
+  }
+  throw new Error('expected the call to throw, and it returned');
+}
+
 describe('the wire format', () => {
   it('sends the shared half as the system prompt, verbatim', async () => {
     chat.mockResolvedValue({ content: 'VERDICT: approved', usage: {}, stopReason: 'end_turn' });
@@ -78,16 +97,15 @@ describe('the wire format', () => {
 describe('failures reach the caller as a throw, never as a returned reply', () => {
   it('rethrows a plain chat() failure unchanged when it already carries a reason', async () => {
     chat.mockRejectedValue(new Error('claude -p exited with code 1: some real stderr reason'));
-    await expect(claudeCliReviewer()('honesty', PROMPT)).rejects.toThrow(
-      'claude -p exited with code 1: some real stderr reason',
-    );
+    const error = await failureOf(claudeCliReviewer()('honesty', PROMPT));
+    expect(error.message).toBe('claude -p exited with code 1: some real stderr reason');
   });
 
   it('leaves a spawn-level failure (claude missing from PATH) completely untouched', async () => {
     chat.mockRejectedValue(
       new Error('claudeCli.chat(): could not run the claude CLI — spawn claude ENOENT'),
     );
-    const error = await claudeCliReviewer()('honesty', PROMPT).catch((e: unknown) => e as Error);
+    const error = await failureOf(claudeCliReviewer()('honesty', PROMPT));
     expect(error.message).toBe(
       'claudeCli.chat(): could not run the claude CLI — spawn claude ENOENT',
     );
@@ -98,14 +116,15 @@ describe('failures reach the caller as a throw, never as a returned reply', () =
 
   it('never returns a string — a rejection is always a throw, not a reply', async () => {
     chat.mockRejectedValue(new Error('claude -p exited with code 1'));
-    await expect(claudeCliReviewer()('honesty', PROMPT)).rejects.toBeInstanceOf(Error);
+    const error = await failureOf(claudeCliReviewer()('honesty', PROMPT));
+    expect(error).toBeInstanceOf(Error);
   });
 
   // The known gap this file discloses rather than papers over. See
   // claudeCli.ts's own header and augmentBareExit's doc comment.
   it('appends a labelled hint to the exact bare-exit shape the not-logged-in case produces', async () => {
     chat.mockRejectedValue(new Error('claude -p exited with code 1'));
-    const error = await claudeCliReviewer()('honesty', PROMPT).catch((e: unknown) => e as Error);
+    const error = await failureOf(claudeCliReviewer()('honesty', PROMPT));
     expect(error.message).toContain('claude -p exited with code 1');
     expect(error.message).toContain('not logged into a subscription');
     // Labelled as a guess, not asserted as fact — the reason this exists at
@@ -116,20 +135,20 @@ describe('failures reach the caller as a throw, never as a returned reply', () =
 
   it('appends the same hint to a bare signal-killed exit', async () => {
     chat.mockRejectedValue(new Error('claude -p was killed by signal SIGTERM'));
-    const error = await claudeCliReviewer()('honesty', PROMPT).catch((e: unknown) => e as Error);
+    const error = await failureOf(claudeCliReviewer()('honesty', PROMPT));
     expect(error.message).toContain('claude -p was killed by signal SIGTERM');
     expect(error.message).toContain('not logged into a subscription');
   });
 
   it('does not touch a message merely resembling the pattern with something extra', async () => {
     chat.mockRejectedValue(new Error('claude -p exited with code 1 and something else'));
-    const error = await claudeCliReviewer()('honesty', PROMPT).catch((e: unknown) => e as Error);
+    const error = await failureOf(claudeCliReviewer()('honesty', PROMPT));
     expect(error.message).toBe('claude -p exited with code 1 and something else');
   });
 
   it('a non-Error rejection is still stringified into a throw', async () => {
     chat.mockRejectedValue('a raw string rejection');
-    const error = await claudeCliReviewer()('honesty', PROMPT).catch((e: unknown) => e as Error);
+    const error = await failureOf(claudeCliReviewer()('honesty', PROMPT));
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toContain('a raw string rejection');
   });
@@ -158,6 +177,15 @@ describe('augmentBareExit', () => {
     const once = augmentBareExit('claude -p exited with code 1');
     expect(augmentBareExit(once)).toBe(once);
   });
+
+  // The permanence this hint's own wording now asserts — see the file
+  // header and augmentBareExit's doc comment for why this is stated as a
+  // standing operator decision, not a version detail awaiting a patch.
+  it('states the gap is a standing decision, not a version detail awaiting a fix', () => {
+    const message = augmentBareExit('claude -p exited with code 1');
+    expect(message).toContain('will not be fixed or republished');
+    expect(message).toContain('not just today');
+  });
 });
 
 // A sanity check that this suite is actually exercising the module under
@@ -168,7 +196,8 @@ describe('augmentBareExit', () => {
 describe('panel-level plumbing this file must not interfere with', () => {
   it('lets a NoRoomToAnswerError-shaped rejection pass through with its message intact', async () => {
     chat.mockRejectedValue(new NoRoomToAnswerError('no room to answer: stop_reason max_tokens'));
-    const error = await claudeCliReviewer()('honesty', PROMPT).catch((e: unknown) => e as Error);
+    const error = await failureOf(claudeCliReviewer()('honesty', PROMPT));
     expect(error.message).toContain('no room to answer');
+    expect(error).toBeInstanceOf(NoRoomToAnswerError);
   });
 });
