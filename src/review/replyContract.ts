@@ -88,7 +88,13 @@ Rules that decide whether your reply can be read at all:
   can act on is not a rejection and will be discarded.
 - ${APPROVED_WORD} may carry ${SMELL_TAG} findings. It must carry no
   ${BLOCKING_TAG} finding — if any finding is ${BLOCKING_TAG}, you are
-  rejecting, not approving with concerns.
+  rejecting, not approving with concerns. Say so with ${VERDICT_MARKER}
+  ${REJECTED_WORD}: do not rely on this being caught for you. If you do
+  write ${APPROVED_WORD} alongside a ${BLOCKING_TAG} finding anyway, the
+  finding is what is believed — the result is read as ${REJECTED_WORD},
+  not discarded and not read as a clean approval. A one-word summary next
+  to a specific, concrete finding is not treated as equally reliable
+  evidence.
 - ${CANNOT_RUN_WORD} is the honest answer when you TRIED to review and could
   not — the diff was truncated, something you needed in order to judge it was
   missing or corrupted, or you otherwise have no basis for a judgement at
