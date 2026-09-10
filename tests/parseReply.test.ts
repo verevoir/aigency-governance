@@ -140,15 +140,10 @@ describe('parseReply — replies it cannot read', () => {
     expect(result.reason).toContain('unrecognised');
   });
 
-  it('refuses an approval that also reports a blocking finding', () => {
-    const result = parse(
-      `${VERDICT_MARKER} ${APPROVED_WORD}`,
-      `${FINDING_MARKER} but the bound moved`,
-    );
-    expect(result.outcome).toBe('could_not_run');
-    // Untagged, so it fails closed to blocking and trips this guard.
-    expect(result.reason).toContain('1 blocking finding(s)');
-  });
+  // See the dedicated "deriving the verdict from blocking findings" describe
+  // block below for what an approval carrying a blocking finding now does —
+  // it no longer belongs here, among replies the parser cannot read; it is
+  // one the parser now resolves definitively (verevoir/aigency-harness#113).
 
   // The gap the failure-modes lens found on this PR's own review: outOfScope()
   // was a structural mirror of cannotRun() and had inherited none of the
@@ -346,15 +341,10 @@ describe('parseReply — severity tags on findings', () => {
     expect(result.reason).toContain('named nothing');
   });
 
-  it('still refuses an approval that carries a blocking finding alongside a smell one', () => {
-    const result = parse(
-      `${VERDICT_MARKER} ${APPROVED_WORD}`,
-      `${FINDING_MARKER} [${SMELL_TAG}] a style nit`,
-      `${FINDING_MARKER} [${BLOCKING_TAG}] the retry loop has no ceiling`,
-    );
-    expect(result.outcome).toBe('could_not_run');
-    expect(result.reason).toContain('1 blocking finding(s)');
-  });
+  // See the dedicated "deriving the verdict from blocking findings" describe
+  // block below — an approval carrying both a smell and a blocking finding
+  // now derives to rejected, keeping every finding, rather than discarding
+  // the reply outright.
 
   // A rejection made entirely of smells is a contradiction under the new
   // contract, same family as "rejected without naming a finding" — the
@@ -367,6 +357,95 @@ describe('parseReply — severity tags on findings', () => {
     expect(result.outcome).toBe('could_not_run');
     expect(result.reason).toContain('non-blocking');
     expect(result.reason).toContain('at least one blocking finding');
+  });
+});
+
+// The fix for verevoir/aigency-harness#113: a lens that reports approved
+// while simultaneously reporting a blocking finding — reproduced there
+// twice, not a one-off — must never have both halves discarded as
+// could_not_run. A blocking finding is concrete evidence; the VERDICT word
+// beside it is a one-word summary of the same judgement that can simply be
+// wrong. See parseReply.ts's own file header for the full account, including
+// why this is NOT symmetric with a rejection that names no blocking finding
+// (that direction has no evidence to derive from, and still refuses).
+describe('parseReply — deriving the verdict from blocking findings, not asking for it twice', () => {
+  // THE regression test for verevoir/aigency-harness#113 itself. Before this
+  // fix, this exact reply shape — the one the blast-radius lens produced,
+  // reproducibly, on that pull request — returned could_not_run and threw
+  // away a real, actionable finding because a one-word summary beside it
+  // disagreed.
+  it('derives rejected from a blocking finding, even when the VERDICT word said approved', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${APPROVED_WORD}`,
+      `${FINDING_MARKER} [${BLOCKING_TAG}] the retry loop has no ceiling`,
+    );
+    expect(result.outcome).toBe('rejected');
+    expect(result.findings).toEqual([
+      { lens: LENS, summary: 'the retry loop has no ceiling', blocking: true },
+    ]);
+  });
+
+  // Untagged findings fail closed to blocking (severityOf's own rule) — the
+  // derivation must see that too, not only an explicitly-tagged one.
+  it('derives rejected from an untagged finding under an approved verdict, same as an explicitly-tagged one', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${APPROVED_WORD}`,
+      `${FINDING_MARKER} but the bound moved`,
+    );
+    expect(result.outcome).toBe('rejected');
+    expect(result.findings).toEqual([
+      { lens: LENS, summary: 'but the bound moved', blocking: true },
+    ]);
+  });
+
+  // Every finding survives the derivation, not only the blocking one — a
+  // smell finding riding alongside a blocking one under a wrongly-approved
+  // reply is not discarded either.
+  it('derives rejected from a blocking finding alongside a smell one, keeping both', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${APPROVED_WORD}`,
+      `${FINDING_MARKER} [${SMELL_TAG}] a style nit`,
+      `${FINDING_MARKER} [${BLOCKING_TAG}] the retry loop has no ceiling`,
+    );
+    expect(result.outcome).toBe('rejected');
+    expect(result.findings).toEqual([
+      { lens: LENS, summary: 'a style nit', blocking: false },
+      { lens: LENS, summary: 'the retry loop has no ceiling', blocking: true },
+    ]);
+  });
+
+  // The word AGREEING with the evidence is not a special case — same
+  // derivation path, same outcome, whether or not the word already said it.
+  it('derives rejected the same way when the VERDICT word already said rejected', () => {
+    const result = parse(
+      `${VERDICT_MARKER} ${REJECTED_WORD}`,
+      `${FINDING_MARKER} [${BLOCKING_TAG}] the retry loop has no ceiling`,
+    );
+    expect(result.outcome).toBe('rejected');
+  });
+
+  // The asymmetric half, pinned directly: no blocking finding means there is
+  // no evidence to derive a rejection from, so a REJECTED_WORD reply with
+  // none still refuses — it is NOT silently turned into an approval just
+  // because the derivation above trusts evidence over a word in the other
+  // direction.
+  it('does not derive an approval from a rejected verdict that names no blocking finding', () => {
+    const result = parse(`${VERDICT_MARKER} ${REJECTED_WORD}`);
+    expect(result.outcome).toBe('could_not_run');
+    expect(result.reason).toContain('without naming a finding');
+  });
+
+  // An empty FINDING: line's severity cannot be assessed, so it can neither
+  // be derived from (like a real blocking finding) nor ignored (like its
+  // total absence) — this must still refuse, under either verdict word.
+  it('still refuses, rather than deriving anything, when the only finding is an unassessable empty one', () => {
+    const approved = parse(`${VERDICT_MARKER} ${APPROVED_WORD}`, FINDING_MARKER);
+    expect(approved.outcome).toBe('could_not_run');
+    expect(approved.reason).toContain(`empty ${FINDING_MARKER} line`);
+
+    const rejected = parse(`${VERDICT_MARKER} ${REJECTED_WORD}`, FINDING_MARKER);
+    expect(rejected.outcome).toBe('could_not_run');
+    expect(rejected.reason).toContain('named nothing');
   });
 });
 

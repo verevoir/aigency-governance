@@ -6,29 +6,56 @@
 // from a real approval afterwards. An unreadable reply that lands as
 // could_not_run is loud, wrong at worst, and fixable.
 //
-// Five of the refusals below are stricter than they look, and all five are
-// deliberate. Two of them are now scoped to severity rather than to any
-// finding at all — see replyContract.ts and severityOf() below for what sets
-// it, and verdict.ts's aggregate() for what it does to the panel:
+// APPROVED/REJECTED ARE DERIVED FROM BLOCKING FINDINGS, NOT ASKED FOR AS A
+// SEPARATE JUDGEMENT. This changed from an earlier version of this file that
+// asked a reviewer for two independent assertions — a VERDICT word, and a
+// set of severity-tagged findings — and then only CHECKED the two against
+// each other, discarding the whole reply as could_not_run on any
+// disagreement because there was no principled way to pick a side.
+// verevoir/aigency-harness#113 is why that was wrong specifically for the
+// approved-with-a-blocking-finding shape: the blast-radius lens returned
+// exactly that, reproducibly, and the old code threw away a real, concrete,
+// actionable finding because a one-word summary sitting next to it
+// disagreed. A blocking finding is evidence — the reviewer wrote a specific
+// sentence about a specific problem — and the VERDICT word is a summary of
+// the same judgement that can simply be wrong even when the finding is
+// right. So now: any blocking finding present means outcome 'rejected',
+// full stop, whatever the VERDICT word said, for both APPROVED_WORD and
+// REJECTED_WORD replies alike. See the derivation block below.
+//
+// This is NOT symmetric with the reverse contradiction, and deliberately
+// so. A REJECTED_WORD reply with NO blocking finding still refuses (reads
+// could_not_run) rather than being silently turned into an approval —
+// there the reviewer's own claim has no evidence behind it to derive
+// anything FROM. Only a blocking finding is strong enough evidence to
+// override a contradicting word; an absence of evidence is not itself
+// evidence of the opposite.
+//
+// The remaining refusals below are stricter than they look, and all are
+// deliberate. Two are scoped to severity rather than to any finding at all
+// — see replyContract.ts and severityOf() below for what sets it, and
+// verdict.ts's aggregate() for what it does to the panel:
 //
 //   Rejected with no BLOCKING finding is refused. A rejection nobody can act
 //   on stalls the change and names nothing to fix, and one made only of
 //   smells is not a rejection — it is an approval with notes that used the
-//   wrong word.
-//   Approved carrying a BLOCKING finding is refused. The reviewer said two
-//   things; picking one means guessing which, and the guess is invisible in
-//   the result. A SMELL finding is not this contradiction: approved may carry
-//   any number of those.
-//   Out of scope WITH ANY finding, blocking or not, is refused for the same
-//   reason: a lens that says its dimension has nothing to attach to and then
-//   names something wrong said two contradictory things, not one.
+//   wrong word. There is no evidence here to derive a rejection FROM, unlike
+//   the approved-with-a-blocking-finding case above.
+//   Out of scope WITH ANY finding, blocking or not, is refused — kept as a
+//   refusal, not a derivation, because out_of_scope is a categorically
+//   different claim (this dimension has no material here at all) from
+//   approved/rejected, and a stray finding contradicting it is not
+//   necessarily the same kind of trustworthy evidence a blocking finding is
+//   when the reviewer was actively judging.
 //   An empty VERDICT: line is refused as an empty line, not reported as an
 //   absent one. It was written; saying otherwise is a false statement about
 //   the reply in the string a human reads when debugging a red panel.
-//   An empty FINDING: line under an approval is refused. This one is here
-//   because the code got it wrong first: the marker was dropped, the
-//   approved-with-a-blocking-finding guard never fired, and a reviewer that
-//   began to name a concern was read as approving cleanly.
+//   An empty FINDING: line under an approved or rejected verdict is refused.
+//   Its severity cannot be assessed — it might have been a blocking finding
+//   that got garbled — so it can be neither derived from nor safely ignored.
+//   This is the same defect class the derivation above exists to fix, one
+//   step earlier: something a reviewer started to say must not quietly
+//   vanish from consideration, in either direction.
 
 import {
   APPROVED_WORD,
@@ -163,45 +190,55 @@ export function parseReply(lens: string, text: string): LensResult {
     .filter((finding) => finding.summary !== '');
   const emptyFindings = findingLines.length - findings.length;
   // Severity-weighted: a BLOCKING finding sinks a verdict, a SMELL finding
-  // does not (replyContract.ts). Computed once here because both guards
-  // below need it, in opposite directions — approved refuses this being
-  // non-empty, rejected requires it.
+  // does not (replyContract.ts). Computed once here because the derivation
+  // below, and the rejected-with-no-evidence guard beneath it, both need it.
   const blockingFindings = findings.filter((finding) => finding.blocking);
 
-  if (verdict === APPROVED_WORD) {
+  if (verdict === APPROVED_WORD || verdict === REJECTED_WORD) {
+    // THE DERIVATION. See the file header: this is the fix for
+    // verevoir/aigency-harness#113. Concrete evidence (a blocking finding)
+    // outranks a one-word summary claim, in EITHER direction — an
+    // APPROVED_WORD reply carrying a blocking finding derives to rejected
+    // exactly the same way a REJECTED_WORD reply carrying one does. This is
+    // not a second judgement asked of the reviewer; it is the only judgement
+    // that was ever load-bearing, computed once, here.
     if (blockingFindings.length > 0) {
-      return cannotRun(
-        lens,
-        `reply said ${APPROVED_WORD} while reporting ${blockingFindings.length} blocking finding(s)`,
-      );
+      return { lens, outcome: 'rejected', findings };
     }
-    // The path the old code got wrong. A bare marker under an approval is not
-    // a clean approval; it is the one shape where "I could not tell" is the
-    // only honest reading.
+
+    // A garbled FINDING: line with no assessable severity or text. Whether
+    // it would have been blocking cannot be known from what is left of it,
+    // so — unlike a real blocking finding — it cannot be derived from, and
+    // unlike its total absence, it cannot be safely ignored either: the
+    // reviewer started to name something. could_not_run is the only shape
+    // that does not risk quietly stripping a real defect.
     if (emptyFindings > 0) {
       return cannotRun(
         lens,
-        `reply said ${APPROVED_WORD} with ${emptyFindings} empty ${FINDING_MARKER} line(s)`,
+        `reply carried ${emptyFindings} empty ${FINDING_MARKER} line(s) — named nothing ` +
+          'that could be assessed for severity',
       );
     }
-    // Smell findings, if any, ride along — an approval is not required to have
-    // nothing to say, only nothing that blocks.
-    return { lens, outcome: 'approved', findings };
-  }
 
-  if (verdict === REJECTED_WORD) {
-    if (blockingFindings.length === 0) {
+    if (verdict === REJECTED_WORD) {
+      // No blocking finding to derive a rejection from, and nothing
+      // ambiguous either (handled above) — the reviewer said rejected with
+      // no evidence behind it. This is the asymmetric half of the file
+      // header's rule: an absence of evidence is not evidence of the
+      // opposite, so this refuses rather than being silently turned into an
+      // approval.
       return cannotRun(
         lens,
         findings.length > 0
           ? `reply said ${REJECTED_WORD} while naming only non-blocking (${SMELL_TAG}) ` +
               `finding(s); a rejection requires at least one blocking finding`
-          : emptyFindings > 0
-            ? `reply said ${REJECTED_WORD} with ${emptyFindings} empty ${FINDING_MARKER} line(s) and named nothing`
-            : `reply said ${REJECTED_WORD} without naming a finding`,
+          : `reply said ${REJECTED_WORD} without naming a finding`,
       );
     }
-    return { lens, outcome: 'rejected', findings };
+
+    // verdict === APPROVED_WORD, no blocking or ambiguous findings: a real
+    // approval, possibly carrying smell findings.
+    return { lens, outcome: 'approved', findings };
   }
 
   if (verdict === CANNOT_RUN_WORD) {
@@ -215,10 +252,12 @@ export function parseReply(lens: string, text: string): LensResult {
     // for an ambiguous reply; every ambiguity still resolves to could_not_run,
     // per the file header. This is the model's own explicit, honest signal.
     //
-    // Mirrors the APPROVED_WORD guard above: a reply declaring out_of_scope
-    // while also naming findings said two contradictory things, and the
-    // contradiction must be surfaced, not silently resolved by keeping one
-    // half (the verdict) and dropping the other (the findings).
+    // Still a REFUSAL, not a derivation, unlike APPROVED_WORD/REJECTED_WORD
+    // above — see the file header for why: out_of_scope is a categorically
+    // different claim from approved/rejected, and a stray finding
+    // contradicting "nothing here is in my dimension" is not the same kind
+    // of trustworthy evidence a blocking finding is when the reviewer was
+    // actively judging the change.
     //
     // What this does NOT do, deliberately: preserve those findings anywhere
     // in the returned result. Discarding them here is the same gap
