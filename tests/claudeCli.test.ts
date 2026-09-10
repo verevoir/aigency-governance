@@ -267,9 +267,13 @@ describe('a truncated reply is refused, not returned as though it were complete'
 
 // A sanity check that this suite is actually exercising the module under
 // test's own exported symbols, and NoRoomToAnswerError travels unharmed
-// alongside — this transport never constructs one itself (see the file
-// header: an empty reply is caught by the shared parseReply, not here), but
-// nothing in this file should be able to swallow one thrown some other way.
+// alongside. This transport DOES construct one itself, for a truncated
+// reply — see the 'a truncated reply is refused' block above — but that is a
+// throw from inside claudeCliReviewer's own try, never a caught rejection.
+// This test is the other direction: a NoRoomToAnswerError arriving AS a
+// chat() rejection (in principle — chat() does not do this today, but
+// nothing here should assume it never will) must not be swallowed or
+// rewrapped into a plain Error on its way through the catch block.
 describe('panel-level plumbing this file must not interfere with', () => {
   it('lets a NoRoomToAnswerError-shaped rejection pass through with its message intact', async () => {
     chat.mockRejectedValue(new NoRoomToAnswerError('no room to answer: stop_reason max_tokens'));

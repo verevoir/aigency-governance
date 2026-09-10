@@ -297,7 +297,7 @@ describe('resolveSettings, resolving the API key from a file', () => {
   // rather than falling through to the keyless route, because it is present
   // and broken — someone already tried to set up the billed path — rather
   // than simply absent.
-  it('reports a file that cannot be read differently from one that is absent', async () => {
+  it('reports a file that cannot be read differently from a default path that is merely untouched', async () => {
     const unreadable = filesystem({
       '/keys/anthropic': { kind: 'unreadable', reason: 'EACCES: permission denied' },
     });
@@ -312,14 +312,17 @@ describe('resolveSettings, resolving the API key from a file', () => {
     expect(problems.some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
     expect(problems.some((problem) => problem.includes('EACCES'))).toBe(true);
 
-    // Compared against the genuinely-absent case, so the two cannot collapse
-    // into the same outcome by accident — one blocks, the other now runs
-    // keyless.
-    const absent = await resolveSettings(
-      env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+    // Compared against the CONVENTIONAL DEFAULT path being absent — not
+    // against the same named path being absent, which now also blocks (see
+    // 'blocks on a named-but-missing explicit key file...' above). The
+    // default path, never named by anyone, is the one case that still runs
+    // keyless: this is what keeps the two from collapsing into the same
+    // outcome by accident.
+    const defaultAbsent = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, HOME: '/home/it' }),
       NO_FILES,
     );
-    expect(readyOf(absent).route).toBe('keyless');
+    expect(readyOf(defaultAbsent).route).toBe('keyless');
   });
 
   // There WAS a test here asserting the joined problems string did not
@@ -426,6 +429,88 @@ describe('resolveSettings, resolving the API key from a file', () => {
         problem.includes('/home/it/.config/verevoir/anthropic.key'),
       ),
     ).toBe(true);
+  });
+
+  // The distinguishing case for this whole finding: a path someone actually
+  // NAMED, with nothing at it, must block — unlike the default path (tested
+  // above), which is allowed to be absent and fall through to keyless. Before
+  // this fix, both were folded into the same `absent` outcome and this exact
+  // setup resolved to a clean, silent `ready`/`billed`-turned-keyless result.
+  it('blocks on a named-but-missing explicit key file rather than falling through to a working default path', async () => {
+    const fs = filesystem({
+      '/home/it/.config/verevoir/anthropic.key': { kind: 'text', text: 'sk-from-default-path' },
+    });
+
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        HOME: '/home/it',
+      }),
+      fs.read,
+    );
+
+    expect(result.kind).toBe('invalid');
+    const problems = problemsOf(result);
+    expect(problems.some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
+    // The default path was never even asked for — resolution stopped at the
+    // named-but-missing explicit file, exactly as it does for a blank or
+    // unreadable one.
+    expect(fs.asked).toEqual(['/keys/anthropic']);
+  });
+
+  // The direct contrast: naming a path that turns out empty is a
+  // configuration error and blocks; the DEFAULT path never having been
+  // touched is ordinary and runs keyless. Both driven from the same
+  // (otherwise-identical) environment so the only variable is which one was
+  // named.
+  it('treats a missing default path and a missing named path differently', async () => {
+    const defaultAbsent = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, HOME: '/home/it' }),
+      NO_FILES,
+    );
+    expect(readyOf(defaultAbsent).route).toBe('keyless');
+
+    const namedAbsent = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        HOME: '/home/it',
+      }),
+      NO_FILES,
+    );
+    expect(namedAbsent.kind).toBe('invalid');
+  });
+
+  it('keeps the named-but-missing problem even though something else is also missing', async () => {
+    const result = await resolveSettings(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        AIGENCY_REVIEW_LENSES_TOKEN: undefined,
+      },
+      NO_FILES,
+    );
+
+    expect(result.kind).toBe('incomplete');
+    expect(missingOf(result).map((setting) => setting.name)).toEqual([
+      'AIGENCY_REVIEW_LENSES_TOKEN',
+    ]);
+    expect(problemsOf(result).some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
+  });
+
+  it('names the missing path in the rendered message', async () => {
+    const result = await resolveSettings(
+      env({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_API_KEY_FILE: '/keys/anthropic' }),
+      NO_FILES,
+    );
+
+    const rendered = renderMissing(
+      result.kind === 'incomplete' ? result.missing : [],
+      problemsOf(result),
+    );
+    expect(rendered).toContain('/keys/anthropic');
+    expect(rendered).toContain('ANTHROPIC_API_KEY_FILE');
   });
 
   // The same "a problem survives alongside a missing setting" property

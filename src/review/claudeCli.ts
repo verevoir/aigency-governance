@@ -201,11 +201,14 @@ export function claudeCliReviewer(options: ClaudeCliOptions = {}): Reviewer {
     } catch (cause) {
       const message = augmentBareExit(cause instanceof Error ? cause.message : String(cause));
       // Preserve the class through augmentation rather than rewrap into a
-      // plain Error - mirrors anthropic.ts's own catch. Nothing on this
-      // transport constructs a NoRoomToAnswerError itself (an empty reply is
-      // caught one layer up, by the shared parseReply - see the file
-      // header), but a future caller's rejection should not lose the class
-      // on its way through this one.
+      // plain Error - mirrors anthropic.ts's own catch. This transport DOES
+      // construct a NoRoomToAnswerError itself, above, for the truncated-
+      // reply case - this catch is reached only when `chat()` itself threw
+      // (a missing binary, a not-logged-in CLI, or - in principle - its own
+      // NoRoomToAnswerError), never for the throw a few lines up, which
+      // returns from inside the `try` before this block runs. A future
+      // caller's rejection should not lose the class on its way through
+      // this one, which is what this check guards.
       throw cause instanceof NoRoomToAnswerError
         ? new NoRoomToAnswerError(message)
         : new Error(message);

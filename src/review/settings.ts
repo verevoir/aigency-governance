@@ -57,6 +57,28 @@
 // broken billed setup must never be silently rescued by a route it never
 // asked for.
 //
+// A PATH NAMED BY ANTHROPIC_API_KEY_FILE THAT DOES NOT EXIST AT ALL ALSO
+// BLOCKS — BUT ONLY BECAUSE IT WAS NAMED. There are two different "nothing
+// is there" cases in this chain and they must not be treated alike. The
+// CONVENTIONAL DEFAULT path ($XDG_CONFIG_HOME/verevoir/anthropic.key, or
+// ~/.config/verevoir/anthropic.key) being absent really is "nobody has set
+// this up" — nobody named that path, it is simply where this tool looks
+// when nothing else was configured, and falling through to keyless is
+// exactly right. A path given through ANTHROPIC_API_KEY_FILE is different:
+// naming it is itself an act of configuration, so finding nothing there is
+// the same kind of fact blank and unreadable already are — someone already
+// tried to set up the billed route, and it did not work — not the same kind
+// of fact as the default path having never been touched. An earlier version
+// of this file treated a missing named path exactly like a missing default
+// path: `absent`, silently falling through to the next source or to
+// keyless. That let someone who set ANTHROPIC_API_KEY_FILE to a mistyped or
+// moved path get a successful KEYLESS run with nothing telling them their
+// billed configuration was never read — the same silent-fallback failure
+// named above for blank, one mechanism further along the same chain. A
+// missing named path now blocks (`invalid`), naming the path, exactly like
+// blank and unreadable do, and — like blank — the default path is never
+// even consulted once the named one has failed.
+//
 // THE API KEY, SPECIFICALLY, HAS THREE SOURCES, TRIED IN A FIXED ORDER:
 //
 //   1. `ANTHROPIC_API_KEY` in the environment, if set and non-blank. This
@@ -243,7 +265,12 @@ type ApiKeyResolution =
   | { readonly kind: 'found'; readonly value: string }
   | { readonly kind: 'absent' }
   | { readonly kind: 'blank'; readonly path: string }
-  | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string };
+  | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string }
+  // A path ANTHROPIC_API_KEY_FILE actually named, where nothing exists.
+  // Distinct from `absent` (used only for a source that was never named at
+  // all, or that being missing is entirely ordinary): see the file header's
+  // NAMED-BUT-MISSING paragraph for why the two must not share an outcome.
+  | { readonly kind: 'namedButMissing'; readonly path: string };
 
 /** Reads and classifies one candidate file: genuinely absent (this source
  * has nothing to offer, resolution moves on), found, or a real problem the
@@ -285,9 +312,18 @@ async function resolveApiKey(
   const explicitPath = present(env['ANTHROPIC_API_KEY_FILE']);
   if (explicitPath !== undefined) {
     const result = await keyFromPath(explicitPath, readKeyFile);
-    if (result.kind !== 'absent') {
-      return result;
+    // Unlike the default path below, this path was NAMED — a person set
+    // ANTHROPIC_API_KEY_FILE themselves. `absent` here does not mean "try
+    // the next source", it means "the path they gave does not exist", which
+    // is a configuration error exactly like a blank or unreadable file —
+    // see the file header's NAMED-BUT-MISSING paragraph. So this returns
+    // here, blocking, rather than falling through to the default path the
+    // way an absent default path itself is allowed to fall through to
+    // keyless.
+    if (result.kind === 'absent') {
+      return { kind: 'namedButMissing', path: explicitPath };
     }
+    return result;
   }
 
   const defaultPath = defaultKeyFilePath(env);
@@ -334,6 +370,14 @@ export async function resolveSettings(
         'supply ANTHROPIC_API_KEY, whatever wrote it left no key in it; if it was not meant to, ' +
         'remove it. (An absent file resolves to the keyless route; a blank one blocks instead, ' +
         'so a broken billed setup is never silently mistaken for a deliberate keyless one.)',
+    );
+  } else if (apiKeyResolution.kind === 'namedButMissing') {
+    problems.push(
+      `ANTHROPIC_API_KEY_FILE names ${apiKeyResolution.path}, but no file exists there — if it ` +
+        'was meant to supply ANTHROPIC_API_KEY, check the path; if it was not meant to, unset ' +
+        'ANTHROPIC_API_KEY_FILE. (Only the conventional default path falls through to the ' +
+        'keyless route when nothing is there; a path you named yourself does not, so a broken ' +
+        'billed setup is never silently mistaken for a deliberate keyless one.)',
     );
   }
   // `apiKeyResolution.kind === 'absent'`: nothing to report here at all. This

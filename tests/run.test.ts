@@ -201,16 +201,15 @@ describe('runReview, given no API key configured at all', () => {
 
 describe('runReview, given no key-file reader at all', () => {
   // `noKeyFile` in run.ts claims to behave as "every path absent" when no
-  // fourth argument is supplied. With an absent key now resolving to the
-  // keyless route rather than blocking, the observable proof of that claim
-  // changes shape: this used to assert the run stayed blocked (a real
-  // filesystem consulted instead of the default would very likely also
-  // report the same path absent on the machine running the suite, so that
-  // half of the property was never fully distinguishable). What IS still
-  // distinguishable, and is what this pins now: the default reader does not
-  // throw, does not hang, and resolves cleanly to the keyless route — the
-  // behaviour actually documented for "every path absent".
-  it('treats ANTHROPIC_API_KEY_FILE as absent when no reader is supplied, resolving keyless', async () => {
+  // fourth argument is supplied — this is what actually drives that default
+  // rather than a stand-in for it. Its observable meaning changed with the
+  // named-but-missing fix in settings.ts: a NAMED path
+  // (ANTHROPIC_API_KEY_FILE) resolving to absent is now a configuration
+  // error and blocks, rather than falling through to keyless — so the
+  // default reader correctly BLOCKS this run, exactly as a real filesystem
+  // would if that named path genuinely did not exist on the machine
+  // running the suite.
+  it('blocks, rather than resolving keyless, when ANTHROPIC_API_KEY_FILE is named and no reader is supplied', async () => {
     const fakes = harness();
 
     const outcome = await runReview(
@@ -219,6 +218,22 @@ describe('runReview, given no key-file reader at all', () => {
       fakes.deps,
       // No fourth argument — this is the default parameter under test.
     );
+
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.report).toContain('/keys/anthropic');
+    expect(outcome.report).toContain('Nothing was reviewed');
+    expect(fakes.calls.factory).toBe(0);
+  });
+
+  // The genuinely-unnamed case, kept apart from the one above so the two
+  // cannot be conflated: with no ANTHROPIC_API_KEY_FILE set at all, the
+  // default reader is only ever asked for the CONVENTIONAL default path,
+  // which is allowed to be absent — so this still resolves keyless, which
+  // is the property this describe block originally existed to pin.
+  it('resolves keyless when no reader is supplied and no key file was named at all', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(env({ ANTHROPIC_API_KEY: undefined }), SUBJECT, fakes.deps);
 
     expect(outcome.exitCode).toBe(0);
     expect(fakes.calls.factory).toBe(1);
