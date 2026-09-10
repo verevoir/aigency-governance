@@ -129,22 +129,6 @@ function harness(options: HarnessOptions = {}): Harness {
 }
 
 describe('runReview, given a configuration it cannot use', () => {
-  it('spends nothing when there is no API key', async () => {
-    const fakes = harness();
-
-    const outcome = await runReview(env({ ANTHROPIC_API_KEY: undefined }), SUBJECT, fakes.deps);
-
-    expect(outcome.exitCode).toBe(1);
-    expect(outcome.report).toContain('ANTHROPIC_API_KEY');
-    expect(outcome.report).toContain('Nothing was reviewed');
-    // The assertion this file exists for. Not "no model call" — no CLIENT.
-    // The factory is where a key is read and a connection is configured, and
-    // a run that gets that far before checking has already done the work.
-    expect(fakes.calls.factory).toBe(0);
-    expect(fakes.calls.read).toEqual([]);
-    expect(fakes.calls.reviewed).toEqual([]);
-  });
-
   it('spends nothing when the token count is present and wrong', async () => {
     const fakes = harness();
 
@@ -168,6 +152,22 @@ describe('runReview, given a configuration it cannot use', () => {
     expect(fakes.calls.reviewed).toEqual([]);
   });
 
+  it('spends nothing when the lens token is missing and the lens source needs one', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(
+      env({ AIGENCY_REVIEW_LENSES_TOKEN: undefined }),
+      SUBJECT,
+      fakes.deps,
+    );
+
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.report).toContain('AIGENCY_REVIEW_LENSES_TOKEN');
+    expect(outcome.report).toContain('Nothing was reviewed');
+    expect(fakes.calls.factory).toBe(0);
+    expect(fakes.calls.reviewed).toEqual([]);
+  });
+
   // A red result, not a green one, and not an exception either. The caller
   // gets something to print.
   it('reports a configuration failure as red rather than throwing', async () => {
@@ -178,17 +178,38 @@ describe('runReview, given a configuration it cannot use', () => {
   });
 });
 
-// The guard that stops this system failing silently. Every other red result
-// here is something going wrong loudly; this is the one where everything
-// works perfectly and reviews nothing.
-// Not a `resolveSettings` test wearing a `runReview` hat: `resolveSettings`
-// is always driven here with an INJECTED reader, real or fake, and that
-// leaves the one thing only `runReview` itself can answer untested — what
-// happens when a caller supplies no fourth argument at all. `noKeyFile` in
-// run.ts claims to behave as "every path absent"; this is what actually
-// drives that default rather than a stand-in for it.
+// The absence of a billed API key is no longer a configuration failure — see
+// settings.ts's own file header. `runReview` proceeds exactly as it does on
+// the billed route; it is `review.ts`, at the process boundary, that reads
+// `settings.route` and constructs the keyless `claudeCliReviewer` instead of
+// `anthropicReviewer`, so no billed client is ever built without a key. That
+// half is not visible to `runReview`'s own fakes (the factory here is not a
+// real reviewer construction) and is proven separately, end to end against
+// the real compiled binary, by `scripts/check-cli.mjs`'s third scenario.
+describe('runReview, given no API key configured at all', () => {
+  it('proceeds to the panel on the keyless route, exactly as it would on the billed one', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(env({ ANTHROPIC_API_KEY: undefined }), SUBJECT, fakes.deps);
+
+    expect(outcome.exitCode).toBe(0);
+    expect(fakes.calls.factory).toBe(1);
+    expect(fakes.settingsSeen[0]?.route).toBe('keyless');
+    expect(fakes.calls.reviewed).toHaveLength(2);
+  });
+});
+
 describe('runReview, given no key-file reader at all', () => {
-  it('treats ANTHROPIC_API_KEY_FILE as unreachable when no reader is supplied', async () => {
+  // `noKeyFile` in run.ts claims to behave as "every path absent" when no
+  // fourth argument is supplied — this is what actually drives that default
+  // rather than a stand-in for it. Its observable meaning changed with the
+  // named-but-missing fix in settings.ts: a NAMED path
+  // (ANTHROPIC_API_KEY_FILE) resolving to absent is now a configuration
+  // error and blocks, rather than falling through to keyless — so the
+  // default reader correctly BLOCKS this run, exactly as a real filesystem
+  // would if that named path genuinely did not exist on the machine
+  // running the suite.
+  it('blocks, rather than resolving keyless, when ANTHROPIC_API_KEY_FILE is named and no reader is supplied', async () => {
     const fakes = harness();
 
     const outcome = await runReview(
@@ -198,16 +219,26 @@ describe('runReview, given no key-file reader at all', () => {
       // No fourth argument — this is the default parameter under test.
     );
 
-    // If the default silently supplied a real filesystem, or resolved the
-    // path some other way, this would either find nothing (same result,
-    // wrong reason) or crash reading a path that does not exist on this
-    // machine. Asserting the report names the key as unconfigured, rather
-    // than erroring or reaching the panel, is what pins it to "every path
-    // absent" specifically.
     expect(outcome.exitCode).toBe(1);
-    expect(outcome.report).toContain('ANTHROPIC_API_KEY');
+    expect(outcome.report).toContain('/keys/anthropic');
     expect(outcome.report).toContain('Nothing was reviewed');
     expect(fakes.calls.factory).toBe(0);
+  });
+
+  // The genuinely-unnamed case, kept apart from the one above so the two
+  // cannot be conflated: with no ANTHROPIC_API_KEY_FILE set at all, the
+  // default reader is only ever asked for the CONVENTIONAL default path,
+  // which is allowed to be absent — so this still resolves keyless, which
+  // is the property this describe block originally existed to pin.
+  it('resolves keyless when no reader is supplied and no key file was named at all', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(env({ ANTHROPIC_API_KEY: undefined }), SUBJECT, fakes.deps);
+
+    expect(outcome.exitCode).toBe(0);
+    expect(fakes.calls.factory).toBe(1);
+    expect(fakes.settingsSeen[0]?.route).toBe('keyless');
+    expect('apiKey' in (fakes.settingsSeen[0] ?? {})).toBe(false);
   });
 });
 
@@ -249,18 +280,20 @@ describe('runReview, given a diff with nothing in it', () => {
   // and this one would go red. A configuration problem must be reported even
   // when the diff is empty, because it has to be fixed either way — and
   // "your diff is empty" sends someone to look at their workflow when what
-  // they actually need is a secret.
-  it('reports a missing key rather than an empty diff when both are wrong', async () => {
+  // they actually need is a secret. Uses the lens token now, not the API
+  // key, as the genuine configuration failure — an absent key no longer is
+  // one (see the describe block above).
+  it('reports a missing setting rather than an empty diff when both are wrong', async () => {
     const fakes = harness();
 
     const outcome = await runReview(
-      env({ ANTHROPIC_API_KEY: undefined }),
+      env({ AIGENCY_REVIEW_LENSES_TOKEN: undefined }),
       { ...SUBJECT, diff: '' },
       fakes.deps,
     );
 
     expect(outcome.exitCode).toBe(1);
-    expect(outcome.report).toContain('ANTHROPIC_API_KEY');
+    expect(outcome.report).toContain('AIGENCY_REVIEW_LENSES_TOKEN');
     // The half that makes this a test of order rather than a second test of
     // the settings check: both faults are present, and only one of them may
     // be reported.
@@ -396,7 +429,25 @@ describe('runReview, wiring the dependencies', () => {
 
     expect(fakes.calls.factory).toBe(1);
     expect(fakes.settingsSeen[0]).toEqual({
+      route: 'billed',
       apiKey: 'sk-ant-test',
+      model: DEFAULT_MODEL,
+      maxTokens: DEFAULT_MAX_TOKENS,
+      lensSource: DEFAULT_LENS_SOURCE,
+      lensToken: 'lens-token',
+    });
+  });
+
+  // The keyless counterpart to the test above — the exact shape a laptop
+  // with no ANTHROPIC_API_KEY configured resolves to.
+  it('hands the factory keyless settings, with no apiKey field, when no key is configured', async () => {
+    const fakes = harness();
+
+    await runReview(env({ ANTHROPIC_API_KEY: undefined }), SUBJECT, fakes.deps);
+
+    expect(fakes.calls.factory).toBe(1);
+    expect(fakes.settingsSeen[0]).toEqual({
+      route: 'keyless',
       model: DEFAULT_MODEL,
       maxTokens: DEFAULT_MAX_TOKENS,
       lensSource: DEFAULT_LENS_SOURCE,

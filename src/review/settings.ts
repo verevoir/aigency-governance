@@ -16,6 +16,69 @@
 // and pointing at the wrong thing entirely. The person needed to be told they
 // had not added a secret.
 //
+// TWO ROUTES, SELECTED BY WHETHER A BILLED KEY IS CONFIGURED AT ALL.
+// `ANTHROPIC_API_KEY` (or a file source resolving to one — see below) buys
+// the `route: 'billed'` path, `anthropic.ts`'s direct call to the metered
+// Messages API. Nothing configuring a key at all buys `route: 'keyless'`,
+// `claudeCli.ts`'s call through the operator's already-logged-in `claude`
+// CLI subscription instead. This is a deliberate reversal from an earlier
+// version of this file, where an absent key was `incomplete` and blocked the
+// run outright: the operator's billed credits are reserved for GitHub
+// Actions, where `ANTHROPIC_API_KEY` is always set as a repository secret,
+// and a laptop run — where it usually is not — should default to the
+// keyless transport rather than demand a key it was never meant to spend
+// locally. `route` is the field the CLI boundary (`cli/review.ts`) reads to
+// decide which reviewer to construct; nothing else in this module or its
+// caller needs to re-derive that decision.
+//
+// A KEY FILE THAT IS UNREADABLE — OR PRESENT AND BLANK — STILL BLOCKS. The
+// reversal above applies only to a key being ABSENT — nobody configured
+// one, so there is nothing to report beyond "this run is keyless". A key
+// file someone DID point at (`ANTHROPIC_API_KEY_FILE`, or the conventional
+// default path) that exists and could not be opened (`EACCES`, `EISDIR`,
+// any other real I/O error) is a different fact: a person already tried to
+// set up the billed path and it is broken. Silently falling back to
+// keyless there would hide a real misconfiguration behind a route that
+// happens to still run. That case stays `invalid`, exactly as it always
+// has — and a file that WAS opened and found BLANK is the same fact by a
+// different mechanism: something wrote to that path (or truncated it) and
+// left no key in it. Blank-but-present is not the same fact as absent: an
+// absent file is "nobody has set this up yet", the ordinary case on a
+// fresh machine; a blank one is "somebody's setup produced nothing",
+// closer in kind to a broken read than to nothing having been tried at
+// all. An earlier version of this file collapsed blank into absent so it
+// fell through to the next source (or to keyless) exactly like a missing
+// file — the panel's review of that version named the resulting silent
+// failure directly: someone who configured the billed route and left the
+// file empty (a mistyped write, an interrupted `echo`) got a successful
+// KEYLESS run instead of any signal that their configuration did not take.
+// Blank now blocks, exactly like unreadable — even when a later source in
+// the chain (the default path, say) could have supplied a working key; a
+// broken billed setup must never be silently rescued by a route it never
+// asked for.
+//
+// A PATH NAMED BY ANTHROPIC_API_KEY_FILE THAT DOES NOT EXIST AT ALL ALSO
+// BLOCKS — BUT ONLY BECAUSE IT WAS NAMED. There are two different "nothing
+// is there" cases in this chain and they must not be treated alike. The
+// CONVENTIONAL DEFAULT path ($XDG_CONFIG_HOME/verevoir/anthropic.key, or
+// ~/.config/verevoir/anthropic.key) being absent really is "nobody has set
+// this up" — nobody named that path, it is simply where this tool looks
+// when nothing else was configured, and falling through to keyless is
+// exactly right. A path given through ANTHROPIC_API_KEY_FILE is different:
+// naming it is itself an act of configuration, so finding nothing there is
+// the same kind of fact blank and unreadable already are — someone already
+// tried to set up the billed route, and it did not work — not the same kind
+// of fact as the default path having never been touched. An earlier version
+// of this file treated a missing named path exactly like a missing default
+// path: `absent`, silently falling through to the next source or to
+// keyless. That let someone who set ANTHROPIC_API_KEY_FILE to a mistyped or
+// moved path get a successful KEYLESS run with nothing telling them their
+// billed configuration was never read — the same silent-fallback failure
+// named above for blank, one mechanism further along the same chain. A
+// missing named path now blocks (`invalid`), naming the path, exactly like
+// blank and unreadable do, and — like blank — the default path is never
+// even consulted once the named one has failed.
+//
 // THE API KEY, SPECIFICALLY, HAS THREE SOURCES, TRIED IN A FIXED ORDER:
 //
 //   1. `ANTHROPIC_API_KEY` in the environment, if set and non-blank. This
@@ -48,7 +111,8 @@
 // Reading a file gets the same three-way care external input gets elsewhere
 // in this codebase (compare `ReadResult` in load.ts): a path that does not
 // exist is not an error, it is simply that source contributing nothing, and
-// resolution moves on to the next one. A file that exists and cannot be
+// resolution moves on to the next one — and now, if every source ends the
+// same way, moves on to the keyless route. A file that exists and cannot be
 // opened — permissions, a directory, anything else — IS distinguishable from
 // one that is absent, because those are different problems for a person: one
 // is "you have not set this up yet", the other is "you tried, and something
@@ -64,31 +128,9 @@
 // mutually exclusive facts about a single run, and choosing one of them to
 // name the `kind` must never mean discarding the other: an unreadable key
 // file is real information whether or not some other setting also happens to
-// be unset. The first version of this file got that wrong — `incomplete` and
-// `invalid` were built as if only one problem could ever be true at once, so
-// whenever a broken key file coincided with any other missing setting, the
-// broken-file message vanished entirely and the person was told only "you
-// haven't set X", with no trace that the file they DID set was the actual
-// problem. So `incomplete` carries `problems` alongside `missing`: nothing
-// collected on the way through `resolveSettings` is ever silently dropped,
-// whichever `kind` ends up describing the run, and `renderMissing` renders
-// both when both are true.
-//
-// THE SAME GAP EXISTED FOR BLANK, NARROWER THAN UNREADABLE. A key file that
-// IS there and reads back empty is deliberately collapsed into `absent`
-// inside `keyFromPath` itself, so resolution keeps trying the next source —
-// matching what `present()` already does for the environment. But collapsing
-// the CONTROL FLOW and collapsing the INFORMATION are two different choices,
-// and an earlier version of this file made only the first one: if every
-// source ultimately came up empty, the report said only "ANTHROPIC_API_KEY is
-// not configured", with no trace that the specific, user-configured
-// `ANTHROPIC_API_KEY_FILE` path was found and was blank — the exact collapse
-// of "you never set this up" and "you set this up and it produced nothing"
-// that `unreadable` was already kept apart from `missing` to prevent, simply
-// missed for `blank` the first time. `resolveApiKey` still falls through past
-// a blank file exactly as before; it now also remembers every path that was
-// blank along the way, and `resolveSettings` names each one in `problems`
-// whenever the key still could not be resolved from any source.
+// be unset. `incomplete` carries `problems` alongside `missing` for exactly
+// this — an unreadable key file, or a bad `AIGENCY_REVIEW_MAX_TOKENS`, is
+// never silently dropped just because something else is also unset.
 
 /** A setting the run needs and does not have. */
 export interface MissingSetting {
@@ -100,14 +142,31 @@ export interface MissingSetting {
   readonly where: string;
 }
 
-export interface ReviewSettings {
-  readonly apiKey: string;
+/**
+ * The common fields both routes carry — everything that does not depend on
+ * whether a billed key was configured.
+ */
+interface CommonSettings {
   readonly model: string;
   readonly maxTokens: number;
   readonly lensSource: string;
   /** Sent as a bearer token when the lens set is fetched over HTTP. */
   readonly lensToken?: string;
 }
+
+/**
+ * What a run is configured to do — which route it takes, and everything each
+ * route needs. A discriminated union rather than an optional `apiKey` field
+ * on one flat shape: the billed route genuinely needs an `apiKey` and the
+ * keyless route genuinely must not carry one, and a type that can express
+ * "route is billed but apiKey is undefined" is a type that lets a caller
+ * construct `anthropicReviewer` with nothing to authenticate with. The CLI
+ * boundary (`cli/review.ts`) narrows on `route` once and TypeScript does the
+ * rest.
+ */
+export type ReviewSettings =
+  | ({ readonly route: 'billed'; readonly apiKey: string } & CommonSettings)
+  | ({ readonly route: 'keyless' } & CommonSettings);
 
 export type SettingsResult =
   | { readonly kind: 'ready'; readonly settings: ReviewSettings }
@@ -145,7 +204,10 @@ export type KeyFileReader = (path: string) => Promise<KeyFileResult>;
 /**
  * Pinned, not discovered. The same commit judged by two different models is
  * two different verdicts, and a judge that changes because someone's shell
- * differs is a bar that moved without anyone deciding to move it.
+ * differs is a bar that moved without anyone deciding to move it. Sent to
+ * both routes: `anthropic.ts` sends it as `model`, `claudeCli.ts` sends it
+ * as `--model` (`@verevoir/llm/claude-cli`'s `ChatOptions.model`) — the same
+ * commit judged by the same model whichever transport answered.
  */
 export const DEFAULT_MODEL = 'claude-sonnet-5';
 
@@ -165,6 +227,13 @@ export const DEFAULT_MODEL = 'claude-sonnet-5';
  * subject, not the budget: this repository's own review check, unlike
  * review-branch.mjs's standalone size cap, has no limit at all on how large
  * a diff it will attempt.
+ *
+ * `claudeCli.ts`'s keyless route does not send this at all — `claude -p` has
+ * no confirmed flag for an output-token ceiling, and `@verevoir/llm/claude-cli`
+ * silently ignores `ChatOptions.maxTokens` for exactly that reason (its own
+ * file header discloses the gap). Resolved here regardless, on both routes,
+ * so a caller reading `ReviewSettings` never has to ask which route it is
+ * looking at before this field means something.
  */
 export const DEFAULT_MAX_TOKENS = 65536;
 
@@ -196,13 +265,19 @@ type ApiKeyResolution =
   | { readonly kind: 'found'; readonly value: string }
   | { readonly kind: 'absent' }
   | { readonly kind: 'blank'; readonly path: string }
-  | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string };
+  | { readonly kind: 'unreadable'; readonly path: string; readonly reason: string }
+  // A path ANTHROPIC_API_KEY_FILE actually named, where nothing exists.
+  // Distinct from `absent` (used only for a source that was never named at
+  // all, or that being missing is entirely ordinary): see the file header's
+  // NAMED-BUT-MISSING paragraph for why the two must not share an outcome.
+  | { readonly kind: 'namedButMissing'; readonly path: string };
 
-/** Reads and classifies one candidate file: genuinely absent, found, or
- * present but blank — kept apart from absent, unlike a step further up this
- * chain, because the caller needs to know WHICH path was blank if nothing
- * else ends up supplying a key — or a real problem the reader could not get
- * past. */
+/** Reads and classifies one candidate file: genuinely absent (this source
+ * has nothing to offer, resolution moves on), found, or a real problem the
+ * reader could not get past — unreadable, or present-and-blank. Blank is no
+ * longer folded into absent: see the file header for why a file someone
+ * pointed at and found empty must block rather than silently resolve to
+ * keyless. */
 async function keyFromPath(path: string, readKeyFile: KeyFileReader): Promise<ApiKeyResolution> {
   const found = await readKeyFile(path);
   if (found.kind === 'absent') {
@@ -219,75 +294,60 @@ async function keyFromPath(path: string, readKeyFile: KeyFileReader): Promise<Ap
   return trimmed === '' ? { kind: 'blank', path } : { kind: 'found', value: trimmed };
 }
 
-/**
- * What resolving the API key found: the final resolution the three sources
- * settle on, plus every path along the way that was found but blank —
- * remembered even though a blank source does not stop the search, because it
- * must not be lost if the search comes up empty regardless. See the file
- * header.
- */
-interface ApiKeyLookup {
-  readonly resolution: ApiKeyResolution;
-  readonly blankPaths: readonly string[];
-}
-
 /** The three sources, tried in order, stopping at the first that supplies a
- * value or hits a real problem. `absent` and `blank` — from any source — are
- * both what let resolution try the next one; `unreadable` is not, because it
- * is a problem with a source someone already configured. A `blank` result is
- * never returned as the final resolution — it always either yields to the
- * next source or, having none left, becomes `absent` — but every path found
- * blank along the way is collected in `blankPaths` regardless of how the
- * search ends. */
+ * value or hits a real problem. Only `absent` — genuinely missing — lets
+ * resolution try the next source; `blank` and `unreadable` both stop it,
+ * because both are a problem with a source someone already configured (see
+ * the file header for why blank no longer falls through the way absent
+ * does). */
 async function resolveApiKey(
   env: Record<string, string | undefined>,
   readKeyFile: KeyFileReader,
-): Promise<ApiKeyLookup> {
+): Promise<ApiKeyResolution> {
   const fromEnv = present(env['ANTHROPIC_API_KEY']);
   if (fromEnv !== undefined) {
-    return { resolution: { kind: 'found', value: fromEnv }, blankPaths: [] };
+    return { kind: 'found', value: fromEnv };
   }
-
-  const blankPaths: string[] = [];
 
   const explicitPath = present(env['ANTHROPIC_API_KEY_FILE']);
   if (explicitPath !== undefined) {
     const result = await keyFromPath(explicitPath, readKeyFile);
-    if (result.kind === 'blank') {
-      blankPaths.push(result.path);
-    } else if (result.kind !== 'absent') {
-      return { resolution: result, blankPaths };
+    // Unlike the default path below, this path was NAMED — a person set
+    // ANTHROPIC_API_KEY_FILE themselves. `absent` here does not mean "try
+    // the next source", it means "the path they gave does not exist", which
+    // is a configuration error exactly like a blank or unreadable file —
+    // see the file header's NAMED-BUT-MISSING paragraph. So this returns
+    // here, blocking, rather than falling through to the default path the
+    // way an absent default path itself is allowed to fall through to
+    // keyless.
+    if (result.kind === 'absent') {
+      return { kind: 'namedButMissing', path: explicitPath };
     }
+    return result;
   }
 
   const defaultPath = defaultKeyFilePath(env);
   if (defaultPath !== undefined) {
     const result = await keyFromPath(defaultPath, readKeyFile);
-    if (result.kind === 'blank') {
-      blankPaths.push(result.path);
-    } else if (result.kind !== 'absent') {
-      return { resolution: result, blankPaths };
+    if (result.kind !== 'absent') {
+      return result;
     }
   }
 
-  return { resolution: { kind: 'absent' }, blankPaths };
+  return { kind: 'absent' };
 }
 
 /**
  * Read the settings out of an environment, plus wherever the API key file
  * source points.
  *
- * Three outcomes, kept apart because they are three different jobs: `ready`,
- * `incomplete` (something is absent — a person must supply it) and `invalid`
- * (something is present and wrong, and nothing is also absent — a person must
- * correct it). Collapsing the last two would tell someone who typed `4o96`
- * that they had forgotten to set a value they can see in front of them.
- *
- * `incomplete` wins the `kind` whenever anything is missing — absence stays
- * the primary message — but it carries `problems` too, so a broken key file
- * or a bad `AIGENCY_REVIEW_MAX_TOKENS` found along the way is never silently
- * dropped just because something else also happened to be unset. See the
- * file header for why this matters.
+ * Three outcomes, kept apart because they are three different jobs: `ready`
+ * (with `settings.route` saying which transport it resolved to), `incomplete`
+ * (something is genuinely absent — a person must supply it; no longer ever
+ * true of the API key alone, see the file header) and `invalid` (something is
+ * present and wrong, and nothing is also missing — a person must correct it).
+ * Collapsing the last two would tell someone who typed `4o96` that they had
+ * forgotten to set a value they can see in front of them.
  */
 export async function resolveSettings(
   env: Record<string, string | undefined>,
@@ -296,8 +356,7 @@ export async function resolveSettings(
   const missing: MissingSetting[] = [];
   const problems: string[] = [];
 
-  const apiKeyLookup = await resolveApiKey(env, readKeyFile);
-  const apiKeyResolution = apiKeyLookup.resolution;
+  const apiKeyResolution = await resolveApiKey(env, readKeyFile);
   let apiKey: string | undefined;
   if (apiKeyResolution.kind === 'found') {
     apiKey = apiKeyResolution.value;
@@ -305,24 +364,26 @@ export async function resolveSettings(
     problems.push(
       `the API key file at ${apiKeyResolution.path} could not be read: ` + apiKeyResolution.reason,
     );
-    for (const path of apiKeyLookup.blankPaths) {
-      problems.push(`the API key file at ${path} was found but was blank`);
-    }
-  } else {
-    missing.push({
-      name: 'ANTHROPIC_API_KEY',
-      why: 'the review calls a model once per lens, and cannot run without a key',
-      where:
-        'GitHub: Settings → Secrets and variables → Actions → New repository secret, ' +
-        'named ANTHROPIC_API_KEY. Locally: export ANTHROPIC_API_KEY=sk-..., or set ' +
-        'ANTHROPIC_API_KEY_FILE to a path holding the key, or place the key at ' +
-        '$XDG_CONFIG_HOME/verevoir/anthropic.key (~/.config/verevoir/anthropic.key ' +
-        'when XDG_CONFIG_HOME is unset).',
-    });
-    for (const path of apiKeyLookup.blankPaths) {
-      problems.push(`the API key file at ${path} was found but was blank`);
-    }
+  } else if (apiKeyResolution.kind === 'blank') {
+    problems.push(
+      `the API key file at ${apiKeyResolution.path} exists but is blank — if it was meant to ` +
+        'supply ANTHROPIC_API_KEY, whatever wrote it left no key in it; if it was not meant to, ' +
+        'remove it. (An absent file resolves to the keyless route; a blank one blocks instead, ' +
+        'so a broken billed setup is never silently mistaken for a deliberate keyless one.)',
+    );
+  } else if (apiKeyResolution.kind === 'namedButMissing') {
+    problems.push(
+      `ANTHROPIC_API_KEY_FILE names ${apiKeyResolution.path}, but no file exists there — if it ` +
+        'was meant to supply ANTHROPIC_API_KEY, check the path; if it was not meant to, unset ' +
+        'ANTHROPIC_API_KEY_FILE. (Only the conventional default path falls through to the ' +
+        'keyless route when nothing is there; a path you named yourself does not, so a broken ' +
+        'billed setup is never silently mistaken for a deliberate keyless one.)',
+    );
   }
+  // `apiKeyResolution.kind === 'absent'`: nothing to report here at all. This
+  // used to push a `missing` entry for `ANTHROPIC_API_KEY`; it no longer
+  // does — an absent key selects the keyless route below rather than
+  // blocking the run. See the file header.
 
   const lensSource = present(env['AIGENCY_REVIEW_LENSES']) ?? DEFAULT_LENS_SOURCE;
   const lensToken = present(env['AIGENCY_REVIEW_LENSES_TOKEN']) ?? present(env['GITHUB_TOKEN']);
@@ -371,15 +432,20 @@ export async function resolveSettings(
   if (problems.length > 0) {
     return { kind: 'invalid', problems };
   }
+
+  const common: CommonSettings = {
+    model,
+    maxTokens,
+    lensSource,
+    ...(lensToken !== undefined ? { lensToken } : {}),
+  };
+
   return {
     kind: 'ready',
-    settings: {
-      apiKey: apiKey as string,
-      model,
-      maxTokens,
-      lensSource,
-      ...(lensToken !== undefined ? { lensToken } : {}),
-    },
+    settings:
+      apiKey === undefined
+        ? { route: 'keyless', ...common }
+        : { route: 'billed', apiKey, ...common },
   };
 }
 

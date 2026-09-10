@@ -124,6 +124,79 @@ step's own `::error` lines.
 
 ## Running it locally
 
+Two routes, selected automatically by whether a billed key is configured —
+nobody has to choose. **The default is keyless**, because the operator's
+metered `ANTHROPIC_API_KEY` credits are reserved for GitHub Actions, and a
+laptop run should never spend against them without being asked to.
+
+### Keyless (the default) — through your own `claude` CLI subscription
+
+```sh
+npm install && npm run build
+export AIGENCY_REVIEW_LENSES=./review/lenses.json
+git diff --merge-base origin/main HEAD | node dist/cli/review.js "what you are reviewing"
+```
+
+No `ANTHROPIC_API_KEY` set anywhere (not the environment, not
+`ANTHROPIC_API_KEY_FILE`, not the conventional default path) is what selects
+this route. It calls `@verevoir/llm/claude-cli`'s `chat()`, which shells out to
+your already-logged-in `claude` CLI (`claude setup-token`, or an interactive
+login) — the same, single `claude -p` implementation this codebase and
+`@verevoir/llm` share; nothing here hand-rolls a second one. It spends nothing
+against `ANTHROPIC_API_KEY`, whether or not one happens to be set on your
+machine for something else.
+
+**A known, permanent limitation, and the workaround this repository ships for
+it — read this before assuming a bare failure means nothing more than "try
+again".** `@verevoir/llm`'s `claude-cli` adapter (0.26.0, the version this
+repository depends on) reads the CLI's own `stdout` only on a _clean_ exit.
+On a non-zero exit it reports only the bare exit code (or terminating
+signal) plus `stderr` — and the single most likely first-run failure, `claude
+-p` not being logged into any subscription, exits 1 with `stderr` **empty**
+and its real reason (`"Not logged in · Please run /login"`) sitting in the
+JSON envelope's `result` field on `stdout`, which that adapter never reads on
+this path. **The operator has decided this will not be fixed or republished**
+— a real, weighed decision about what a publish to `@verevoir/llm` would
+carry, not an oversight — so this gap is permanent for the version this
+repository depends on, not a stopgap awaiting a patch release.
+
+Because of that, `src/review/claudeCli.ts`'s `augmentBareExit` recognises
+exactly that bare, reason-less shape and appends a labelled, best-effort
+hint: that the likely cause is not being logged in, and what to run
+(`claude setup-token`, or an interactive `claude` login) to fix it. Read the
+hint for what it is, stated in its own wording every time it fires: **a
+GUESS, not a decoded reason** — this repository cannot recover the true
+cause `@verevoir/llm` dropped, only infer the single most likely one, and it
+says so rather than presenting an inference as a fact. It touches nothing
+other than this one exact failure shape: a message that already carries a
+`stderr` reason, or a distinct spawn-level failure (`claude` missing from
+`PATH` entirely), is left completely untouched, in its own, already-legible
+wording.
+
+**What this can never do, and what to check if a review reads suspiciously
+clean:** a `claude` that cannot be reached — not logged in, not installed,
+killed by a signal, anything else — always throws, and `runPanel` turns that
+throw into `could_not_run` for that lens, exactly as a thrown `anthropic.ts`
+failure does. There is no path anywhere in this transport that turns an
+unreachable `claude` into an approved, or an empty, review. If a report says
+`could_not_run`, read the reason it carries — including the hint above, when
+it fires — rather than assuming the change was clean.
+
+**A truncated reply is refused for the same reason, not returned as though it
+were finished.** `chat()` reports `stopReason` and token `usage` alongside the
+reply text; this route reads both rather than discarding them. When
+`stopReason` is `max_tokens` — the CLI's own output-token ceiling cut the
+reply off — `claudeCliReviewer` throws (`NoRoomToAnswerError`, naming the
+output tokens spent and how much text had arrived) instead of returning the
+cut-off text as a finished verdict, and that lens reports `could_not_run` too.
+This checks `stopReason` even when SOME text came back, not only when the
+reply is empty: a partial VERDICT with a truncated finding list is exactly as
+misleading as an empty one, and this route has no confirmed guarantee (unlike
+the billed route's own zero-text case) that a ceiling hit always produces
+empty content.
+
+### Billed — through the Anthropic API
+
 ```sh
 npm install && npm run build
 export ANTHROPIC_API_KEY=sk-...
@@ -131,9 +204,16 @@ export AIGENCY_REVIEW_LENSES=./review/lenses.json
 git diff --merge-base origin/main HEAD | node dist/cli/review.js "what you are reviewing"
 ```
 
-`AIGENCY_REVIEW_LENSES` matters: without it the source defaults to the published
-copy over HTTP, which needs a token, and you get a missing-token report instead
-of a review.
+Setting `ANTHROPIC_API_KEY` (directly, via `ANTHROPIC_API_KEY_FILE`, or at the
+conventional default path — see the Settings table below) selects this route
+instead — the same one GitHub Actions always uses, since it always has the
+key configured as a repository secret. Use it locally when you specifically
+want to spend against that key, e.g. to compare a `claude -p` verdict against
+an API one.
+
+`AIGENCY_REVIEW_LENSES` matters on either route: without it the source
+defaults to the published copy over HTTP, which needs a token, and you get a
+missing-token report instead of a review.
 
 Run `npm run build` after changing anything under `src/`. The `cli` gate covers
 less than its name suggests: it starts the emitted binary, so the CLI boundary
@@ -163,13 +243,14 @@ fully-uncovered modules passes.
 
 ## Settings
 
-| Variable                      | Default                            | Notes                                                                                                                                                                                                                                                                       |
-| ----------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ANTHROPIC_API_KEY`           | —                                  | Required.                                                                                                                                                                                                                                                                   |
-| `AIGENCY_REVIEW_LENSES`       | the published `review/lenses.json` | A URL or a path.                                                                                                                                                                                                                                                            |
-| `AIGENCY_REVIEW_LENSES_TOKEN` | `GITHUB_TOKEN`                     | Only needed when the lens set comes from `raw.githubusercontent.com`, which is the published default. Any other `https://` source is fetched anonymously and no token is sent.                                                                                              |
-| `AIGENCY_REVIEW_MODEL`        | pinned in `src/review/settings.ts` | Leave it alone unless you know why. The same commit judged by two models is two verdicts.                                                                                                                                                                                   |
-| `AIGENCY_REVIEW_MAX_TOKENS`   | 65536                              | A value that is present and not a positive whole number is refused, never silently replaced by this default. Raised from 4096 on direct evidence: this repository's own review check hit the old default on a large diff and lost four of five lenses to a truncated reply. |
+| Variable                      | Default                                                                                      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`           | — (keyless when unset)                                                                       | Not required. Configured (directly, via `ANTHROPIC_API_KEY_FILE`, or at the default key-file path) selects the billed Anthropic API route; left unset on every source selects the keyless `claude -p` route by default (via `@verevoir/llm/claude-cli`) — see "Running it locally" above for the permanent upstream gap that route works around.                                                                                                                                                                                                                                                          |
+| `ANTHROPIC_API_KEY_FILE`      | — (default: `$XDG_CONFIG_HOME/verevoir/anthropic.key` or `~/.config/verevoir/anthropic.key`) | A path to read the billed key from, trimmed of surrounding whitespace. **Naming this variable is itself an act of configuration, so a path that does not exist blocks the run (`invalid`) exactly like a blank or unreadable one — it does not fall through to the conventional default path or to keyless.** Only the _conventional default_ path (below) is allowed to be absent and fall through to keyless, because nobody named it; a path you name yourself being missing, blank, or unreadable are all the same fact: a broken billed setup, never silently mistaken for a deliberate keyless run. |
+| `AIGENCY_REVIEW_LENSES`       | the published `review/lenses.json`                                                           | A URL or a path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `AIGENCY_REVIEW_LENSES_TOKEN` | `GITHUB_TOKEN`                                                                               | Only needed when the lens set comes from `raw.githubusercontent.com`, which is the published default. Any other `https://` source is fetched anonymously and no token is sent.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `AIGENCY_REVIEW_MODEL`        | pinned in `src/review/settings.ts`                                                           | Leave it alone unless you know why. The same commit judged by two models is two verdicts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `AIGENCY_REVIEW_MAX_TOKENS`   | 65536                                                                                        | A value that is present and not a positive whole number is refused, never silently replaced by this default. Raised from 4096 on direct evidence: this repository's own review check hit the old default on a large diff and lost four of five lenses to a truncated reply.                                                                                                                                                                                                                                                                                                                               |
 
 ## If the diff is empty
 

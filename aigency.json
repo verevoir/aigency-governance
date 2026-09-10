@@ -41,7 +41,7 @@
       "name": "review",
       "kind": "release",
       "command": ["node", "scripts/review-head.mjs"],
-      "description": "Run the review panel against the HEAD commit. A release step rather than a gate because it costs money — one model call per lens — and a gate that bills on every verification is a gate someone turns off. Requires ANTHROPIC_API_KEY in the environment; without it the run reports which setting is missing and where to put it, and exits red without calling anything.",
+      "description": "Run the review panel against the HEAD commit. A release step rather than a gate because a billed run costs money — one model call per lens — and a gate that bills on every verification is a gate someone turns off. Two routes, selected automatically: with ANTHROPIC_API_KEY configured (as GitHub Actions always has it), the billed Anthropic API; without one — the default here, since this step is meant to be run locally too — the keyless route through the operator's own logged-in `claude` CLI subscription (@verevoir/llm/claude-cli), which spends nothing against the operator's metered key. A key file left present and unreadable, or another setting present and wrong, still exits red naming the problem before calling anything.",
       "timeoutMs": 900000
     }
   ]
