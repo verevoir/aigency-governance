@@ -4,22 +4,22 @@
     {
       "id": "correctness",
       "title": "Correctness",
-      "focus": "Does the change do what the diff, its comments and its description say it does? Read the claim and the code as two independent assertions and look for the gap between them. Prefer a concrete failing input over a description of a risk."
+      "focus": "Does the change do what the diff, its comments and its description say it does? Read the claim and the code as two independent assertions and look for the gap between them. Prefer a concrete failing input over a description of a risk. This dimension is behaviour a diff implements, not work a document proposes: a design record, backlog task or specification whose whole content describes work not yet done makes no behavioural claim for this lens to check — answer out_of_scope, not a manufactured gap between a plan and code that does not exist yet."
     },
     {
       "id": "honesty",
       "title": "Honesty of the record",
-      "focus": "Anything that reports a state it did not observe: a comment claiming a property the code does not have, a log line or return value describing work that did not happen, a success reported over an empty result, documentation asserting a behaviour the implementation lacks."
+      "focus": "Anything that reports a state it did not observe: a comment claiming a property the code does not have, a log line or return value describing work that did not happen, a success reported over an empty result, documentation asserting a behaviour the implementation lacks. This still applies in full to a document that only plans or specifies future work: a false claim about the system's CURRENT state is exactly as dishonest inside a backlog task or design record as anywhere else. But a document that plainly presents its content as not yet done is not dishonest for reporting no success — the absence of a completion claim is not itself a finding, and must not be written up as one."
     },
     {
       "id": "failure-modes",
       "title": "Failure distinguishable from silence",
-      "focus": "Where the change can fail, can a reader tell which failure happened? Missing, empty and broken must stay three answers. A swallowed error, a catch that returns a default, or a single word covering two outcomes belongs here."
+      "focus": "Where the change can fail, can a reader tell which failure happened? Missing, empty and broken must stay three answers. A swallowed error, a catch that returns a default, or a single word covering two outcomes belongs here. This judges error handling that exists in the diff. A document that only specifies or plans work not yet built has no catch, return or logged outcome to read yet — answer out_of_scope, not a review of prose about intended handling as though it were the handling itself."
     },
     {
       "id": "verification",
       "title": "Verification that verifies",
-      "focus": "Would each new or changed test fail if the code it covers were wrong? Look for assertions that hold vacuously, suites that pass because they found nothing to run, and guards whose only test exercises the pure function underneath rather than the guard."
+      "focus": "Would each new or changed test fail if the code it covers were wrong? Look for assertions that hold vacuously, suites that pass because they found nothing to run, and guards whose only test exercises the pure function underneath rather than the guard. This judges a test that exists in the diff. A document that only specifies or plans work not yet built — including one describing what a future test must prove — has no test yet for this lens to run the check against; answer out_of_scope, not a verdict on a stated intention."
     },
     {
       "id": "blast-radius",
