@@ -12,6 +12,7 @@
 
 import { readFile } from 'node:fs/promises';
 
+import type { CitationFileReader } from './citations.js';
 import type { ReadResult, SourceReader } from './load.js';
 import type { KeyFileReader, KeyFileResult } from './settings.js';
 
@@ -204,6 +205,27 @@ export function keyFileReader(): KeyFileReader {
         kind: 'unreadable',
         reason: `${code ?? 'unknown'}: ${(cause as Error).message}`,
       };
+    }
+  };
+}
+
+/**
+ * Reads a file cited by a diff, relative to `process.cwd()` — the reviewed
+ * repository's own checkout, in both CI and a local run (see this module's
+ * own commit message for where that cwd comes from in each). Every failure
+ * — not found, a directory, permissions, anything else — collapses to
+ * `missing`, carrying the code Node produced: citations.ts has no use for a
+ * finer distinction than readers.ts's other sources make, because every
+ * one of them ends the citation's resolution the same way regardless of
+ * which failure it was.
+ */
+export function citationFileReader(): CitationFileReader {
+  return async (path: string) => {
+    try {
+      return { kind: 'text', text: await readFile(path, 'utf8') };
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      return { kind: 'missing', reason: `${code ?? 'unknown'}: ${(cause as Error).message}` };
     }
   };
 }

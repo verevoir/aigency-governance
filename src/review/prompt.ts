@@ -19,6 +19,16 @@ export interface Subject {
   readonly title: string;
   readonly description: string;
   readonly diff: string;
+  /**
+   * The code cited by this diff's own added lines, already resolved and
+   * rendered — see citations.ts's `renderCitedContext`. Computed once at the
+   * CLI boundary (cli/review.ts), the same way `practices` is fetched once
+   * by the composition rather than per lens. Absent or blank means there
+   * was nothing to cite (the ordinary case for a code diff), and
+   * `buildPrompt` omits the section entirely rather than rendering an empty
+   * heading — see its own body below.
+   */
+  readonly citedContext?: string;
 }
 
 /**
@@ -64,6 +74,14 @@ export const NO_PRACTICES_NOTICE =
 export function buildPrompt(lens: Lens, subject: Subject, practices?: string): Prompt {
   const bar = practices === undefined || practices.trim() === '' ? NO_PRACTICES_NOTICE : practices;
 
+  // Absent or blank means nothing was cited in this diff's own added lines
+  // — the ordinary case for a code diff — and the section is left out
+  // entirely rather than rendered as an empty heading over nothing.
+  const citedSection =
+    subject.citedContext !== undefined && subject.citedContext.trim() !== ''
+      ? ['', '## Cited code', '', subject.citedContext]
+      : [];
+
   const shared = [
     'You are one lens of a review panel. Several reviewers are reading this same change, each along a different dimension, and their verdicts are combined. Review only your own dimension: another lens is covering the rest, and a finding outside your dimension is noise in someone else’s report.',
     '',
@@ -82,6 +100,7 @@ export function buildPrompt(lens: Lens, subject: Subject, practices?: string): P
     '```diff',
     subject.diff,
     '```',
+    ...citedSection,
     '',
     '## How to answer',
     '',
