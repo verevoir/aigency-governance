@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  citationFileReader,
   fileReader,
   httpReader,
   keyFileReader,
@@ -213,6 +214,45 @@ describe('keyFileReader', () => {
     const result = await keyFileReader()(REPO_ROOT);
     expect(result.kind).toBe('unreadable');
     if (result.kind !== 'unreadable') throw new Error('unreachable');
+    expect(result.reason).toContain('EISDIR');
+  });
+});
+
+// citations.ts's real, filesystem-touching implementation. Same real fixtures
+// as `keyFileReader` above, and deliberately the same collapsed-to-one-kind
+// shape: citations.ts has no use for a distinction finer than "the file could
+// be read" versus "it could not, and here is why" — every failure ends a
+// citation's resolution the same way regardless of which one it was.
+describe('citationFileReader', () => {
+  it('reads a file that is there, verbatim', async () => {
+    const result = await citationFileReader()(PACKAGE_JSON);
+    expect(result.kind).toBe('text');
+    if (result.kind !== 'text') throw new Error('unreachable');
+    expect(result.text).toContain('@verevoir/aigency-governance');
+  });
+
+  it('reports a path that does not exist as missing, naming the code and the path', async () => {
+    const result = await citationFileReader()(NOT_THERE);
+    expect(result.kind).toBe('missing');
+    if (result.kind === 'text') throw new Error('unreachable');
+    expect(result.reason).toContain('ENOENT');
+  });
+
+  it('reports a path that runs through a file as missing', async () => {
+    const result = await citationFileReader()(THROUGH_A_FILE);
+    expect(result.kind).toBe('missing');
+    if (result.kind === 'text') throw new Error('unreachable');
+    expect(result.reason).toContain('ENOTDIR');
+  });
+
+  // A directory read with 'utf8' fails with EISDIR — reported here as
+  // `missing` (this reader has only one failure kind), but the reason still
+  // names the real cause rather than a generic message, so it is at least
+  // diagnosable from the citation's own unresolved entry.
+  it('reports a directory as missing, naming the real failure code', async () => {
+    const result = await citationFileReader()(REPO_ROOT);
+    expect(result.kind).toBe('missing');
+    if (result.kind === 'text') throw new Error('unreachable');
     expect(result.reason).toContain('EISDIR');
   });
 });

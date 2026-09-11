@@ -118,6 +118,33 @@ describe('buildPrompt — the per-lens half', () => {
   });
 });
 
+describe('buildPrompt — cited code (verevoir/aigency-harness#118)', () => {
+  it('omits the section entirely when citedContext is absent', () => {
+    const { shared } = buildPrompt(CORRECTNESS, SUBJECT);
+    expect(shared).not.toContain('## Cited code');
+  });
+
+  it('omits the section entirely when citedContext is blank', () => {
+    const { shared } = buildPrompt(CORRECTNESS, { ...SUBJECT, citedContext: '   \n' });
+    expect(shared).not.toContain('## Cited code');
+  });
+
+  it('includes citedContext under its own heading, after the diff, when present', () => {
+    const cited = 'src/settings.ts:10-20\n```\nconst x = 1;\n```';
+    const { shared } = buildPrompt(CORRECTNESS, { ...SUBJECT, citedContext: cited });
+    expect(shared).toContain('## Cited code');
+    expect(shared).toContain(cited);
+    expect(shared.indexOf('## The diff')).toBeLessThan(shared.indexOf('## Cited code'));
+    expect(shared.indexOf('## Cited code')).toBeLessThan(shared.indexOf('## How to answer'));
+  });
+
+  it('stays identical across lenses even with citedContext present', () => {
+    const cited = 'src/settings.ts:10-20\n```\nconst x = 1;\n```';
+    const subject = { ...SUBJECT, citedContext: cited };
+    expect(buildPrompt(CORRECTNESS, subject).shared).toBe(buildPrompt(HONESTY, subject).shared);
+  });
+});
+
 describe('renderPrompt', () => {
   it('puts the shared half first, which is the whole point of the split', () => {
     const prompt = buildPrompt(CORRECTNESS, SUBJECT);
