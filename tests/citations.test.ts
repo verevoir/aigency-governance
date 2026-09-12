@@ -117,6 +117,17 @@ describe('extractCitations', () => {
       { raw: '`docs/b.md`', path: 'docs/b.md' },
     ]);
   });
+
+  // A sharper version of the case above: the text between the two spans
+  // CONTAINS the substring "'s" (inside "figure's") without being adjacent
+  // to the closing backtick. A looser guard checking `.includes("'s")`
+  // rather than `=== "'s "` would wrongly attempt to fuse this — the
+  // strict-equality check must reject it and leave the path bare.
+  it('does not fuse when the text between spans merely contains "\'s" as a substring', () => {
+    const diff = diffOf("+`docs/a.md` figure's `Something` is unrelated.");
+    const citations = extractCitations(diff);
+    expect(citations).toEqual([{ raw: '`docs/a.md`', path: 'docs/a.md' }]);
+  });
 });
 
 describe('buildCitedContext — resolving a path:line citation', () => {
@@ -218,38 +229,100 @@ describe('buildCitedContext — citations that never reach a read at all', () =>
     expect(readCalled).toBe(false);
   });
 
-  it('refuses an absolute path without reading it', async () => {
+  it('refuses an absolute path without reading it, naming the specific cause', async () => {
     let readCalled = false;
     const reader: CitationFileReader = () => {
       readCalled = true;
       return Promise.resolve({ kind: 'text', text: 'irrelevant' });
     };
-    const citation: Citation = { raw: '`/etc/passwd:1`', path: '/etc/passwd', line: 1 };
+    // .ts so this exercises the absolute-path check specifically, not the
+    // extension check that would also refuse an extensionless path.
+    const citation: Citation = { raw: '`/etc/x.ts:1`', path: '/etc/x.ts', line: 1 };
     const result = await buildCitedContext([citation], reader);
-    expect(result.unresolved[0]?.reason).toContain('refused');
+    expect(result.unresolved[0]?.reason).toContain('absolute');
     expect(readCalled).toBe(false);
   });
 
-  it('refuses a path containing a .. segment without reading it', async () => {
+  it('refuses a path containing a .. segment without reading it, naming the specific cause', async () => {
     let readCalled = false;
     const reader: CitationFileReader = () => {
       readCalled = true;
       return Promise.resolve({ kind: 'text', text: 'irrelevant' });
     };
     const citation: Citation = {
-      raw: '`../../etc/passwd:1`',
-      path: '../../etc/passwd',
+      raw: '`../../etc/x.ts:1`',
+      path: '../../etc/x.ts',
       line: 1,
     };
+    const result = await buildCitedContext([citation], reader);
+    expect(result.unresolved[0]?.reason).toContain('traversal');
+    expect(readCalled).toBe(false);
+  });
+
+  // The vulnerability this module was found to have (PR #20's own review,
+  // blast-radius lens, blocking): neither absolute nor a traversal segment,
+  // so the old check let it straight through to the reader.
+  it('refuses a path whose extension is not in the allowlist, without reading it', async () => {
+    let readCalled = false;
+    const reader: CitationFileReader = () => {
+      readCalled = true;
+      return Promise.resolve({ kind: 'text', text: 'SECRET=abc123' });
+    };
+    const citation: Citation = { raw: '`config/.env:1`', path: 'config/.env', line: 1 };
+    const result = await buildCitedContext([citation], reader);
+    expect(result.regions).toEqual([]);
+    expect(result.unresolved[0]?.reason).toContain('refused');
+    expect(readCalled).toBe(false);
+  });
+
+  it('refuses a path with no extension at all, without reading it', async () => {
+    let readCalled = false;
+    const reader: CitationFileReader = () => {
+      readCalled = true;
+      return Promise.resolve({ kind: 'text', text: 'irrelevant' });
+    };
+    const citation: Citation = { raw: '`id_rsa:1`', path: 'id_rsa', line: 1 };
     const result = await buildCitedContext([citation], reader);
     expect(result.unresolved[0]?.reason).toContain('refused');
     expect(readCalled).toBe(false);
   });
 
+  // End to end: the extraction grammar itself, then the refusal, on the
+  // exact shape the vulnerability report described (a dotfile nested under
+  // a directory, cited with a line number).
+  it('extracts but then refuses a citation of a dotfile with a disallowed extension, end to end', async () => {
+    const diff = diffOf('+See `config/.env:3` for the value used in production.');
+    const citations = extractCitations(diff);
+    expect(citations).toHaveLength(1);
+    const result = await buildCitedContext(
+      citations,
+      fakeReader({ 'config/.env': 'SECRET=abc123' }),
+    );
+    expect(result.regions).toEqual([]);
+    expect(result.unresolved[0]?.reason).toContain('refused');
+  });
+
+  // A `refused` result from the READER (layers 2/3, readers.ts -- untracked
+  // or a symlink escape) must be passed through to `unresolved` verbatim,
+  // exactly like a layer-1 refusal from this module's own pathSafety.
+  it('passes a reader-level refusal (layers 2/3) through to unresolved verbatim, without reading further', async () => {
+    const reader: CitationFileReader = () =>
+      Promise.resolve({
+        kind: 'refused',
+        reason: 'refused — this path is not tracked in the repository’s git index',
+      });
+    const citation: Citation = { raw: '`f.ts:1`', path: 'f.ts', line: 1 };
+    const result = await buildCitedContext([citation], reader);
+    expect(result.regions).toEqual([]);
+    expect(result.unresolved).toEqual([
+      { citation, reason: 'refused — this path is not tracked in the repository’s git index' },
+    ]);
+  });
+
   it('reports a missing file as unresolved, naming the reason', async () => {
     const citation: Citation = { raw: '`gone.ts:1`', path: 'gone.ts', line: 1 };
     const result = await buildCitedContext([citation], fakeReader({}));
-    expect(result.unresolved[0]?.reason).toContain('not found');
+    expect(result.unresolved[0]?.reason).toContain('ENOENT');
   });
 });
 
@@ -283,8 +356,16 @@ describe('buildCitedContext — the budget, and never truncating silently', () =
     expect((region?.endLine ?? 0) - (region?.startLine ?? 0) + 1).toBe(120);
   });
 
-  it('exports a sane, positive default budget', () => {
-    expect(DEFAULT_CONTEXT_BUDGET_CHARS).toBeGreaterThan(0);
+  it('exports a default budget large enough to hold several full-sized regions, not merely a positive number', async () => {
+    const file = Array.from({ length: 300 }, (_, i) => `line ${String(i + 1)}`).join('\n');
+    const citation: Citation = { raw: '`a.ts:1-300`', path: 'a.ts', line: 1, endLine: 300 };
+    const oneMaxRegion = (await buildCitedContext([citation], fakeReader({ 'a.ts': file })))
+      .regions[0]?.text.length;
+    // A budget that could not fit even a handful of maximally-clipped
+    // regions would defeat the feature's purpose (a documentation change
+    // typically cites several places). `toBeGreaterThan(0)` alone would pass
+    // for a budget of 1 character, which would too.
+    expect(DEFAULT_CONTEXT_BUDGET_CHARS).toBeGreaterThan((oneMaxRegion ?? 0) * 5);
   });
 });
 

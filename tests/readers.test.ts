@@ -1,12 +1,18 @@
-// No network and no writes to disk. The HTTP reader is exercised through a
-// fake `FetchLike`, and the file reader is pointed at paths this repository
-// already has — `package.json`, its own root directory, and a name that is not
-// there — so every case is real I/O against something the test did not create.
+// No network and no writes to disk (with one deliberate, cleaned-up
+// exception: the symlink-escape test below creates a real symlink in a
+// scratch temp directory, because that is the one thing a fake filesystem
+// cannot prove). The HTTP reader is exercised through a fake `FetchLike`,
+// and the file reader is pointed at paths this repository already has —
+// `package.json`, its own root directory, and a name that is not there —
+// so every case is real I/O against something the test did not create.
 //
 // Most of these assert the difference between `missing` and `unreachable`.
 // That distinction is the only reason these readers exist rather than a
 // one-line `fetch`: a 403 reported as `missing` sends someone to check a URL
 // that was correct all along.
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -18,7 +24,9 @@ import {
   keyFileReader,
   lensFetchHeaders,
   lensReaderFor,
+  listTrackedFiles,
   readerFor,
+  type ExecFileLike,
   type FetchLike,
   type RawFetch,
 } from '../src/review/readers.js';
@@ -218,42 +226,101 @@ describe('keyFileReader', () => {
   });
 });
 
-// citations.ts's real, filesystem-touching implementation. Same real fixtures
-// as `keyFileReader` above, and deliberately the same collapsed-to-one-kind
-// shape: citations.ts has no use for a distinction finer than "the file could
-// be read" versus "it could not, and here is why" — every failure ends a
-// citation's resolution the same way regardless of which one it was.
+// citations.ts's real, filesystem-AND-git-touching implementation. `path`
+// here is relative to `repoRoot`, matching what a citation actually carries
+// — unlike `fileReader`/`keyFileReader` above, which this suite drives with
+// absolute paths.
 describe('citationFileReader', () => {
-  it('reads a file that is there, verbatim', async () => {
-    const result = await citationFileReader()(PACKAGE_JSON);
+  it('reads a file that is tracked and there, verbatim', async () => {
+    const result = await citationFileReader(REPO_ROOT, new Set(['package.json']))('package.json');
     expect(result.kind).toBe('text');
     if (result.kind !== 'text') throw new Error('unreachable');
     expect(result.text).toContain('@verevoir/aigency-governance');
   });
 
-  it('reports a path that does not exist as missing, naming the code and the path', async () => {
-    const result = await citationFileReader()(NOT_THERE);
+  // The vulnerability this fix closes (PR #20's own review, blast-radius
+  // lens, blocking): an untracked file — the shape a gitignored `.env`
+  // takes — is refused before any read is attempted, even though the path
+  // exists on disk and would otherwise read fine.
+  it('refuses a path that is not in the tracked-files set, without reading it', async () => {
+    const result = await citationFileReader(REPO_ROOT, new Set())('package.json');
+    expect(result.kind).toBe('refused');
+    if (result.kind !== 'refused') throw new Error('unreachable');
+    expect(result.reason).toContain('not tracked');
+  });
+
+  it('reports a tracked path that does not actually exist on disk as missing, naming the code', async () => {
+    const result = await citationFileReader(
+      REPO_ROOT,
+      new Set(['no-such-lens-set.json']),
+    )('no-such-lens-set.json');
     expect(result.kind).toBe('missing');
-    if (result.kind === 'text') throw new Error('unreachable');
+    if (result.kind !== 'missing') throw new Error('unreachable');
     expect(result.reason).toContain('ENOENT');
   });
 
-  it('reports a path that runs through a file as missing', async () => {
-    const result = await citationFileReader()(THROUGH_A_FILE);
+  it('reports a tracked path that runs through a file as missing', async () => {
+    const result = await citationFileReader(
+      REPO_ROOT,
+      new Set(['package.json/lenses.json']),
+    )('package.json/lenses.json');
     expect(result.kind).toBe('missing');
-    if (result.kind === 'text') throw new Error('unreachable');
+    if (result.kind !== 'missing') throw new Error('unreachable');
     expect(result.reason).toContain('ENOTDIR');
   });
 
-  // A directory read with 'utf8' fails with EISDIR — reported here as
-  // `missing` (this reader has only one failure kind), but the reason still
-  // names the real cause rather than a generic message, so it is at least
-  // diagnosable from the citation's own unresolved entry.
-  it('reports a directory as missing, naming the real failure code', async () => {
-    const result = await citationFileReader()(REPO_ROOT);
-    expect(result.kind).toBe('missing');
-    if (result.kind === 'text') throw new Error('unreachable');
-    expect(result.reason).toContain('EISDIR');
+  // Layer 3: a symlink that IS tracked can still point outside the
+  // checkout. Built with a real symlink in scratch temp directories —
+  // separate from REPO_ROOT — so `realpath` genuinely resolves outside the
+  // fake checkout root passed in as `repoRoot`, the one thing a fake
+  // filesystem cannot prove.
+  it('refuses a path that resolves outside the checkout via a symlink, even though it is "tracked"', async () => {
+    const outsideDir = await mkdtemp(joinPath(tmpdir(), 'citation-escape-'));
+    const linkDir = await mkdtemp(joinPath(tmpdir(), 'citation-repo-'));
+    try {
+      const outsideFile = joinPath(outsideDir, 'secret.ts');
+      await writeFile(outsideFile, 'export const SECRET = 1;\n', 'utf8');
+      const linkPath = joinPath(linkDir, 'escape.ts');
+      await symlink(outsideFile, linkPath);
+
+      const result = await citationFileReader(linkDir, new Set(['escape.ts']))('escape.ts');
+      expect(result.kind).toBe('refused');
+      if (result.kind !== 'refused') throw new Error('unreachable');
+      expect(result.reason).toContain('outside the repository');
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+      await rm(linkDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('listTrackedFiles', () => {
+  it('returns the tracked paths git ls-files reports, split on newlines', async () => {
+    const exec: ExecFileLike = () => Promise.resolve({ stdout: 'a.ts\nb.ts\n' });
+    const result = await listTrackedFiles('/irrelevant', exec);
+    expect(result).toEqual(new Set(['a.ts', 'b.ts']));
+  });
+
+  it('drops the trailing blank line rather than treating it as a tracked empty path', async () => {
+    const exec: ExecFileLike = () => Promise.resolve({ stdout: 'a.ts\n' });
+    const result = await listTrackedFiles('/irrelevant', exec);
+    expect(result.has('')).toBe(false);
+    expect(result.size).toBe(1);
+  });
+
+  // Fails CLOSED: every citation must be refused as untracked when git
+  // itself cannot answer, never treated as unrestricted.
+  it('returns an empty set, not a thrown error, when the exec itself fails', async () => {
+    const exec: ExecFileLike = () => Promise.reject(new Error('git: command not found'));
+    const result = await listTrackedFiles('/irrelevant', exec);
+    expect(result).toEqual(new Set());
+  });
+
+  // The real, unmocked path (no injected exec) — proves the production
+  // default actually finds this repository's own tracked files.
+  it("finds this repository's own tracked files, using the real git binary", async () => {
+    const result = await listTrackedFiles(REPO_ROOT);
+    expect(result.has('package.json')).toBe(true);
   });
 });
 

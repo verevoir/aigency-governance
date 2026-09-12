@@ -16,12 +16,38 @@
 // of work with its own risk of pulling in far more than "err small" would
 // allow, and is out of scope here.
 //
-// A NOTE ON PATH SAFETY. `path` comes from the diff — attacker-controlled
-// on any repository taking outside pull requests, the same trust boundary
-// `redact` in anthropic.ts exists for. `isSafePath` below refuses an
-// absolute path or one containing a `..` segment before any read is
-// attempted, so a citation cannot be used to read a file outside the
-// checkout it was cited from.
+// A NOTE ON PATH SAFETY — THREE LAYERS, NOT ONE, AFTER A REAL FINDING.
+// `path` comes from the diff — attacker-controlled on any repository taking
+// outside pull requests, the same trust boundary `redact` in anthropic.ts
+// exists for. An earlier version of this module refused only an absolute
+// path or a `..` segment, which a review of this PR's own diff (the
+// blast-radius lens, blocking) found insufficient: a documentation-only
+// pull request could cite `.env`, a checked-in key file, or `.git/config`
+// — none of which is absolute or contains `..` — and have its contents
+// read and forwarded to the external model call. Fixed with an ALLOWLIST,
+// not a wider denylist, on the operator's explicit instruction: a denylist
+// fails open on the first pattern nobody thought of.
+//
+//   1. EXTENSION ALLOWLIST (`pathSafety`, here — pure, synchronous, no I/O).
+//      `path` must end in one of `ALLOWED_EXTENSIONS`: the file types a
+//      documentation claim could sensibly be about. This alone stops most
+//      secret files outright — `.git/config` has no extension at all, and
+//      a nested `.env` (`config/.env`) resolves to extension `env`, not in
+//      the list.
+//   2. TRACKED-IN-GIT (`citationFileReader`, readers.ts — needs real I/O).
+//      `path` must be a member of the repository's own `git ls-files`
+//      output, computed once per run and passed in. A file that exists on
+//      disk but is (correctly) gitignored is refused here even if some
+//      future extension addition happened to let it past layer 1.
+//   3. NO SYMLINK ESCAPE (`citationFileReader`, readers.ts — needs real
+//      I/O). `path`'s real, symlink-resolved target must sit inside the
+//      checkout's own real root. A tracked symlink pointing outside the
+//      checkout is refused even though the symlink file itself passed
+//      layers 1 and 2.
+//
+// All three layers report a refusal with a reason beginning "refused —",
+// never silently — so a reader of the rendered context can always tell
+// "we would not fetch this" from "this was not there" (a `missing` reason).
 
 /**
  * One citation, extracted from a diff's added lines. `line`/`endLine` and
@@ -64,6 +90,65 @@ function backtickSpans(line: string): RawSpan[] {
 const PATH_WITH_LINE = /^([\w./-]+\.[A-Za-z0-9]{1,10}):(\d+)(?:-(\d+))?$/;
 const PATH_ONLY = /^([\w./-]+\.[A-Za-z0-9]{1,10})$/;
 const SYMBOL_ONLY = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * The only file types a citation may resolve to reading — layer 1 of the
+ * path-safety defence, see the file header. Deliberately an ALLOWLIST, not
+ * a denylist that tries to name every secret-shaped file: source code and
+ * documentation types a claim about "the code" could plausibly cite.
+ * Conspicuously absent, and deliberately so: anything with no extension at
+ * all (`.env` at the top of a path, most credential files, `Dockerfile`),
+ * and credential/config extensions (`.pem`, `.key`, `.crt`, `.p12`, `.pfx`,
+ * `.ini`, `.cfg`, `.conf`, `.env`) this project has no legitimate reason to
+ * quote into a review prompt.
+ */
+const ALLOWED_EXTENSIONS = new Set([
+  'ts',
+  'tsx',
+  'js',
+  'jsx',
+  'mjs',
+  'cjs',
+  'json',
+  'jsonc',
+  'md',
+  'mdx',
+  'yml',
+  'yaml',
+  'py',
+  'go',
+  'rs',
+  'java',
+  'kt',
+  'kts',
+  'c',
+  'h',
+  'cc',
+  'cpp',
+  'hpp',
+  'cxx',
+  'cs',
+  'rb',
+  'php',
+  'sh',
+  'bash',
+  'css',
+  'scss',
+  'less',
+  'html',
+  'htm',
+  'sql',
+  'proto',
+  'graphql',
+  'gql',
+  'toml',
+  'xml',
+]);
+
+function extensionOf(path: string): string | undefined {
+  const match = /\.([A-Za-z0-9]{1,10})$/.exec(path);
+  return match?.[1]?.toLowerCase();
+}
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -150,25 +235,59 @@ export function extractCitations(diff: string): readonly Citation[] {
   return [...seen.values()];
 }
 
-function isSafePath(path: string): boolean {
+/**
+ * Layer 1 of the path-safety defence — see the file header. Pure and
+ * synchronous: no filesystem access, so this cannot itself be fooled by a
+ * symlink or an untracked file — those are layers 2 and 3, enforced in
+ * readers.ts's `citationFileReader`, which is the only place with the I/O
+ * to check them.
+ *
+ * Returns the specific reason for a refusal rather than a bare boolean: an
+ * earlier version collapsed "absolute path" and "traversal segment" into
+ * one fixed message, and a review of this file found that collapse itself
+ * a defect — a reader of the unresolved list could not tell which check
+ * had actually failed for a given citation.
+ */
+function pathSafety(
+  path: string,
+): { readonly safe: true } | { readonly safe: false; readonly reason: string } {
   if (path.startsWith('/')) {
-    return false;
+    return {
+      safe: false,
+      reason:
+        'refused — absolute paths are not permitted; a citation must name a path inside the ' +
+        'reviewed repository',
+    };
   }
-  return !path.split('/').some((segment) => segment === '..');
+  if (path.split('/').some((segment) => segment === '..')) {
+    return { safe: false, reason: 'refused — path traversal ("..") is not permitted' };
+  }
+  const extension = extensionOf(path);
+  if (extension === undefined || !ALLOWED_EXTENSIONS.has(extension)) {
+    return {
+      safe: false,
+      reason:
+        `refused — ${extension === undefined ? 'this path has no recognised file extension' : `".${extension}" is not one of the file types this mechanism will read`} ` +
+        '(see ALLOWED_EXTENSIONS in citations.ts); this refusal is independent of whether the ' +
+        'file exists or what it contains',
+    };
+  }
+  return { safe: true };
 }
 
 /**
  * Reads one file's full text for citation resolution. `missing` covers
- * every reason a read failed — not found, unreadable, a directory — with
- * the reason named; this module has no use for finer distinctions than
- * readers.ts's other sources make, because every one of them ends the same
- * way here: the citation cannot be resolved.
+ * every reason a read failed for a path that passed layer 1 — not found,
+ * unreadable, a directory. `refused` covers layers 2 and 3, which need
+ * real I/O this module deliberately stays free of — see the file header
+ * and readers.ts's `citationFileReader` for what those check.
  */
 export type CitationFileReader = (
   path: string,
 ) => Promise<
   | { readonly kind: 'text'; readonly text: string }
   | { readonly kind: 'missing'; readonly reason: string }
+  | { readonly kind: 'refused'; readonly reason: string }
 >;
 
 /** One citation, resolved to an actual region of a real file. */
@@ -240,11 +359,9 @@ export async function buildCitedContext(
   let used = 0;
 
   for (const citation of citations) {
-    if (!isSafePath(citation.path)) {
-      unresolved.push({
-        citation,
-        reason: 'path refused — absolute, or contains a ".." segment',
-      });
+    const safety = pathSafety(citation.path);
+    if (!safety.safe) {
+      unresolved.push({ citation, reason: safety.reason });
       continue;
     }
 
@@ -257,10 +374,23 @@ export async function buildCitedContext(
     }
 
     const found = await readFile(citation.path);
+    if (found.kind === 'refused') {
+      // Layer 2/3 refusal from the real reader (readers.ts) — untracked, or
+      // resolves outside the checkout via a symlink. Passed straight
+      // through: it already carries its own "refused —" reason, and this
+      // module has nothing to add to it.
+      unresolved.push({ citation, reason: found.reason });
+      continue;
+    }
     if (found.kind === 'missing') {
+      // Not necessarily "not found" — EISDIR and ENOTDIR land here too (see
+      // citationFileReader's own doc comment in readers.ts). The reason
+      // names the real failure code either way, so this prefix stays
+      // neutral rather than asserting the specific cause "not found" for
+      // every case that reaches it.
       unresolved.push({
         citation,
-        reason: `file not found in the working tree: ${found.reason}`,
+        reason: `could not read the cited file: ${found.reason}`,
       });
       continue;
     }
@@ -331,11 +461,15 @@ export async function buildCitedContext(
  * on an ordinary code diff with no citations, the common case this must
  * not clutter.
  *
- * Every one of the three lists is rendered, always — included regions,
- * citations with no region, and regions dropped for budget. A reader who
- * sees only the included regions could mistake "everything cited was
- * grounded" for the truth; the other two lists are exactly what make that
- * distinction visible instead of assumed.
+ * Each of the three lists gets its own section WHEN IT HAS SOMETHING TO
+ * SAY — an earlier version of this comment claimed all three "are
+ * rendered, always," which a review found false: `unresolved` and
+ * `omitted` are each gated on `.length > 0`, so a run with nothing
+ * unresolved and nothing omitted produces neither section, correctly,
+ * rather than an empty one. The property that actually holds: a reader
+ * never sees ONLY the included regions while something was silently
+ * dropped — if anything was omitted or left unresolved, its section says
+ * so.
  */
 export function renderCitedContext(result: CitedContextResult): string {
   const { regions, unresolved, omitted } = result;
