@@ -167,7 +167,8 @@ function isSafePath(path: string): boolean {
 export type CitationFileReader = (
   path: string,
 ) => Promise<
-  { readonly kind: 'text'; readonly text: string } | { readonly kind: 'missing'; readonly reason: string }
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'missing'; readonly reason: string }
 >;
 
 /** One citation, resolved to an actual region of a real file. */
@@ -287,7 +288,8 @@ export async function buildCitedContext(
       if (index === -1) {
         unresolved.push({
           citation,
-          reason: `symbol "${symbol}" was not found in the cited file — a string search, not a ` +
+          reason:
+            `symbol "${symbol}" was not found in the cited file — a string search, not a ` +
             'parse, so a symbol split across lines or reached only via a re-export will miss',
         });
         continue;

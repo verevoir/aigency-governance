@@ -48,7 +48,7 @@ describe('extractCitations', () => {
   // two files — see this repository's commit message for the citation.
   it("extracts a path's `Symbol` citation, the form #118 actually uses", () => {
     const diff = diffOf(
-      '+**No construction-time credential check** — see `clients/mcp/belt.ts`\'s `DEFAULT_LIVENESS_CHECKS`.',
+      "+**No construction-time credential check** — see `clients/mcp/belt.ts`'s `DEFAULT_LIVENESS_CHECKS`.",
     );
     const citations = extractCitations(diff);
     expect(citations).toEqual([
@@ -102,9 +102,7 @@ describe('extractCitations', () => {
   });
 
   it('extracts every distinct citation on the same line', () => {
-    const diff = diffOf(
-      '+See `src/review/settings.ts:120` and also `src/review/panel.ts:40-50`.',
-    );
+    const diff = diffOf('+See `src/review/settings.ts:120` and also `src/review/panel.ts:40-50`.');
     const citations = extractCitations(diff);
     expect(citations.map((c) => c.path)).toEqual(['src/review/settings.ts', 'src/review/panel.ts']);
   });
@@ -112,13 +110,11 @@ describe('extractCitations', () => {
   it("does not fuse a path's `Symbol` across two unrelated sentences", () => {
     // 's is not glued directly to the closing backtick here — a real "'s"
     // sits well after, so this must read as two separate bare citations.
-    const diff = diffOf(
-      '+`docs/a.md` is one doc. `docs/b.md`\'s companion is elsewhere.',
-    );
+    const diff = diffOf("+`docs/a.md` is one doc. `docs/b.md`'s companion is elsewhere.");
     const citations = extractCitations(diff);
     expect(citations).toEqual([
       { raw: '`docs/a.md`', path: 'docs/a.md' },
-      { raw: "`docs/b.md`", path: 'docs/b.md' },
+      { raw: '`docs/b.md`', path: 'docs/b.md' },
     ]);
   });
 });
@@ -310,7 +306,9 @@ describe('renderCitedContext', () => {
   it('lists an unresolved citation with its reason, not silently', () => {
     const rendered = renderCitedContext({
       regions: [],
-      unresolved: [{ citation: { raw: '`docs/x.md`', path: 'docs/x.md' }, reason: 'no line or symbol' }],
+      unresolved: [
+        { citation: { raw: '`docs/x.md`', path: 'docs/x.md' }, reason: 'no line or symbol' },
+      ],
       omitted: [],
     });
     expect(rendered).toContain('docs/x.md');
