@@ -280,7 +280,7 @@ describe('buildCitedContext — the budget, and never truncating silently', () =
     const [region] = result.regions;
     expect(region?.clipped).toBe(true);
     expect(region?.totalLinesInCitedRange).toBe(300); // 1..300, already at file bounds
-    expect(region?.endLine - (region?.startLine ?? 0) + 1).toBe(120);
+    expect((region?.endLine ?? 0) - (region?.startLine ?? 0) + 1).toBe(120);
   });
 
   it('exports a sane, positive default budget', () => {
