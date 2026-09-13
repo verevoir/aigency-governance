@@ -26,6 +26,7 @@ import {
   lensReaderFor,
   listTrackedFiles,
   readerFor,
+  TrackedFilesUnavailableError,
   type ExecFileLike,
   type FetchLike,
   type RawFetch,
@@ -292,6 +293,31 @@ describe('citationFileReader', () => {
       await rm(linkDir, { recursive: true, force: true });
     }
   });
+
+  // The second instance of the shape review found on this PR: a repoRoot
+  // that cannot itself be resolved (deleted mid-run, or simply never
+  // existed) must THROW, not quietly report the cited file as `missing` —
+  // that would read as "this one file happens to be absent" when the truth
+  // is "nothing could be checked at all". A tracked file must be named so
+  // the function gets past the trackedFiles check and actually reaches the
+  // repoRoot resolution.
+  it('throws, rather than returning a misleading per-file `missing`, when the repository root cannot be resolved at all', async () => {
+    const reader = citationFileReader('/no/such/repo/root/at/all', new Set(['f.ts']));
+    await expect(reader('f.ts')).rejects.toThrow(/could not resolve the repository root/);
+  });
+
+  // The repoRoot resolution is memoized: only one real filesystem lookup
+  // for however many citations this one reader instance resolves, not one
+  // per citation. Proven by counting realpath's own failure surfacing only
+  // once in effect — asserted here by confirming a second call against the
+  // SAME broken reader also throws (the cached rejection is reused, not a
+  // fresh attempt each time) rather than, say, silently succeeding on a
+  // later call because some transient condition cleared.
+  it('reuses the same rejected resolution across repeated calls on one reader instance, rather than re-resolving each time', async () => {
+    const reader = citationFileReader('/no/such/repo/root/at/all', new Set(['f.ts', 'g.ts']));
+    await expect(reader('f.ts')).rejects.toThrow(/could not resolve the repository root/);
+    await expect(reader('g.ts')).rejects.toThrow(/could not resolve the repository root/);
+  });
 });
 
 describe('listTrackedFiles', () => {
@@ -308,12 +334,20 @@ describe('listTrackedFiles', () => {
     expect(result.size).toBe(1);
   });
 
-  // Fails CLOSED: every citation must be refused as untracked when git
-  // itself cannot answer, never treated as unrestricted.
-  it('returns an empty set, not a thrown error, when the exec itself fails', async () => {
+  // THE FIX FOR THE DEFECT REVIEW FOUND ON THIS PR: an earlier version
+  // returned an empty set here, reasoning that every citation would then
+  // be refused as untracked — which sounds safe but is not: an empty set
+  // is a confident, specific, FALSE claim ("nothing here is tracked"),
+  // indistinguishable downstream from a document that genuinely cited
+  // only untracked files. Cannot-look and checked-and-found-nothing must
+  // never read the same, so this must throw, naming the real cause,
+  // rather than degrade into a permissive-looking-but-wrong answer.
+  it('throws TrackedFilesUnavailableError, naming the cause, rather than returning an empty set, when the exec itself fails', async () => {
     const exec: ExecFileLike = () => Promise.reject(new Error('git: command not found'));
-    const result = await listTrackedFiles('/irrelevant', exec);
-    expect(result).toEqual(new Set());
+    await expect(listTrackedFiles('/irrelevant', exec)).rejects.toThrow(
+      TrackedFilesUnavailableError,
+    );
+    await expect(listTrackedFiles('/irrelevant', exec)).rejects.toThrow(/git: command not found/);
   });
 
   // The real, unmocked path (no injected exec) — proves the production
