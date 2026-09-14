@@ -86,10 +86,24 @@ describe('extractCitations', () => {
   // A `+++ b/path` diff header also starts with `+` — it names the file a
   // hunk touches, not a claim inside the document, and must never be read
   // as a citation.
-  it('ignores the +++ diff header line itself', () => {
-    const diff = ['--- a/docs/x.md', '+++ b/docs/x.md:1', '@@ -1,0 +1,1 @@', '+ordinary text'].join(
-      '\n',
-    );
+  //
+  // THE DISCRIMINATING VERSION, replacing one that could not fail: the old
+  // header line (`+++ b/docs/x.md:1`) carries no backtick span at all, so
+  // `backtickSpans` finds nothing on it regardless of whether the `+++`
+  // guard exists — the assertion passed even with the guard deleted. This
+  // version embeds a real, citation-shaped backtick span INSIDE the `+++`
+  // line itself, so the guard is the only thing standing between it and an
+  // extracted citation. Mutation-tested by hand (see this commit's own
+  // message): with `rawLine.startsWith('+++')` removed from
+  // `extractCitations`'s skip condition, this failed — `citation-in-header.
+  // ts:1` was extracted, `toEqual([])` did not hold; restored, it passes.
+  it('ignores the +++ diff header line itself, even when it carries a citation-shaped span', () => {
+    const diff = [
+      '--- a/docs/x.md',
+      '+++ b/docs/x.md `citation-in-header.ts:1`',
+      '@@ -1,0 +1,1 @@',
+      '+ordinary text',
+    ].join('\n');
     expect(extractCitations(diff)).toEqual([]);
   });
 

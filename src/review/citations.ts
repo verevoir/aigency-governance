@@ -342,11 +342,26 @@ const MAX_REGION_LINES = 120;
 export const DEFAULT_CONTEXT_BUDGET_CHARS = 20_000;
 
 /**
- * Resolve every citation to a region, respecting the budget. Never throws:
- * a read failure, a missing symbol, an out-of-range line or a budget miss
- * all land in `unresolved` or `omitted` rather than aborting the run — the
+ * Resolve every citation to a region, respecting the budget.
+ *
+ * Never throws for a PER-CITATION failure: a read failure, a refused path,
+ * a missing symbol, an out-of-range line, or a budget miss all land in
+ * `unresolved` or `omitted` rather than aborting the run — the
  * documentation case this exists for is exactly the case where "could not
  * ground one citation" must not mean "could not review at all".
+ *
+ * THIS DOES NOT MEAN THE FUNCTION NEVER THROWS — an earlier version of this
+ * comment claimed exactly that, unqualified, which a review found false:
+ * `readFile` is awaited directly below with no try/catch around the call
+ * itself, so a SYSTEMIC failure from the injected reader propagates
+ * straight through. `citationFileReader`'s own resolved repository root is
+ * exactly this case (see readers.ts's `TrackedFilesUnavailableError` and
+ * `resolveRealRoot` comments): when the checkout's own root cannot be
+ * resolved, that is not "this one file is unreadable" — it is "nothing
+ * here could be checked for any citation" — and it deliberately reaches
+ * this function's caller as a thrown error rather than being silently
+ * absorbed into every citation's own `unresolved` entry as though each had
+ * failed independently.
  */
 export async function buildCitedContext(
   citations: readonly Citation[],
