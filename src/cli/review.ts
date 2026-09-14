@@ -22,8 +22,14 @@ import { stdin } from 'node:process';
 import process from 'node:process';
 
 import { anthropicReviewer } from '../review/anthropic.js';
+import { buildCitedContext, extractCitations, renderCitedContext } from '../review/citations.js';
 import { claudeCliReviewer } from '../review/claudeCli.js';
-import { keyFileReader, lensReaderFor } from '../review/readers.js';
+import {
+  citationFileReader,
+  keyFileReader,
+  lensReaderFor,
+  listTrackedFiles,
+} from '../review/readers.js';
 import type { ReviewDeps } from './run.js';
 import { runReview } from './run.js';
 import type { ReviewSettings } from '../review/settings.js';
@@ -71,9 +77,24 @@ async function main(): Promise<number> {
   const title = process.argv[2] ?? 'this change';
   const diff = await readAll(stdin);
 
+  // verevoir/aigency-harness#118: a documentation-only diff makes claims
+  // about code the diff itself never shows. Computed once, here, from the
+  // diff's own added lines -- never per lens, and never for removed or
+  // unchanged context. See citations.ts's own file header for the citation
+  // forms this recognises and why, and readers.ts's citationFileReader for
+  // where the reads land (the reviewed repository's own checkout) and what
+  // stops it reading anything else -- an untracked file, or one reached
+  // only via a symlink escaping the checkout, per the vulnerability that
+  // review found and this now closes.
+  const repoRoot = process.cwd();
+  const trackedFiles = await listTrackedFiles(repoRoot);
+  const citedContext = renderCitedContext(
+    await buildCitedContext(extractCitations(diff), citationFileReader(repoRoot, trackedFiles)),
+  );
+
   const outcome = await runReview(
     process.env,
-    { title, description: '', diff },
+    { title, description: '', diff, citedContext },
     (settings) => ({
       // `settings` is passed straight through to `lensReaderFor` (readers.ts)
       // and nothing else: this file never itself writes an expression naming

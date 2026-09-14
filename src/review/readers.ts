@@ -10,10 +10,16 @@
 // unreachable, which is correct but lossy, so each reader classifies what it
 // knows before that fallback is needed.
 
-import { readFile } from 'node:fs/promises';
+import { execFile as execFileCallback } from 'node:child_process';
+import { readFile, realpath } from 'node:fs/promises';
+import { join as joinPath, sep as pathSep } from 'node:path';
+import { promisify } from 'node:util';
 
+import type { CitationFileReader } from './citations.js';
 import type { ReadResult, SourceReader } from './load.js';
 import type { KeyFileReader, KeyFileResult } from './settings.js';
+
+const execFileAsync = promisify(execFileCallback);
 
 /** Anything that behaves like `fetch` for our purposes. */
 export type FetchLike = (url: string) => Promise<{
@@ -204,6 +210,198 @@ export function keyFileReader(): KeyFileReader {
         kind: 'unreadable',
         reason: `${code ?? 'unknown'}: ${(cause as Error).message}`,
       };
+    }
+  };
+}
+
+/**
+ * The two/three-argument shape of `child_process.execFile`, promisified —
+ * what `listTrackedFiles` needs, injected the same way `FetchLike` and
+ * `KeyFileReader` are elsewhere in this file, so the git-dependent path is
+ * unit-testable without a real git process.
+ */
+export type ExecFileLike = (
+  file: string,
+  args: readonly string[],
+  options: { readonly cwd: string; readonly maxBuffer: number },
+) => Promise<{ readonly stdout: string }>;
+
+/**
+ * Thrown by `listTrackedFiles` when git itself cannot answer whether files
+ * are tracked. NEVER caught here and turned into an empty set — see that
+ * function's own header for why an empty set would be a confident, false
+ * claim rather than an honest "unknown". Propagates through
+ * `citationFileReader` and `buildCitedContext` (neither wraps the reader
+ * call in a try/catch) to `cli/review.ts`'s top-level handler, which
+ * reports it as a whole-review `could not run`, before any lens is asked
+ * to review anything.
+ */
+export class TrackedFilesUnavailableError extends Error {
+  override readonly name = 'TrackedFilesUnavailableError';
+}
+
+/**
+ * The set of paths git considers tracked in `repoRoot`, exactly as `git
+ * ls-files` reports them — forward-slash-separated, relative to `repoRoot`,
+ * the same shape a citation's `path` already has. Computed once per run
+ * (see cli/review.ts) and passed to `citationFileReader`: this is layer 2
+ * of the path-safety defence citations.ts's own file header describes —
+ * a citation naming a path outside this set is refused regardless of
+ * whether the path exists on disk, because a file the repository's own
+ * history does not track is not part of the change under review and has
+ * no business being quoted to a model. This is specifically what stops a
+ * gitignored `.env` that happens to carry a permitted-looking name: layer
+ * 1 (citations.ts's extension allowlist) cannot see the filesystem at all,
+ * so this layer is load-bearing on its own, not merely defence in depth.
+ *
+ * FAILS LOUD, NOT CLOSED — CORRECTED FROM AN EARLIER VERSION OF THIS
+ * FUNCTION. That earlier version caught any failure here — no git on
+ * `PATH`, not a git repository, a transient exec error — and returned an
+ * EMPTY set, reasoning that every citation would then be refused as
+ * untracked, which "sounded" safe. A review of this PR found that reasoning
+ * wrong: an empty set does not read as "unknown", it reads as a specific,
+ * confident, FALSE claim — "this document cited N files and NONE of them
+ * are tracked" — when the truth is "nothing could be checked at all".
+ * `citationFileReader` cannot tell the two apart once it only has the set,
+ * so a reader of the rendered report cannot either: it looks exactly like
+ * every citation pointing at a genuinely untracked file. That is the same
+ * conflation the whole path-safety mechanism exists to prevent, one level
+ * up. So this now THROWS `TrackedFilesUnavailableError`, naming the
+ * failure, and does not catch it — a citation mechanism that cannot prove
+ * a path is tracked must say so, not guess "probably not" on every citation
+ * at once.
+ */
+export async function listTrackedFiles(
+  repoRoot: string,
+  execFileImpl: ExecFileLike = execFileAsync,
+): Promise<ReadonlySet<string>> {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileImpl('git', ['ls-files'], {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024 * 1024,
+    }));
+  } catch (cause) {
+    throw new TrackedFilesUnavailableError(
+      `could not determine which files git tracks in ${repoRoot}, so no citation in this ` +
+        `diff could be safely checked against layer 2 of the path-safety defence (see this ` +
+        `file's own header): ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+  return new Set(stdout.split('\n').filter((line) => line.trim() !== ''));
+}
+
+/**
+ * Reads a file cited by a diff — the real, filesystem-and-git-touching
+ * implementation. `path` has already passed citations.ts's `pathSafety`
+ * (layer 1: no absolute path, no traversal, an allowed extension) before
+ * this is ever called; what remains is what only the filesystem and git
+ * can answer, in order:
+ *
+ *   1. TRACKED (layer 2). `path` must be a member of `trackedFiles` — see
+ *      `listTrackedFiles`. An untracked file, including one that is
+ *      gitignored for exactly this reason, is refused here even if it has
+ *      a permitted-looking extension.
+ *   2. NO SYMLINK ESCAPE (layer 3). `path` is resolved, relative to
+ *      `repoRoot`, to its real symlink-free target (`fs.realpath`), and
+ *      that target must sit inside `repoRoot`'s own real path. A tracked
+ *      symlink pointing outside the checkout is refused even though the
+ *      symlink file itself passed layer 1.
+ *   3. READ. Only once both checks pass is the real target actually read.
+ *
+ * Every refusal here carries a reason beginning "refused —", the same
+ * convention citations.ts's own `pathSafety` uses, so a reader of the
+ * rendered context can always tell "this citation named something we
+ * would not fetch" from "this citation named something that is not
+ * there" (`missing`).
+ */
+/**
+ * The realpath-like function `citationFileReader` uses to resolve both the
+ * repository root and each cited file's real target. Injected — the same
+ * discipline `ExecFileLike` follows for `listTrackedFiles` above — for a
+ * reason that only bit once a review asked for it: a test that only
+ * observes the OUTWARD throw ("rejects with this message") cannot tell a
+ * memoized resolution from one repeated on every call, because a broken
+ * root produces the identical rejection message either way. Injecting this
+ * lets a test count how many times the underlying resolution actually ran,
+ * which is the only way to make memoization itself — as opposed to the
+ * error message it happens to produce — a property a test can fail on.
+ * Defaults to the real `fs.promises.realpath`.
+ */
+export type RealpathLike = (path: string) => Promise<string>;
+
+export function citationFileReader(
+  repoRoot: string,
+  trackedFiles: ReadonlySet<string>,
+  realpathImpl: RealpathLike = realpath,
+): CitationFileReader {
+  // Resolved once, lazily, and SHARED across every citation this reader
+  // instance handles — not for speed, but for honesty. An earlier version
+  // resolved this fresh per citation and, on failure, returned a
+  // per-citation `missing` result: indistinguishable from one specific
+  // cited file individually happening to be absent, when the real fact is
+  // that the repository root itself could not be resolved and NOTHING
+  // could be checked for ANY citation — the same cannot-look-vs-
+  // found-nothing conflation `TrackedFilesUnavailableError` above exists to
+  // prevent, one level down. So a failure here PROPAGATES (throws) rather
+  // than degrading into a misleading per-file `missing`, exactly like
+  // `listTrackedFiles`.
+  let realRootPromise: Promise<string> | undefined;
+  const resolveRealRoot = (): Promise<string> => {
+    realRootPromise ??= realpathImpl(repoRoot).catch((cause: unknown) => {
+      const code = (cause as NodeJS.ErrnoException).code;
+      throw new Error(
+        `could not resolve the repository root (${repoRoot}) for citation path-safety ` +
+          `checking, so no citation could be safely resolved: ${code ?? 'unknown'}: ` +
+          `${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    });
+    return realRootPromise;
+  };
+
+  return async (path: string) => {
+    if (!trackedFiles.has(path)) {
+      return {
+        kind: 'refused',
+        reason:
+          'refused — this path is not tracked in the repository’s git index; only committed, ' +
+          'tracked files may be quoted into a review (this is also what refuses a gitignored ' +
+          'file such as .env that happens to have a permitted-looking name)',
+      };
+    }
+
+    // Resolved FIRST, before the file-specific realpath below — the root
+    // does not depend on which file is being checked, and ordering it
+    // after would mean a citation naming an absent tracked file returns
+    // early with a per-citation `missing` before this is ever attempted,
+    // so a broken root would only ever surface on a citation whose own
+    // file happened to exist. Throws (propagates) on failure — see
+    // resolveRealRoot's own comment above for why this must never degrade
+    // into a per-citation `missing`.
+    const realRoot = await resolveRealRoot();
+
+    let real: string;
+    try {
+      real = await realpathImpl(joinPath(repoRoot, path));
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      return { kind: 'missing', reason: `${code ?? 'unknown'}: ${(cause as Error).message}` };
+    }
+
+    if (real !== realRoot && !real.startsWith(realRoot + pathSep)) {
+      return {
+        kind: 'refused',
+        reason:
+          'refused — this path resolves outside the repository checkout, most likely via a ' +
+          'symlink; a citation cannot be used to read anything the checkout does not itself contain',
+      };
+    }
+
+    try {
+      return { kind: 'text', text: await readFile(real, 'utf8') };
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      return { kind: 'missing', reason: `${code ?? 'unknown'}: ${(cause as Error).message}` };
     }
   };
 }
