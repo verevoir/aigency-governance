@@ -30,6 +30,7 @@ import {
   type ExecFileLike,
   type FetchLike,
   type RawFetch,
+  type RealpathLike,
 } from '../src/review/readers.js';
 
 type FetchResponse = Awaited<ReturnType<FetchLike>>;
@@ -306,17 +307,39 @@ describe('citationFileReader', () => {
     await expect(reader('f.ts')).rejects.toThrow(/could not resolve the repository root/);
   });
 
-  // The repoRoot resolution is memoized: only one real filesystem lookup
-  // for however many citations this one reader instance resolves, not one
-  // per citation. Proven by counting realpath's own failure surfacing only
-  // once in effect — asserted here by confirming a second call against the
-  // SAME broken reader also throws (the cached rejection is reused, not a
-  // fresh attempt each time) rather than, say, silently succeeding on a
-  // later call because some transient condition cleared.
-  it('reuses the same rejected resolution across repeated calls on one reader instance, rather than re-resolving each time', async () => {
-    const reader = citationFileReader('/no/such/repo/root/at/all', new Set(['f.ts', 'g.ts']));
+  // THE DISCRIMINATING TEST review asked for, replacing a version that
+  // could not fail. That version asserted only that the SAME rejection
+  // message came back from two calls -- true whether or not the root
+  // resolution is cached, because a broken root throws the identical
+  // message every time it is attempted. It would pass unchanged against a
+  // citationFileReader that re-resolved the root on every call. This
+  // counts invocations of the underlying realpath instead, which a cache
+  // and a non-cache genuinely disagree about: memoized means the injected
+  // realpath is called exactly ONCE for the root, however many citations
+  // this one reader instance resolves; unmemoized would call it once per
+  // citation. Mutation-tested by hand against readers.ts (see this file's
+  // commit message): with the `??=` memoization removed, this failed
+  // (observed 2 calls, expected 1); restored, it passes.
+  it('resolves the repository root exactly once, memoized, across multiple citations on one reader instance', async () => {
+    const calls: string[] = [];
+    const failing: RealpathLike = (path) => {
+      calls.push(path);
+      return Promise.reject(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    };
+    const reader = citationFileReader(
+      '/no/such/repo/root/at/all',
+      new Set(['f.ts', 'g.ts']),
+      failing,
+    );
+
     await expect(reader('f.ts')).rejects.toThrow(/could not resolve the repository root/);
     await expect(reader('g.ts')).rejects.toThrow(/could not resolve the repository root/);
+
+    // The root is resolved before the per-file realpath (see readers.ts's
+    // own comment on ordering), and it throws before ever reaching that
+    // second call -- so every recorded call here is a root-resolution
+    // attempt. Exactly one, not two, is what memoization means.
+    expect(calls).toEqual(['/no/such/repo/root/at/all']);
   });
 });
 

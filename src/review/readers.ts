@@ -315,9 +315,25 @@ export async function listTrackedFiles(
  * would not fetch" from "this citation named something that is not
  * there" (`missing`).
  */
+/**
+ * The realpath-like function `citationFileReader` uses to resolve both the
+ * repository root and each cited file's real target. Injected — the same
+ * discipline `ExecFileLike` follows for `listTrackedFiles` above — for a
+ * reason that only bit once a review asked for it: a test that only
+ * observes the OUTWARD throw ("rejects with this message") cannot tell a
+ * memoized resolution from one repeated on every call, because a broken
+ * root produces the identical rejection message either way. Injecting this
+ * lets a test count how many times the underlying resolution actually ran,
+ * which is the only way to make memoization itself — as opposed to the
+ * error message it happens to produce — a property a test can fail on.
+ * Defaults to the real `fs.promises.realpath`.
+ */
+export type RealpathLike = (path: string) => Promise<string>;
+
 export function citationFileReader(
   repoRoot: string,
   trackedFiles: ReadonlySet<string>,
+  realpathImpl: RealpathLike = realpath,
 ): CitationFileReader {
   // Resolved once, lazily, and SHARED across every citation this reader
   // instance handles — not for speed, but for honesty. An earlier version
@@ -332,7 +348,7 @@ export function citationFileReader(
   // `listTrackedFiles`.
   let realRootPromise: Promise<string> | undefined;
   const resolveRealRoot = (): Promise<string> => {
-    realRootPromise ??= realpath(repoRoot).catch((cause: unknown) => {
+    realRootPromise ??= realpathImpl(repoRoot).catch((cause: unknown) => {
       const code = (cause as NodeJS.ErrnoException).code;
       throw new Error(
         `could not resolve the repository root (${repoRoot}) for citation path-safety ` +
@@ -366,7 +382,7 @@ export function citationFileReader(
 
     let real: string;
     try {
-      real = await realpath(joinPath(repoRoot, path));
+      real = await realpathImpl(joinPath(repoRoot, path));
     } catch (cause) {
       const code = (cause as NodeJS.ErrnoException).code;
       return { kind: 'missing', reason: `${code ?? 'unknown'}: ${(cause as Error).message}` };
