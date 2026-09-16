@@ -16,20 +16,44 @@
 // and pointing at the wrong thing entirely. The person needed to be told they
 // had not added a secret.
 //
-// TWO ROUTES, SELECTED BY WHETHER A BILLED KEY IS CONFIGURED AT ALL.
-// `ANTHROPIC_API_KEY` (or a file source resolving to one — see below) buys
-// the `route: 'billed'` path, `anthropic.ts`'s direct call to the metered
-// Messages API. Nothing configuring a key at all buys `route: 'keyless'`,
+// THREE ROUTES NOW, NOT TWO — SEE subscription.ts FOR THE THIRD.
+// `CLAUDE_CODE_OAUTH_TOKEN` being configured buys `route: 'subscription'`,
+// `subscription.ts`'s call through `@verevoir/llm/anthropic`'s own `chat()`
+// (which authenticates with that token directly over HTTP — no `claude`
+// binary, no subprocess). This route is chosen WHENEVER the token is
+// present, REGARDLESS of whether `ANTHROPIC_API_KEY` is also configured —
+// see the PRECEDENCE paragraph below for why that ordering, not the other
+// one, was chosen. Failing that, `ANTHROPIC_API_KEY` (or a file source
+// resolving to one — see below) buys the `route: 'billed'` path,
+// `anthropic.ts`'s own hand-rolled direct call to the metered Messages API.
+// Nothing configuring either credential buys `route: 'keyless'`,
 // `claudeCli.ts`'s call through the operator's already-logged-in `claude`
-// CLI subscription instead. This is a deliberate reversal from an earlier
-// version of this file, where an absent key was `incomplete` and blocked the
-// run outright: the operator's billed credits are reserved for GitHub
-// Actions, where `ANTHROPIC_API_KEY` is always set as a repository secret,
-// and a laptop run — where it usually is not — should default to the
-// keyless transport rather than demand a key it was never meant to spend
-// locally. `route` is the field the CLI boundary (`cli/review.ts`) reads to
-// decide which reviewer to construct; nothing else in this module or its
-// caller needs to re-derive that decision.
+// CLI subscription instead — unchanged from before, and still the laptop
+// default: the keyless-via-CLI absent-key reversal below is untouched by
+// this addition. `route` is the field the CLI boundary (`cli/review.ts`)
+// reads to decide which reviewer to construct; nothing else in this module
+// or its caller needs to re-derive that decision.
+//
+// PRECEDENCE — WHY SUBSCRIPTION WINS OVER BILLED WHEN BOTH ARE CONFIGURED.
+// This is a genuine reversal of this repository's own prior rule, where a
+// present `ANTHROPIC_API_KEY` always won outright, and it is worth stating
+// plainly rather than leaving a reader to infer it from the order of the
+// checks below. It mirrors two things already true elsewhere in this
+// estate, not an invention made here: `verevoir/llm`'s own antagonistic-review
+// workflow hands `claude-code-base-action` BOTH credentials and the action
+// itself prefers the OAuth token; and `@verevoir/llm/anthropic` — the very
+// package `subscription.ts` calls — already implements exactly this
+// precedence internally (`resolveAnthropicAuth`: per-call apiKey → OAuth →
+// metered key), with a loud, one-time 401 fallback from OAuth to the metered
+// key baked in. Choosing the OPPOSITE precedence here — billed winning
+// whenever configured — would mean a present-but-exhausted or
+// present-but-revoked `ANTHROPIC_API_KEY` silently locks a run onto the
+// broken route even when a working subscription token sits right next to
+// it, unable to help, since `resolveSettings` decides the route ONCE, before
+// any call is attempted; nothing here retries across routes mid-run.
+// Preferring the token means an operator who has BOTH configured is, in
+// practice, running on the subscription day to day — with the metered key
+// as a deliberately-provisioned reserve rather than the default spend.
 //
 // A KEY FILE THAT IS UNREADABLE — OR PRESENT AND BLANK — STILL BLOCKS. The
 // reversal above applies only to a key being ABSENT — nobody configured
@@ -166,6 +190,7 @@ interface CommonSettings {
  */
 export type ReviewSettings =
   | ({ readonly route: 'billed'; readonly apiKey: string } & CommonSettings)
+  | ({ readonly route: 'subscription' } & CommonSettings)
   | ({ readonly route: 'keyless' } & CommonSettings);
 
 export type SettingsResult =
@@ -404,6 +429,8 @@ export async function resolveSettings(
     });
   }
 
+  const oauthConfigured = present(env['CLAUDE_CODE_OAUTH_TOKEN']) !== undefined;
+
   const model = present(env['AIGENCY_REVIEW_MODEL']) ?? DEFAULT_MODEL;
 
   let maxTokens = DEFAULT_MAX_TOKENS;
@@ -440,10 +467,19 @@ export async function resolveSettings(
     ...(lensToken !== undefined ? { lensToken } : {}),
   };
 
+  // `oauthConfigured` decides FIRST — see the PRECEDENCE paragraph in the
+  // file header. Note that the `apiKey` resolution above (and any
+  // `missing`/`problems` it found) still ran in full regardless of whether
+  // the subscription route ends up winning: a broken billed setup (a blank
+  // or unreadable key file, say) is still surfaced and still blocks, even
+  // on a run that will end up on the subscription route — someone already
+  // tried to configure the billed path, and that being broken is real
+  // information whether or not this run happens to need it today.
   return {
     kind: 'ready',
-    settings:
-      apiKey === undefined
+    settings: oauthConfigured
+      ? { route: 'subscription', ...common }
+      : apiKey === undefined
         ? { route: 'keyless', ...common }
         : { route: 'billed', apiKey, ...common },
   };

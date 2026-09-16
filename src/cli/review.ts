@@ -7,16 +7,19 @@
 // in this file that is not visible from `runReview`, it has been put in the
 // wrong place.
 //
-// TWO REVIEWERS, SELECTED BY `settings.route`. `resolveSettings` (settings.ts)
-// has already decided, before this file ever sees a `ReviewSettings`, whether
-// the run is billed (a configured `ANTHROPIC_API_KEY`) or keyless (none
-// configured — the laptop default, so the operator's metered credits stay
-// reserved for GitHub Actions). This file's only remaining job for that
-// decision is the one thing `run.ts` cannot do for itself: actually
-// construct the client the chosen route needs. `settings.route === 'billed'`
-// narrows `settings` to carry `apiKey: string` — TypeScript enforces that
-// `anthropicReviewer` is never reachable without one, the same guarantee the
-// old, single-route version of this file had by construction.
+// THREE REVIEWERS NOW, SELECTED BY `settings.route`. `resolveSettings`
+// (settings.ts) has already decided, before this file ever sees a
+// `ReviewSettings`, whether the run is subscription (a configured
+// `CLAUDE_CODE_OAUTH_TOKEN`, preferred whenever present — see settings.ts's
+// PRECEDENCE paragraph), billed (a configured `ANTHROPIC_API_KEY` and no
+// OAuth token), or keyless (neither configured — the laptop default, so the
+// operator's metered credits stay reserved for GitHub Actions). This file's
+// only remaining job for that decision is the one thing `run.ts` cannot do
+// for itself: actually construct the client the chosen route needs.
+// `settings.route === 'billed'` narrows `settings` to carry `apiKey: string`
+// — TypeScript enforces that `anthropicReviewer` is never reachable without
+// one, the same guarantee the old, two-route version of this file had by
+// construction.
 
 import { stdin } from 'node:process';
 import process from 'node:process';
@@ -30,6 +33,7 @@ import {
   lensReaderFor,
   listTrackedFiles,
 } from '../review/readers.js';
+import { subscriptionReviewer } from '../review/subscription.js';
 import type { ReviewDeps } from './run.js';
 import { runReview } from './run.js';
 import type { ReviewSettings } from '../review/settings.js';
@@ -62,12 +66,16 @@ async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
  * own resolution stays covered separately, in `tests/settings.test.ts`.
  */
 export function reviewerFor(settings: ReviewSettings): ReviewDeps['review'] {
-  return settings.route === 'billed'
-    ? anthropicReviewer(
-        { apiKey: settings.apiKey, model: settings.model, maxTokens: settings.maxTokens },
-        (url, init) => fetch(url, init),
-      )
-    : claudeCliReviewer({ model: settings.model });
+  if (settings.route === 'billed') {
+    return anthropicReviewer(
+      { apiKey: settings.apiKey, model: settings.model, maxTokens: settings.maxTokens },
+      (url, init) => fetch(url, init),
+    );
+  }
+  if (settings.route === 'subscription') {
+    return subscriptionReviewer({ model: settings.model, maxTokens: settings.maxTokens });
+  }
+  return claudeCliReviewer({ model: settings.model });
 }
 
 async function main(): Promise<number> {

@@ -17,6 +17,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const chat = vi.fn();
 vi.mock('@verevoir/llm/claude-cli', () => ({ chat: (...args: unknown[]) => chat(...args) }));
 
+const subscriptionChat = vi.fn();
+vi.mock('@verevoir/llm/anthropic', () => ({
+  chat: (...args: unknown[]) => subscriptionChat(...args),
+}));
+
 // Imported after the mock is registered — vi.mock is hoisted above imports
 // by vitest, but this module (via claudeCli.ts) imports
 // '@verevoir/llm/claude-cli' at its own top level, so the mock must be
@@ -45,6 +50,13 @@ const KEYLESS: ReviewSettings = {
   lensSource: 'https://lenses.test/set.json',
 };
 
+const SUBSCRIPTION: ReviewSettings = {
+  route: 'subscription',
+  model: 'claude-review-dot-ts-pinned-model',
+  maxTokens: 4321,
+  lensSource: 'https://lenses.test/set.json',
+};
+
 function approvedTextResponse(): {
   ok: boolean;
   status: number;
@@ -60,6 +72,7 @@ function approvedTextResponse(): {
 
 beforeEach(() => {
   chat.mockReset();
+  subscriptionChat.mockReset();
   vi.unstubAllGlobals();
 });
 
@@ -155,5 +168,70 @@ describe('reviewerFor, given keyless settings', () => {
         turns: [{ role: 'user', content: PROMPT.perLens }],
       }),
     );
+  });
+});
+
+describe('reviewerFor, given subscription settings', () => {
+  it('builds a reviewer that calls @verevoir/llm/anthropic chat(), not fetch or claude-cli chat()', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    subscriptionChat.mockResolvedValue({
+      content: 'VERDICT: approved',
+      usage: {
+        outputTokens: 12,
+        inputTokens: 900,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+      stopReason: 'end_turn',
+    });
+
+    const reply = await reviewerFor(SUBSCRIPTION)('honesty', PROMPT);
+
+    expect(reply).toBe('VERDICT: approved');
+    expect(subscriptionChat).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it('forwards the configured model and maxTokens', async () => {
+    subscriptionChat.mockResolvedValue({
+      content: 'VERDICT: approved',
+      usage: {
+        outputTokens: 12,
+        inputTokens: 900,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+      stopReason: 'end_turn',
+    });
+
+    await reviewerFor(SUBSCRIPTION)('honesty', PROMPT);
+
+    expect(subscriptionChat).toHaveBeenCalledWith(
+      expect.objectContaining({ model: SUBSCRIPTION.model, maxTokens: SUBSCRIPTION.maxTokens }),
+    );
+  });
+
+  // The same guarantee KEYLESS's own suite pins: a `subscription` settings
+  // object has no `apiKey` field at all — the type forbids it — and this is
+  // the behavioural half, proven against the call reviewerFor actually makes.
+  it('never sends an apiKey — credential resolution belongs to @verevoir/llm, not here', async () => {
+    subscriptionChat.mockResolvedValue({
+      content: 'VERDICT: approved',
+      usage: {
+        outputTokens: 12,
+        inputTokens: 900,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+      stopReason: 'end_turn',
+    });
+
+    await reviewerFor(SUBSCRIPTION)('honesty', PROMPT);
+
+    const call = subscriptionChat.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(call).toBeDefined();
+    expect('apiKey' in (call ?? {})).toBe(false);
   });
 });

@@ -18,6 +18,7 @@ jobs:
     uses: verevoir/aigency-governance/.github/workflows/review.yml@main
     secrets:
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+      claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }} # optional — see below
       governance-token: ${{ secrets.GOVERNANCE_TOKEN }}
 ```
 
@@ -52,24 +53,61 @@ pinned judge. Changing the second means your repository is judged by a different
 model from every other one, which is a bar that has moved without anyone
 deciding to move it.
 
-### The two secrets, and where to put them
+### The secrets, and where to put them
 
 **Settings → Secrets and variables → Actions → New repository secret.**
 
-| Name                | What it is for                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ANTHROPIC_API_KEY` | The panel calls a model once per lens.                                                                                                                                                                                                                                                                                                                                                                                                |
-| `GOVERNANCE_TOKEN`  | **An illustrative name — the workflow input it satisfies, `governance-token`, is what's fixed; see the note above the first example.** Read access to this repository, which is private. The default `GITHUB_TOKEN` is scoped to _your_ repository and cannot see it, so a run without this fails at the checkout with `Repository not found`. A fine-grained token with `contents: read` on `verevoir/aigency-governance` is enough. |
+| Name                      | Required?        | What it is for                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`       | One of these two | The panel calls a model once per lens, billed against your metered key.                                                                                                                                                                                                                                                                                                                                                               |
+| `CLAUDE_CODE_OAUTH_TOKEN` | One of these two | The same call, billed against a Claude subscription instead (`claude setup-token`). **Preferred over `ANTHROPIC_API_KEY` whenever BOTH are configured** — see "Two credentials, one route" below for why that ordering, not the other one. A caller that never sets this keeps working exactly as before, on `ANTHROPIC_API_KEY` alone.                                                                                               |
+| `GOVERNANCE_TOKEN`        | Always required  | **An illustrative name — the workflow input it satisfies, `governance-token`, is what's fixed; see the note above the first example.** Read access to this repository, which is private. The default `GITHUB_TOKEN` is scoped to _your_ repository and cannot see it, so a run without this fails at the checkout with `Repository not found`. A fine-grained token with `contents: read` on `verevoir/aigency-governance` is enough. |
 
-Forget one and the run names it, says what it is for, and says where it goes —
-at the moment it finds it missing, not in a document you have to go and find. It
-reports **every** missing setting at once rather than the first, because the
-person reading that log does not yet know what else is wrong.
+At least one of `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` must be
+configured; `GOVERNANCE_TOKEN` is always required regardless of which one you
+choose. Forget everything and the run names what it needed, says what it is
+for, and says where it goes — at the moment it finds it missing, not in a
+document you have to go and find. The one exception is the two credential
+secrets: the check for "at least one of these two" happens as the very first
+workflow step, in shell, before `resolveSettings` (which reports everything
+else) ever runs — see "On a fork's pull request" below for why, and for the
+exact wording that step produces.
 
 A value that is present and blank counts as missing. That is not pedantry: an
 unset secret in Actions arrives as the empty string, and an empty key sent to
 the provider comes back as a 401, which would be reported truthfully and
 uselessly as "the review could not run: HTTP 401".
+
+### Two credentials, one route — which one runs, and why
+
+Three possible routes exist (`billed`, `subscription`, `keyless` — see
+`src/review/settings.ts`'s own PRECEDENCE paragraph for the full reasoning),
+but in CI only two are reachable, because the workflow's own preflight step
+blocks the run before `resolveSettings` would ever pick `keyless`:
+
+1. **`CLAUDE_CODE_OAUTH_TOKEN` configured** → the subscription route, through
+   `@verevoir/llm/anthropic`'s own `chat()` — a plain HTTP call authenticated
+   with the subscription token, no `claude` binary and no subprocess on the
+   runner. Wins **even when `ANTHROPIC_API_KEY` is also configured** — this is
+   a genuine precedence choice, not an oversight, and it mirrors two things
+   already true elsewhere in this estate: `verevoir/llm`'s own
+   antagonistic-review workflow hands `claude-code-base-action` both
+   credentials and lets the action prefer the subscription token, and
+   `@verevoir/llm/anthropic` itself already implements exactly this
+   precedence internally, with a loud, one-time 401 fallback to the metered
+   key baked in should the subscription token be rejected.
+2. **Only `ANTHROPIC_API_KEY` configured** → the billed route, unchanged from
+   before.
+
+Why this ordering rather than the other one: `resolveSettings` decides the
+route **once**, before any model call is attempted — nothing here retries
+across routes mid-run. If billed won whenever configured, a present-but-
+exhausted or present-but-revoked `ANTHROPIC_API_KEY` would silently lock every
+run onto the broken route even with a perfectly working subscription token
+configured right next to it, unable to help. Preferring the token instead
+means a repository with both configured is, in practice, running on the
+subscription day to day — with the metered key as a deliberately-provisioned
+reserve, not the default spend.
 
 ## What comes back
 
@@ -106,28 +144,36 @@ failure that matters.
 
 ### On a fork's pull request
 
-Secrets are not passed to workflows triggered from a fork, so **both** arrive
-blank. The run fails at the very first step in the job — "Confirm the key is
-available before doing anything expensive" — which checks the key,
-unconditionally, before either checkout runs. Neither the governance-repo
-checkout nor the caller's own checkout is ever attempted.
+Secrets are not passed to workflows triggered from a fork, so **all three**
+arrive blank. The run fails at the very first step in the job — "Confirm a
+review credential is available before doing anything expensive" — which
+checks for either credential, unconditionally, before either checkout runs.
+Neither the governance-repo checkout nor the caller's own checkout is ever
+attempted.
 
-The outcome is right: the run is red, and your key is not spent reviewing a diff
-written by someone outside your repository. The message is not the one you
-would expect from the rest of this document, and it is not either of the two
-you might guess: it is not `Repository not found` (that checkout never runs),
-and it is not the Node-level `ANTHROPIC_API_KEY is not configured` report from
-`resolveSettings` (that code never runs either — the check is a shell
-condition inside the workflow itself). It is
-`ANTHROPIC_API_KEY is not available to this workflow.`, from the workflow
-step's own `::error` lines.
+The outcome is right: the run is red, and no credential is spent reviewing a
+diff written by someone outside your repository. The message is not the one
+you would expect from the rest of this document, and it is not any of the
+things you might guess: it is not `Repository not found` (that checkout never
+runs), and it is not the Node-level report from `resolveSettings` (that code
+never runs either — the check is a shell condition inside the workflow
+itself). It is
+`Neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN is available to this workflow.`,
+from the workflow step's own `::error` lines.
 
 ## Running it locally
 
-Two routes, selected automatically by whether a billed key is configured —
-nobody has to choose. **The default is keyless**, because the operator's
-metered `ANTHROPIC_API_KEY` credits are reserved for GitHub Actions, and a
-laptop run should never spend against them without being asked to.
+Three routes exist, selected automatically — nobody has to choose. **The
+default, locally, is still keyless** (unchanged by this document's new
+subscription route below, which is documented here for completeness but is,
+as a practical matter, a CI concern — see "Two credentials, one route" above):
+the operator's metered `ANTHROPIC_API_KEY` credits are reserved for GitHub
+Actions, and a laptop run should never spend against them without being
+asked to. Setting `CLAUDE_CODE_OAUTH_TOKEN` locally selects the subscription
+route over keyless, the same precedence CI uses — see "Two credentials, one
+route" above for the full reasoning; the only difference locally is that
+keyless (via your already-logged-in `claude` CLI) remains reachable as the
+true no-credential default, which CI's own preflight step never allows.
 
 ### Keyless (the default) — through your own `claude` CLI subscription
 
