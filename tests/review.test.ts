@@ -36,6 +36,7 @@ const BILLED: ReviewSettings = {
   model: 'claude-review-dot-ts-pinned-model',
   maxTokens: 4321,
   lensSource: 'https://lenses.test/set.json',
+  practicesMaxChars: 20_000,
 };
 
 const KEYLESS: ReviewSettings = {
@@ -43,6 +44,7 @@ const KEYLESS: ReviewSettings = {
   model: 'claude-review-dot-ts-pinned-model',
   maxTokens: 4321,
   lensSource: 'https://lenses.test/set.json',
+  practicesMaxChars: 20_000,
 };
 
 function approvedTextResponse(): {

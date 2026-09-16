@@ -21,7 +21,7 @@
 // keys below are deliberately not real ones, and if this ever starts needing
 // one, something has moved that should not have.
 //
-// Three scenarios, not one. The panel's first real review found that nothing
+// Four scenarios, not one. The panel's first real review found that nothing
 // in this repository actually proves `review.ts` WIRES `keyFileReader()`
 // into `runReview` — every unit test drives `resolveSettings` or `runReview`
 // directly with an injected fake, and none of them touch the process
@@ -31,7 +31,11 @@
 // real compiled binary against a real file on disk. The third scenario
 // proves the newer half of that same wiring: that no key configured at all
 // resolves to the keyless route rather than blocking the run — see its own
-// comment below.
+// comment below. A fourth scenario proves a different, newer half of the
+// same wiring again: that the real `process.env` — not a test's injected
+// fake — actually reaches `resolveSettings` for
+// `AIGENCY_REVIEW_PRACTICES_MAX_CHARS`, and that an invalid value there
+// stops the run before the empty-diff guard rather than after it.
 
 import { spawn } from 'node:child_process';
 // Imported, not assumed. The flat config declares no environment globals, and
@@ -194,6 +198,42 @@ try {
   await rm(noKeyDir, { recursive: true, force: true });
 }
 
+// Scenario 4: a malformed AIGENCY_REVIEW_PRACTICES_MAX_CHARS. This proves
+// the real `process.env`, not a test's injected fake, actually reaches
+// `resolveSettings` for this specific new variable — the exact gap a past
+// review found for a different variable (AIGENCY_REVIEW_ALLOW_API_KEY_FALLBACK):
+// a value validated only by unit tests that construct their own environment
+// object proves the validation logic works, never that the process boundary
+// actually threads the real environment into it. Costs nothing:
+// `resolveSettings` runs and reports `invalid` before the empty-diff guard
+// is ever reached, so no lens set is read and no client is built.
+const practicesMaxChars = await runEmptyDiff({
+  ANTHROPIC_API_KEY: 'not-a-real-key-and-must-never-need-to-be',
+  AIGENCY_REVIEW_PRACTICES_MAX_CHARS: 'notanumber',
+});
+if (practicesMaxChars.code !== 1) {
+  problems.push(
+    `[AIGENCY_REVIEW_PRACTICES_MAX_CHARS] expected exit 1 for an invalid value, got ${practicesMaxChars.code}`,
+  );
+}
+if (!practicesMaxChars.out.includes('AIGENCY_REVIEW_PRACTICES_MAX_CHARS')) {
+  problems.push(
+    '[AIGENCY_REVIEW_PRACTICES_MAX_CHARS] expected the report to name the offending variable — ' +
+      'its absence means process.env is not actually reaching resolveSettings for it',
+  );
+}
+if (!practicesMaxChars.out.includes('notanumber')) {
+  problems.push(
+    '[AIGENCY_REVIEW_PRACTICES_MAX_CHARS] expected the report to echo back the value that was typed',
+  );
+}
+if (practicesMaxChars.out.includes('The diff was empty')) {
+  problems.push(
+    '[AIGENCY_REVIEW_PRACTICES_MAX_CHARS] reached the empty-diff guard instead of stopping at ' +
+      'configuration — settings must be validated before the diff is even looked at',
+  );
+}
+
 if (problems.length > 0) {
   console.error(
     `The binary ran and did the wrong thing:\n${problems.map((p) => `  - ${p}`).join('\n')}`,
@@ -203,5 +243,6 @@ if (problems.length > 0) {
 
 console.log(
   `${BIN} started, resolved the key from an env var and a file on disk, resolved to the ` +
-    'keyless route with no key configured at all, and refused an empty diff every time.',
+    'keyless route with no key configured at all, refused an empty diff every time, and ' +
+    'rejected a malformed AIGENCY_REVIEW_PRACTICES_MAX_CHARS before reaching it.',
 );

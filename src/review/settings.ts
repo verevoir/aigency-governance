@@ -152,6 +152,21 @@ interface CommonSettings {
   readonly lensSource: string;
   /** Sent as a bearer token when the lens set is fetched over HTTP. */
   readonly lensToken?: string;
+  /**
+   * Where the practices corpus lives, when one is configured — a URL or a
+   * path, read the same way the lens set is (see `provision` in
+   * `../practices/provision.js`). `undefined` means no corpus is
+   * configured: a deliberate, legitimate choice, not a fault — unlike the
+   * lens set there is no default to fall back to, because no default
+   * corpus has been published yet in the shape `provision` reads.
+   */
+  readonly practicesSource?: string;
+  /**
+   * Bounds what `provision` returns, in characters. See
+   * `DEFAULT_PRACTICES_MAX_CHARS` for why the default is a starting point
+   * rather than a proven number.
+   */
+  readonly practicesMaxChars: number;
 }
 
 /**
@@ -244,6 +259,17 @@ export const DEFAULT_MAX_TOKENS = 65536;
  */
 export const DEFAULT_LENS_SOURCE =
   'https://raw.githubusercontent.com/verevoir/aigency-governance/main/review/lenses.json';
+
+/**
+ * Bounds what `provision` (`../practices/provision.js`) returns, in
+ * characters, when a practices corpus is configured. Unmeasured against a
+ * real corpus — a starting point, not a proven number, the way
+ * `DEFAULT_MAX_TOKENS` was only raised after a real truncation was observed.
+ * The bar shares the shared prompt prefix with the diff (see `prompt.ts`),
+ * so it competes with the diff for the same token budget; this default
+ * leaves most of that budget to the diff.
+ */
+export const DEFAULT_PRACTICES_MAX_CHARS = 20_000;
 
 function present(value: string | undefined): string | undefined {
   return value === undefined || value.trim() === '' ? undefined : value;
@@ -422,6 +448,29 @@ export async function resolveSettings(
     }
   }
 
+  // No default: unlike the lens set, no practices corpus has been published
+  // yet in the shape `provision` reads, so leaving this unset is the
+  // ordinary, legitimate "no corpus configured" case rather than a gap to
+  // fill in with something that does not exist.
+  const practicesSource = present(env['AIGENCY_REVIEW_PRACTICES']);
+
+  let practicesMaxChars = DEFAULT_PRACTICES_MAX_CHARS;
+  const rawPracticesMaxChars = present(env['AIGENCY_REVIEW_PRACTICES_MAX_CHARS']);
+  if (rawPracticesMaxChars !== undefined) {
+    const parsed = Number(rawPracticesMaxChars);
+    // Refused rather than defaulted, for the same reason AIGENCY_REVIEW_MAX_TOKENS
+    // is above: silently substituting a default for a value someone
+    // deliberately set is how a run comes to disagree with its own
+    // configuration while reporting nothing.
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      problems.push(
+        `AIGENCY_REVIEW_PRACTICES_MAX_CHARS must be a positive whole number, got ${JSON.stringify(rawPracticesMaxChars)}`,
+      );
+    } else {
+      practicesMaxChars = parsed;
+    }
+  }
+
   // Absence decides the `kind` before invalidity does, because someone who
   // has set nothing needs the list of what to set as the primary message.
   // That does not mean a problem found alongside it is noise — it rides
@@ -438,6 +487,8 @@ export async function resolveSettings(
     maxTokens,
     lensSource,
     ...(lensToken !== undefined ? { lensToken } : {}),
+    ...(practicesSource !== undefined ? { practicesSource } : {}),
+    practicesMaxChars,
   };
 
   return {
