@@ -100,30 +100,47 @@ export class PanelMismatchError extends Error {
 // severity or finding logic, only which of the results that logic produced
 // are treated as real evidence during combination.
 //
-// TIGHT ON PURPOSE, after a real finding of its own. An earlier version of
+// TIGHT ON PURPOSE, after two real findings of its own, from two rounds of
+// review on this very fix.
+//
+// Round 1 (PR #23, honesty + failure-modes lenses): an earlier version of
 // this pattern was /^none\b/i -- word-bounded, but still matching ANY
 // finding text that merely STARTS with the word "none", including ordinary
-// prose: PR #23's own review (honesty + failure-modes lenses, both
-// blocking) pointed out that a genuine blocking finding phrased as "None of
-// the retry paths have a ceiling" would have been silently stripped from
-// both the tally and the rendered report by that pattern -- folding a real,
-// unaddressed rejection into a silent approval if it happened to be a
-// lens's only finding. Exactly the "success reported over an empty result"
-// shape this whole project exists to catch, reintroduced one layer down by
-// the very fix meant to prevent a sibling false-positive.
+// prose. A genuine blocking finding phrased as "None of the retry paths
+// have a ceiling" would have been silently stripped from both the tally and
+// the rendered report by that pattern -- folding a real, unaddressed
+// rejection into a silent approval if it happened to be a lens's only
+// finding. Fixed by requiring the word to be followed by nothing (the bare
+// sentinel) or by a dash separator and the reason, never by further words.
 //
-// So this matches only the two concrete shapes the observed sentinel
-// actually takes -- read directly from aigency-runtime-v2#62's own report
-// text, not invented: the bare word "none" with nothing else, or "none"
-// immediately followed by a dash separator and the reason -- "none —
-// resolvePort correctly returns the 8090 fallback..." (an em dash) and
-// "none - both tests exercise resolvePort directly..." (a hyphen) are both
-// real examples from that same report, so both dash characters are
-// recognised. A summary that continues as ordinary WORDS with no separator
-// -- "None of the retry paths have a ceiling", "none of the endpoints
-// validate input" -- matches neither branch and is kept, counted, and
-// rendered exactly like any other blocking finding.
-const NONE_SENTINEL = /^none(?:\s*$|\s*[-—]\s)/i;
+// Round 2 (PR #23, correctness lens): that fix kept the /i flag, so it
+// remained CASE-insensitive -- a genuine finding phrased "None — the retry
+// loop has no ceiling" (capital N, dash) still matched, and would still
+// have been silently stripped. The observed real sentinel
+// (aigency-runtime-v2#62's own report text -- "none — resolvePort
+// correctly returns..."; "none - both tests exercise...") is lowercase in
+// every instance, and nothing in replyContract.ts's REPLY_CONTRACT
+// instructs a lens to write this sentinel at all -- it is emergent
+// behaviour a lens falls into when it has nothing to report, not a
+// documented shape with a defined casing. There is no basis for reading
+// any casing other than the one actually observed as the deliberate
+// "nothing here" signal. So the /i flag is gone: only an EXACT-CASE "none"
+// is read as the sentinel now. "None", "NONE", or any other casing is real
+// prose, kept, counted, and rendered like any other finding -- the same
+// treatment "None of the retry paths have a ceiling" already gets, now
+// extended to "None — the retry loop has no ceiling" too.
+//
+// So this matches only the one concrete shape the observed sentinel
+// actually takes, exactly as observed: the bare word "none", lowercase,
+// with nothing else, or "none", lowercase, immediately followed by a dash
+// separator and the reason -- "none — resolvePort correctly returns the
+// 8090 fallback..." (an em dash) and "none - both tests exercise
+// resolvePort directly..." (a hyphen) are both real examples from that
+// same report, so both dash characters are recognised. Anything that
+// differs from this -- a capital letter, or ordinary words with no
+// separator -- matches nothing here and is kept, counted, and rendered
+// exactly like any other blocking finding.
+const NONE_SENTINEL = /^none(?:\s*$|\s*[-—]\s)/;
 
 function isNoneSentinel(finding: Finding): boolean {
   return NONE_SENTINEL.test(finding.summary.trim());
