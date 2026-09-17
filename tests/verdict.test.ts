@@ -313,6 +313,25 @@ describe('aggregate, severity-weighted', () => {
     expect(verdict.findings[0]?.summary).toBe('the retry loop has no ceiling');
   });
 
+  // The false-positive boundary PR #23's own review found untested: a
+  // genuine blocking finding whose TEXT happens to start with the word
+  // "None", as ordinary prose rather than the deliberate sentinel shape —
+  // "None of the retry paths have a ceiling" is a real, concrete concern,
+  // not a lens saying it found nothing. Sitting right next to a real
+  // none-sentinel lens, so this also proves the two are told apart, not
+  // merely that the prose case alone survives in isolation.
+  it('keeps a genuine blocking finding whose text starts with the word "None" as prose — must not be mistaken for the sentinel', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'None of the retry paths have a ceiling'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.findings[0]?.summary).toBe('None of the retry paths have a ceiling');
+    expect(verdict.findings[0]?.blocking).toBe(true);
+  });
+
   // The existing bypass-defense case (a 'rejected' outcome with NO findings
   // at all, pinned above as "carries no blocking finding at all") must keep
   // working: none-sentinel handling only discounts a 'rejected' outcome
