@@ -318,6 +318,74 @@ describe('renderReport, when a lens has nothing in its scope', () => {
   });
 });
 
+// Regression coverage for verevoir/aigency-runtime-v2#62: a lens whose only
+// "finding" is the none-sentinel (see verdict.test.ts) must produce a
+// report that reads as a clean approval — not a rejection with a fabricated
+// blocking count, and not a bullet naming "none" as a finding.
+describe("renderReport, when a lens's only finding is a none-sentinel", () => {
+  function noneRejected(lens: string, detail: string): LensResult {
+    return {
+      lens,
+      outcome: 'rejected',
+      findings: [{ lens, summary: `none — ${detail}`, blocking: true }],
+    };
+  }
+
+  it("reads Approved, with exit code 0, when every lens's only finding is a none-sentinel", () => {
+    const verdict = aggregate(DECLARED, [
+      noneRejected('correctness', 'the code does what the diff claims'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      noneRejected('blast-radius', 'no new surface exposed'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report.split('\n')[0]).toContain('Approved');
+    expect(exitCodeFor(verdict.outcome)).toBe(0);
+    expect(report).not.toContain('blocking)');
+  });
+
+  it('never renders a none-sentinel finding as a bullet, blocking or otherwise', () => {
+    const verdict = aggregate(DECLARED, [
+      noneRejected('correctness', 'nothing wrong here'),
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report).not.toContain('none —');
+    expect(report).not.toContain('finding(s)');
+  });
+
+  it('still rejects, with the true count, when a genuine finding sits next to none-sentinel lenses', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'the retry loop has no ceiling'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      noneRejected('blast-radius', 'no new surface exposed'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report.split('\n')[0]).toContain('Rejected');
+    expect(report).toContain('1 finding(s)');
+    expect(report).toContain('[blocking] the retry loop has no ceiling');
+    expect(exitCodeFor(verdict.outcome)).toBe(1);
+  });
+
+  // The false-positive boundary PR #23's own review found untested, at the
+  // report layer this time: a genuine blocking finding phrased as ordinary
+  // prose starting with the word "None" must still render as a real
+  // blocking bullet and a real rejection, sitting right next to a lens
+  // whose only finding really is the none-sentinel.
+  it('renders a genuine "None of ..." blocking finding as a real bullet — must not be mistaken for the sentinel', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'None of the retry paths have a ceiling'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      approved('blast-radius'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report.split('\n')[0]).toContain('Rejected');
+    expect(report).toContain('1 finding(s)');
+    expect(report).toContain('[blocking] None of the retry paths have a ceiling');
+    expect(exitCodeFor(verdict.outcome)).toBe(1);
+  });
+});
+
 // Severity-weighted approval must not become severity-weighted invisibility:
 // a smell finding does not sink the verdict, but it must still be SEEN.
 describe('renderReport, severity-weighted findings', () => {

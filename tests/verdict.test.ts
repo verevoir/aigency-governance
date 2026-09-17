@@ -266,6 +266,125 @@ describe('aggregate, severity-weighted', () => {
     expect(verdict.outcome).toBe('rejected');
   });
 
+  // Regression coverage for verevoir/aigency-runtime-v2#62: a lens that has
+  // nothing blocking to report sometimes still writes a FINDING line for it,
+  // tagged [blocking] because that is the only shape the contract describes
+  // for a finding line at all, with the finding's own text beginning with
+  // the word "none" instead of naming a concern. Modelled exactly as
+  // parseReply.ts's own derivation produces it for this shape: VERDICT:
+  // approved plus a [blocking]-tagged finding derives to outcome 'rejected'
+  // (see parseReply.ts's THE DERIVATION) even though nothing here is a real
+  // concern.
+  function noneRejected(lens: string, detail: string): LensResult {
+    return {
+      lens,
+      outcome: 'rejected',
+      findings: [{ lens, summary: `none — ${detail}`, blocking: true }],
+    };
+  }
+
+  it('approves when every lens\'s only "finding" is a none-sentinel — the false-rejection this fixes', () => {
+    const verdict = aggregate(DECLARED, [
+      noneRejected('correctness', 'the code does what the diff claims'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('approved');
+    expect(verdict.findings).toEqual([]);
+  });
+
+  it('does not render a none-sentinel finding at all — not even as a smell', () => {
+    const verdict = aggregate(DECLARED, [
+      noneRejected('correctness', 'nothing wrong here'),
+      approved('honesty'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.findings).toHaveLength(0);
+  });
+
+  it('still rejects on a genuine blocking finding sitting next to none-sentinel lenses, and does not inflate the count', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'the retry loop has no ceiling'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      noneRejected('blast-radius', 'no new surface exposed'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.findings[0]?.summary).toBe('the retry loop has no ceiling');
+  });
+
+  // The false-positive boundary PR #23's own review found untested: a
+  // genuine blocking finding whose TEXT happens to start with the word
+  // "None", as ordinary prose rather than the deliberate sentinel shape —
+  // "None of the retry paths have a ceiling" is a real, concrete concern,
+  // not a lens saying it found nothing. Sitting right next to a real
+  // none-sentinel lens, so this also proves the two are told apart, not
+  // merely that the prose case alone survives in isolation.
+  it('keeps a genuine blocking finding whose text starts with the word "None" as prose — must not be mistaken for the sentinel', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'None of the retry paths have a ceiling'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.findings[0]?.summary).toBe('None of the retry paths have a ceiling');
+    expect(verdict.findings[0]?.blocking).toBe(true);
+  });
+
+  // The word-boundary regression PR #23's own review found untested
+  // (verification lens, round 3): every prior "starts with the word None as
+  // prose" test above used a CAPITAL N, which the case-sensitive sentinel
+  // already excludes on casing alone — so none of them actually exercised
+  // the `\s*$|\s*[-—]\s` alternation itself. This is the case a regression
+  // back to a loose `/^none/`-style match would actually catch: lowercase
+  // "none", immediately followed by ordinary words rather than end-of-string
+  // or a dash separator.
+  it('keeps a genuine blocking finding phrased lowercase "none of ..." — the word-boundary case, not merely the casing one', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'none of the retry paths have a ceiling'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.findings[0]?.summary).toBe('none of the retry paths have a ceiling');
+    expect(verdict.findings[0]?.blocking).toBe(true);
+  });
+
+  // The case-sensitivity boundary PR #23's own review found (correctness
+  // lens, round 2): the SAME shape as the deliberate sentinel — the word
+  // then a dash then the reason — but with a capital N. Real, concrete
+  // finding text a lens could plausibly write; must not be mistaken for the
+  // sentinel just because it happens to share its punctuation shape. The
+  // observed real sentinel is lowercase in every instance (see verdict.ts's
+  // NONE_SENTINEL comment), so only the exact lowercase form is now read as
+  // the deliberate "nothing here" signal.
+  it('keeps a genuine blocking finding phrased "None — ..." (capital N, dash) — must not be mistaken for the lowercase sentinel', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'None — the retry loop has no ceiling'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.findings[0]?.summary).toBe('None — the retry loop has no ceiling');
+    expect(verdict.findings[0]?.blocking).toBe(true);
+  });
+
+  // The existing bypass-defense case (a 'rejected' outcome with NO findings
+  // at all, pinned above as "carries no blocking finding at all") must keep
+  // working: none-sentinel handling only discounts a 'rejected' outcome
+  // whose findings are ALL none-sentinels, never one with no findings.
+  it('still rejects a lens reporting outcome "rejected" with zero findings, none-sentinel handling notwithstanding', () => {
+    const verdict = aggregate(DECLARED, [
+      { lens: 'correctness', outcome: 'rejected', findings: [] },
+      noneRejected('honesty', 'nothing wrong here'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+  });
+
   // A conformance suite only ever exercised against a conformant fixture is a
   // check that has never been seen to reject — exactly the fault this whole
   // project exists to catch, so it is blocking, not a smell.
