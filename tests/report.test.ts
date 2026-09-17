@@ -366,6 +366,24 @@ describe('renderReport, when a lens\'s only finding is a none-sentinel', () => {
     expect(report).toContain('[blocking] the retry loop has no ceiling');
     expect(exitCodeFor(verdict.outcome)).toBe(1);
   });
+
+  // The false-positive boundary PR #23's own review found untested, at the
+  // report layer this time: a genuine blocking finding phrased as ordinary
+  // prose starting with the word "None" must still render as a real
+  // blocking bullet and a real rejection, sitting right next to a lens
+  // whose only finding really is the none-sentinel.
+  it('renders a genuine "None of ..." blocking finding as a real bullet — must not be mistaken for the sentinel', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'None of the retry paths have a ceiling'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      approved('blast-radius'),
+    ]);
+    const report = renderReport(verdict, CONTEXT);
+    expect(report.split('\n')[0]).toContain('Rejected');
+    expect(report).toContain('1 finding(s)');
+    expect(report).toContain('[blocking] None of the retry paths have a ceiling');
+    expect(exitCodeFor(verdict.outcome)).toBe(1);
+  });
 });
 
 // Severity-weighted approval must not become severity-weighted invisibility:
