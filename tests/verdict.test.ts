@@ -332,6 +332,26 @@ describe('aggregate, severity-weighted', () => {
     expect(verdict.findings[0]?.blocking).toBe(true);
   });
 
+  // The case-sensitivity boundary PR #23's own review found (correctness
+  // lens, round 2): the SAME shape as the deliberate sentinel — the word
+  // then a dash then the reason — but with a capital N. Real, concrete
+  // finding text a lens could plausibly write; must not be mistaken for the
+  // sentinel just because it happens to share its punctuation shape. The
+  // observed real sentinel is lowercase in every instance (see verdict.ts's
+  // NONE_SENTINEL comment), so only the exact lowercase form is now read as
+  // the deliberate "nothing here" signal.
+  it('keeps a genuine blocking finding phrased "None — ..." (capital N, dash) — must not be mistaken for the lowercase sentinel', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'None — the retry loop has no ceiling'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.findings[0]?.summary).toBe('None — the retry loop has no ceiling');
+    expect(verdict.findings[0]?.blocking).toBe(true);
+  });
+
   // The existing bypass-defense case (a 'rejected' outcome with NO findings
   // at all, pinned above as "carries no blocking finding at all") must keep
   // working: none-sentinel handling only discounts a 'rejected' outcome
