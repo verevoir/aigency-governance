@@ -22,7 +22,7 @@
 // outcome blocks a merge, are two SEPARATE questions — see the "FAIL NOISY,
 // DO NOT BLOCK" comment in `aggregate` below for how this resolves both.
 
-export type Outcome = 'approved' | 'rejected' | 'could_not_run' | 'out_of_scope';
+export type Outcome = 'approved' | 'rejected' | 'could_not_run' | 'out_of_scope'; // PROBE3
 
 export interface Finding {
   readonly lens: string;
@@ -76,50 +76,6 @@ export class PanelMismatchError extends Error {
  * as merely "red for a different reason" is how it ends up being waved through
  * on the grounds that the findings were addressed.
  */
-// A lens's own way of saying "I found nothing blocking here", written as a
-// FINDING line whose severity tag is still [blocking] -- because that is
-// the only shape the reply contract describes for a finding line at all --
-// with the finding's own TEXT beginning with the word "none" instead of
-// naming a concern. Real, live example: verevoir/aigency-runtime-v2#62's own
-// review job. The correctness, honesty and verification lenses each wrote
-// `VERDICT: approved`, and each also wrote a line such as
-// "FINDING: [blocking] none — resolvePort correctly returns 8090 fallback
-// and respects PORT when set, matching the diff's claim and comments; tests
-// verify both branches." parseReply.ts's own derivation (see that file's
-// header) then reads the [blocking] tag on that finding as real evidence
-// and turns the lens's outcome to 'rejected' -- correctly, given only what
-// parseReply can see, which is a marker and a severity tag, never finding
-// TEXT. The old aggregate() then tallied all three as real blocking
-// findings and rejected a change its own gates, and that same reviewing
-// pass's own stated reasoning, had just called clean.
-//
-// Detected here, at the aggregation layer, on the TEXT the lens actually
-// wrote -- the same "trust the evidence, not the label" principle already
-// applied one line below to the outcome word, applied to a shape
-// parseReply.ts cannot see and is not asked to: this changes no per-lens
-// severity or finding logic, only which of the results that logic produced
-// are treated as real evidence during combination. `\bnone\b`, not a bare
-// substring match, so a finding that legitimately starts "nonetheless" or
-// "nonexistent" is not caught by this.
-const NONE_SENTINEL = /^none\b/i;
-
-function isNoneSentinel(finding: Finding): boolean {
-  return NONE_SENTINEL.test(finding.summary.trim());
-}
-
-/**
- * Whether a 'rejected' lens result has no real evidence behind it -- every
- * finding it carries (and it carries at least one; see below) is a
- * none-sentinel. Kept apart, deliberately, from a 'rejected' result with NO
- * findings at all: that shape stays trusted exactly as before -- see the
- * OR'd check this feeds, and the "carries no blocking finding at all"
- * fixture in verdict.test.ts, which pins the bypass-defense reason that
- * check exists for and which none-sentinel handling must not weaken.
- */
-function isRejectionEvidenceless(result: LensResult): boolean {
-  return result.findings.length > 0 && result.findings.every(isNoneSentinel);
-}
-
 export function aggregate(declared: readonly string[], results: readonly LensResult[]): Verdict {
   const known = new Set(declared);
   const byLens = new Map<string, LensResult>();
@@ -152,13 +108,7 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
       reason: 'lens returned no result',
     };
     ordered.push(result);
-    // None-sentinel findings are dropped from the combined list here, once,
-    // so every downstream consumer -- the blocking tally below, and
-    // report.ts's rendering, which groups strictly from `verdict.findings`
-    // -- sees the same, already-filtered set. Nothing else about a result is
-    // touched: a lens's own outcome word and its full, unfiltered
-    // `result.findings` are still exactly what parseReply produced.
-    findings.push(...result.findings.filter((finding) => !isNoneSentinel(finding)));
+    findings.push(...result.findings);
     if (result.outcome === 'could_not_run') {
       unran.push({ lens, reason: result.reason ?? 'no reason given' });
     } else if (result.outcome === 'out_of_scope') {
@@ -213,9 +163,7 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
     unran.length > 0
       ? 'could_not_run'
       : findings.some((finding) => finding.blocking) ||
-          ordered.some(
-            (result) => result.outcome === 'rejected' && !isRejectionEvidenceless(result),
-          )
+          ordered.some((result) => result.outcome === 'rejected')
         ? 'rejected'
         : allOutOfScope
           ? 'out_of_scope'
