@@ -22,7 +22,7 @@
 // outcome blocks a merge, are two SEPARATE questions — see the "FAIL NOISY,
 // DO NOT BLOCK" comment in `aggregate` below for how this resolves both.
 
-export type Outcome = 'approved' | 'rejected' | 'could_not_run' | 'out_of_scope'; // PROBE3
+export type Outcome = 'approved' | 'rejected' | 'could_not_run' | 'out_of_scope';
 
 export interface Finding {
   readonly lens: string;
@@ -76,6 +76,72 @@ export class PanelMismatchError extends Error {
  * as merely "red for a different reason" is how it ends up being waved through
  * on the grounds that the findings were addressed.
  */
+// A lens's own way of saying "I found nothing blocking here", written as a
+// FINDING line whose severity tag is still [blocking] -- because that is
+// the only shape the reply contract describes for a finding line at all --
+// with the finding's own TEXT beginning with the word "none" instead of
+// naming a concern. Real, live example: verevoir/aigency-runtime-v2#62's own
+// review job. The correctness, honesty and verification lenses each wrote
+// `VERDICT: approved`, and each also wrote a line such as
+// "FINDING: [blocking] none — resolvePort correctly returns 8090 fallback
+// and respects PORT when set, matching the diff's claim and comments; tests
+// verify both branches." parseReply.ts's own derivation (see that file's
+// header) then reads the [blocking] tag on that finding as real evidence
+// and turns the lens's outcome to 'rejected' -- correctly, given only what
+// parseReply can see, which is a marker and a severity tag, never finding
+// TEXT. The old aggregate() then tallied all three as real blocking
+// findings and rejected a change its own gates, and that same reviewing
+// pass's own stated reasoning, had just called clean.
+//
+// Detected here, at the aggregation layer, on the TEXT the lens actually
+// wrote -- the same "trust the evidence, not the label" principle already
+// applied one line below to the outcome word, applied to a shape
+// parseReply.ts cannot see and is not asked to: this changes no per-lens
+// severity or finding logic, only which of the results that logic produced
+// are treated as real evidence during combination.
+//
+// TIGHT ON PURPOSE, after a real finding of its own. An earlier version of
+// this pattern was /^none\b/i -- word-bounded, but still matching ANY
+// finding text that merely STARTS with the word "none", including ordinary
+// prose: PR #23's own review (honesty + failure-modes lenses, both
+// blocking) pointed out that a genuine blocking finding phrased as "None of
+// the retry paths have a ceiling" would have been silently stripped from
+// both the tally and the rendered report by that pattern -- folding a real,
+// unaddressed rejection into a silent approval if it happened to be a
+// lens's only finding. Exactly the "success reported over an empty result"
+// shape this whole project exists to catch, reintroduced one layer down by
+// the very fix meant to prevent a sibling false-positive.
+//
+// So this matches only the two concrete shapes the observed sentinel
+// actually takes -- read directly from aigency-runtime-v2#62's own report
+// text, not invented: the bare word "none" with nothing else, or "none"
+// immediately followed by a dash separator and the reason -- "none —
+// resolvePort correctly returns the 8090 fallback..." (an em dash) and
+// "none - both tests exercise resolvePort directly..." (a hyphen) are both
+// real examples from that same report, so both dash characters are
+// recognised. A summary that continues as ordinary WORDS with no separator
+// -- "None of the retry paths have a ceiling", "none of the endpoints
+// validate input" -- matches neither branch and is kept, counted, and
+// rendered exactly like any other blocking finding.
+const NONE_SENTINEL = /^none(?:\s*$|\s*[-—]\s)/i;
+
+function isNoneSentinel(finding: Finding): boolean {
+  return NONE_SENTINEL.test(finding.summary.trim());
+}
+
+/**
+ * Whether a 'rejected' lens result has no real evidence behind it -- every
+ * finding it carries (and it carries at least one; see below) is a
+ * none-sentinel. Kept apart, deliberately, from a 'rejected' result with NO
+ * findings at all: that shape stays trusted exactly as before -- see the
+ * OR'd check this feeds, and the "carries no blocking finding at all"
+ * fixture in verdict.test.ts, which pins the bypass-defense reason that
+ * check exists for and which none-sentinel handling must not weaken.
+ */
+function isRejectionEvidenceless(result: LensResult): boolean {
+  return result.findings.length > 0 && result.findings.every(isNoneSentinel);
+}
+
 export function aggregate(declared: readonly string[], results: readonly LensResult[]): Verdict {
   const known = new Set(declared);
   const byLens = new Map<string, LensResult>();
@@ -108,7 +174,14 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
       reason: 'lens returned no result',
     };
     ordered.push(result);
-    findings.push(...result.findings);
+    // None-sentinel findings are dropped from the combined list here, once,
+    // so every downstream consumer -- the blocking tally below, and
+    // report.ts's rendering, which groups strictly from the `verdict`'s
+    // `findings` -- sees the same, already-filtered set. Nothing else about
+    // a result is touched: a lens's own outcome word and its full,
+    // unfiltered `result`'s `findings` are still exactly what parseReply
+    // produced.
+    findings.push(...result.findings.filter((finding) => !isNoneSentinel(finding)));
     if (result.outcome === 'could_not_run') {
       unran.push({ lens, reason: result.reason ?? 'no reason given' });
     } else if (result.outcome === 'out_of_scope') {
@@ -163,7 +236,9 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
     unran.length > 0
       ? 'could_not_run'
       : findings.some((finding) => finding.blocking) ||
-          ordered.some((result) => result.outcome === 'rejected')
+          ordered.some(
+            (result) => result.outcome === 'rejected' && !isRejectionEvidenceless(result),
+          )
         ? 'rejected'
         : allOutOfScope
           ? 'out_of_scope'
