@@ -322,7 +322,7 @@ describe('renderReport, when a lens has nothing in its scope', () => {
 // "finding" is the none-sentinel (see verdict.test.ts) must produce a
 // report that reads as a clean approval — not a rejection with a fabricated
 // blocking count, and not a bullet naming "none" as a finding.
-describe('renderReport, when a lens\'s only finding is a none-sentinel', () => {
+describe("renderReport, when a lens's only finding is a none-sentinel", () => {
   function noneRejected(lens: string, detail: string): LensResult {
     return {
       lens,
@@ -331,7 +331,7 @@ describe('renderReport, when a lens\'s only finding is a none-sentinel', () => {
     };
   }
 
-  it('reads Approved, with exit code 0, when every lens\'s only finding is a none-sentinel', () => {
+  it("reads Approved, with exit code 0, when every lens's only finding is a none-sentinel", () => {
     const verdict = aggregate(DECLARED, [
       noneRejected('correctness', 'the code does what the diff claims'),
       noneRejected('honesty', 'the comments match observed behaviour'),
