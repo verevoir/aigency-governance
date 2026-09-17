@@ -332,6 +332,26 @@ describe('aggregate, severity-weighted', () => {
     expect(verdict.findings[0]?.blocking).toBe(true);
   });
 
+  // The word-boundary regression PR #23's own review found untested
+  // (verification lens, round 3): every prior "starts with the word None as
+  // prose" test above used a CAPITAL N, which the case-sensitive sentinel
+  // already excludes on casing alone — so none of them actually exercised
+  // the `\s*$|\s*[-—]\s` alternation itself. This is the case a regression
+  // back to a loose `/^none/`-style match would actually catch: lowercase
+  // "none", immediately followed by ordinary words rather than end-of-string
+  // or a dash separator.
+  it('keeps a genuine blocking finding phrased lowercase "none of ..." — the word-boundary case, not merely the casing one', () => {
+    const verdict = aggregate(DECLARED, [
+      rejected('correctness', 'none of the retry paths have a ceiling'),
+      noneRejected('honesty', 'the comments match observed behaviour'),
+      approved('blast-radius'),
+    ]);
+    expect(verdict.outcome).toBe('rejected');
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.findings[0]?.summary).toBe('none of the retry paths have a ceiling');
+    expect(verdict.findings[0]?.blocking).toBe(true);
+  });
+
   // The case-sensitivity boundary PR #23's own review found (correctness
   // lens, round 2): the SAME shape as the deliberate sentinel — the word
   // then a dash then the reason — but with a capital N. Real, concrete
