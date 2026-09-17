@@ -175,6 +175,67 @@ describe('resolveSettings, given no API key from any source', () => {
   });
 });
 
+describe('resolveSettings, given CLAUDE_CODE_OAUTH_TOKEN', () => {
+  // The precedence this whole change exists to add: the subscription route
+  // wins whenever the token is configured, even though a perfectly usable
+  // ANTHROPIC_API_KEY sits right next to it. See settings.ts's own
+  // PRECEDENCE paragraph for why this ordering, not the other one.
+  it('resolves to subscription even though ANTHROPIC_API_KEY is also configured', async () => {
+    const settings = readyOf(
+      await resolveSettings(env({ CLAUDE_CODE_OAUTH_TOKEN: 'oat-test' }), NO_FILES),
+    );
+
+    expect(settings.route).toBe('subscription');
+    expect('apiKey' in settings).toBe(false);
+  });
+
+  it('resolves to subscription when the token is the only credential configured', async () => {
+    const settings = readyOf(
+      await resolveSettings(
+        env({ ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_OAUTH_TOKEN: 'oat-test' }),
+        NO_FILES,
+      ),
+    );
+
+    expect(settings.route).toBe('subscription');
+  });
+
+  it('treats an empty-string token exactly as an absent one — falls through to billed', async () => {
+    const settings = readyOf(await resolveSettings(env({ CLAUDE_CODE_OAUTH_TOKEN: '' }), NO_FILES));
+
+    expect(settings.route).toBe('billed');
+  });
+
+  it('treats a whitespace-only token as absent', async () => {
+    const settings = readyOf(
+      await resolveSettings(env({ CLAUDE_CODE_OAUTH_TOKEN: '  \t\n ' }), NO_FILES),
+    );
+
+    expect(settings.route).toBe('billed');
+  });
+
+  // A broken billed setup is real information whether or not the run ends up
+  // needing it — see the file header's note beside the final route decision.
+  // This is the case that proves it: the subscription route wins the ROUTE,
+  // but the blank key file is still reported rather than silently ignored
+  // just because this run does not, in the end, need ANTHROPIC_API_KEY.
+  it('still blocks on a broken ANTHROPIC_API_KEY_FILE even though the subscription route would otherwise win', async () => {
+    const fs = filesystem({ '/keys/anthropic': { kind: 'text', text: '' } });
+
+    const result = await resolveSettings(
+      env({
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_API_KEY_FILE: '/keys/anthropic',
+        CLAUDE_CODE_OAUTH_TOKEN: 'oat-test',
+      }),
+      fs.read,
+    );
+
+    expect(result.kind).toBe('invalid');
+    expect(problemsOf(result).some((problem) => problem.includes('/keys/anthropic'))).toBe(true);
+  });
+});
+
 describe('resolveSettings, given an empty environment', () => {
   // With the API key no longer counted as missing, the lens token is the
   // only setting that can still be. Asserting the length as well as the name

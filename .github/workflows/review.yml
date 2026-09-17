@@ -40,6 +40,14 @@ on:
       anthropic-api-key:
         description: The key the panel calls with. One model call per lens.
         required: true
+      claude-code-oauth-token:
+        description: >-
+          A Claude subscription token (from `claude setup-token`) the panel
+          calls with INSTEAD of anthropic-api-key, whenever both are
+          configured — see settings.ts's PRECEDENCE paragraph for why that
+          ordering, not the other one. Optional: a caller that omits this
+          keeps working exactly as before, on anthropic-api-key alone.
+        required: false
       governance-token:
         description: >-
           Read access to verevoir/aigency-governance, which is private. The
@@ -70,27 +78,31 @@ jobs:
       # than letting the absence surface three steps and several minutes
       # later as a generic build-and-review failure.
       #
-      # Checks only anthropic-api-key, deliberately. `required: true` on a
-      # workflow_call secret enforces that the CALLER's `secrets:` mapping
-      # names the key — it does not enforce that the value is non-blank, and
-      # `${{ secrets.X }}` for a secret that does not exist on the calling
-      # repository evaluates to the empty string, which satisfies
-      # `required: true` and arrives here blank. governance-token's failure
-      # mode is already distinct and already legible on its own — a missing
-      # or wrong value fails the very next step, the governance checkout,
-      # with GitHub's own "Repository not found", which is unambiguous
-      # without needing this pattern repeated for it.
-      - name: Confirm the key is available before doing anything expensive
+      # Checks BOTH credential secrets, deliberately — either one lets the
+      # run proceed (settings.ts resolves which route from there, preferring
+      # claude-code-oauth-token when both are present). `required: true` /
+      # `required: false` on a workflow_call secret only enforces that the
+      # CALLER's `secrets:` mapping names the key when required — it does
+      # not enforce that the value is non-blank, and `${{ secrets.X }}` for a
+      # secret that does not exist on the calling repository evaluates to
+      # the empty string either way. governance-token's failure mode is
+      # already distinct and already legible on its own — a missing or
+      # wrong value fails the very next step, the governance checkout, with
+      # GitHub's own "Repository not found", which is unambiguous without
+      # needing this pattern repeated for it.
+      - name: Confirm a review credential is available before doing anything expensive
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude-code-oauth-token }}
         run: |
-          if [ -z "${ANTHROPIC_API_KEY}" ]; then
-            echo "::error title=Review::ANTHROPIC_API_KEY is not available to this workflow." 
-            echo "::error title=Review::Check that the repository (or organisation) running" 
-            echo "::error title=Review::this job has an ANTHROPIC_API_KEY secret configured," 
-            echo "::error title=Review::and that whatever calls this reusable workflow passes" 
-            echo "::error title=Review::it under secrets.anthropic-api-key rather than" 
-            echo "::error title=Review::secrets: inherit or nothing at all." 
+          if [ -z "${ANTHROPIC_API_KEY}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN}" ]; then
+            echo "::error title=Review::Neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN is available to this workflow."
+            echo "::error title=Review::Check that the repository (or organisation) running"
+            echo "::error title=Review::this job has at least one of those two secrets configured,"
+            echo "::error title=Review::and that whatever calls this reusable workflow passes"
+            echo "::error title=Review::it under secrets.anthropic-api-key and/or"
+            echo "::error title=Review::secrets.claude-code-oauth-token rather than"
+            echo "::error title=Review::secrets: inherit or nothing at all."
             exit 1
           fi
 
@@ -222,6 +234,7 @@ jobs:
         continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude-code-oauth-token }}
           AIGENCY_REVIEW_LENSES: ${{ github.workspace }}/.aigency-review/review/lenses.json
           AIGENCY_REVIEW_MODEL: ${{ inputs.model }}
           PR_TITLE: ${{ github.event.pull_request.title }}

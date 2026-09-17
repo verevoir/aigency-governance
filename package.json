@@ -18,6 +18,7 @@
     "aigency-review": "dist/cli/review.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.1",
     "@verevoir/llm": "^0.26.0"
   },
   "devDependencies": {
