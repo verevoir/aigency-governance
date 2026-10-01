@@ -20,6 +20,11 @@
       "id": "design-scope-and-sequencing",
       "title": "Scope and sequencing",
       "focus": "Does the plan state what already exists for everything it depends on, so that nothing is sequenced to run before its own caller exists? Where the plan introduces new required configuration, does it name every place that must change to carry it — the tests that exercise it, the environment allowlists that must admit it, any declared ceiling it must fit under — rather than only the one call site the author has in view? Does the plan state exactly which files and areas this piece of work touches, so that anything outside that declared boundary is visibly a drive-by rather than silently bundled in under someone else's change? A plan that leaves sequencing, configuration reach or scope to be discovered during implementation has deferred a design decision rather than made one."
+    },
+    {
+      "id": "design-coupling",
+      "title": "Coupling",
+      "focus": "Coupling is not avoidable and is not itself a flaw — software coordinates by depending on other software. This lens asks questions; it does not rule against a dependency for existing. For each new thing this design needs to know about: could it depend on a narrower contract than the whole module or service it reached for? What would have to change elsewhere if that dependency changed — one place, or many, and are those places named? Is every new dependency declared in the plan's own words, with a reason for needing it, rather than appearing only once a diff is read? Where a dependency crosses a module or layer boundary, does the plan say why that crossing is justified, rather than leaving the boundary to be crossed unremarked during implementation? The concern this lens is for is coupling that is extensive or unexpected — not coupling itself, which a working system cannot avoid."
     }
   ]
 }
