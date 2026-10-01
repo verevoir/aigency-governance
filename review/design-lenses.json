@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "lenses": [
+    {
+      "id": "design-threat-model",
+      "title": "Threat model",
+      "focus": "Does the plan name every credential, token or secret a new or changed process could touch, and state what it must never receive? Does the plan name what credentials a command run against a target repository would receive — including whether it would inherit orchestrator credentials by default — rather than leaving that to fall out of whatever the implementation happens to pass through? Where a process is spawned, does the plan name the environment it needs on each platform it will run on, not just the one the author is working from? A plan silent on who can reach a credential, which trust boundary a new path crosses, or what a child process is given has not done threat modelling; it has skipped it, and this lens answers against the plan's own words, not against code that does not exist yet."
+    },
+    {
+      "id": "design-contracts-and-shapes",
+      "title": "Contracts and shapes",
+      "focus": "Does the plan name every input and output shape precisely enough that 'malformed' and 'empty' cannot be confused downstream, and state what happens, field by field, when a documented field is missing, wrong-typed or present but invalid? For every fallback the plan introduces, does it name the exact value returned and the exact condition that triggers it — not just that a fallback exists? Does the plan say plainly which new or changed pieces of work have side effects, so that a name like 'compute' or 'get' is never quietly carrying a mutation the name denies? A plan that leaves a shape's edge cases, a fallback's value, or a pure-versus-effectful boundary for the implementation to decide has deferred a contract, not written one."
+    },
+    {
+      "id": "design-failure-modes",
+      "title": "Failure modes",
+      "focus": "Does the plan name every distinct failure path a new or changed piece of work can take, and what each one does — rather than one word or one catch standing in for several different outcomes? Where the plan claims something will 'never crash' or will 'always degrade gracefully', does it also name the guard that will enforce that claim and the test that will prove it, rather than stating the guarantee and leaving its mechanism to be invented later? A plan whose failure handling collapses distinguishable outcomes into one, or that states a guarantee with no named backstop, has asserted its way past failure design rather than done it."
+    },
+    {
+      "id": "design-scope-and-sequencing",
+      "title": "Scope and sequencing",
+      "focus": "Does the plan state what already exists for everything it depends on, so that nothing is sequenced to run before its own caller exists? Where the plan introduces new required configuration, does it name every place that must change to carry it — the tests that exercise it, the environment allowlists that must admit it, any declared ceiling it must fit under — rather than only the one call site the author has in view? Does the plan state exactly which files and areas this piece of work touches, so that anything outside that declared boundary is visibly a drive-by rather than silently bundled in under someone else's change? A plan that leaves sequencing, configuration reach or scope to be discovered during implementation has deferred a design decision rather than made one."
+    },
+    {
+      "id": "design-coupling",
+      "title": "Coupling",
+      "focus": "Coupling is not avoidable and is not itself a flaw — software coordinates by depending on other software. This lens asks questions; it does not rule against a dependency for existing, and it does not prescribe how to reduce one. For each new thing this design needs to know about: what does it actually need from that dependency — the whole module or service it reached for, or only a part of it? What would have to change elsewhere if that dependency changed — one place, or many, and are those places named? Is every new dependency declared in the plan's own words, with a reason for needing it, rather than appearing only once a diff is read? Where a dependency crosses a module or layer boundary, does the plan say why that crossing is justified, rather than leaving the boundary to be crossed unremarked during implementation? Coupling also travels through channels that are not imports and are easy to miss: shared state (a store's shape and keys, e.g. zustand), shared model types (e.g. MVC, where views and controllers all reach into one wide type), and string-keyed indirection (IoC tokens, registry keys, event names). Does the plan name every such channel this design relies on, and what else depends on it? Extent is judged against the target's stability, not a raw count of dependents: many dependents on a type or store that is stable and only ever extended by addition is not a problem; the concern is dependents on something likely to change, or something that cannot be extended without breaking them — is the widely-used thing stable and extensible by addition? The concern this lens is for is coupling that is extensive or unexpected, or that rests on something unstable — not coupling itself, which a working system cannot avoid."
+    }
+  ]
+}
