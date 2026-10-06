@@ -229,8 +229,8 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
   // Whose idea of correct, and how much of it ran. A reader who cannot tell
   // which definition judged a change cannot tell whether the bar moved.
   const attribution =
-    `Judged by ${verdict.results.length} lens(es) from \`${context.source}\`` +
-    (context.model === undefined ? '.' : `, model \`${context.model}\`.`);
+    `Judged by ${verdict.results.length} lens(es) from \`${context.source}\`, model ` +
+    (context.model === undefined ? 'not recorded.' : `\`${context.model}\`.`);
   lines.push('---', '', attribution);
 
   return lines.join('\n');

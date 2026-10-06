@@ -206,30 +206,27 @@ export type KeyFileResult =
 export type KeyFileReader = (path: string) => Promise<KeyFileResult>;
 
 /**
- * INTERIM: pinned to a concrete model id, not a catalog term. The goal is
- * to pin the TERM ('opus') and resolve it to a concrete id once, through
- * `@verevoir/llm`'s model registry (`resolveModelByTerm`), before any route
- * split — but that registry is populated only as a side effect of
- * importing a provider subpath (`@verevoir/llm/anthropic`), and that
- * subpath unconditionally imports the `@anthropic-ai/sdk` package. This
- * repository deliberately does not depend on that SDK (see anthropic.ts's
- * own header for why it hand-rolls `fetch` instead), and importing a
- * subpath purely for its registration side effect would reintroduce
- * exactly the dependency that file exists to avoid.
+ * 'claude-opus-5-5' is a LITERAL INTERIM PIN, not a resolved catalog term.
+ * The goal is to pin the TERM ('opus') and resolve it to a concrete id
+ * once, through `@verevoir/llm`'s model registry (`resolveModelByTerm`),
+ * before any route split — but that registry is populated only as a side
+ * effect of importing a provider subpath (`@verevoir/llm/anthropic`), and
+ * that subpath unconditionally imports the `@anthropic-ai/sdk` package.
+ * This repository deliberately does not depend on that SDK (see
+ * anthropic.ts's own header for why it hand-rolls `fetch` instead), and
+ * importing a subpath purely for its registration side effect would
+ * reintroduce exactly the dependency that file exists to avoid.
  *
- * So, as an interim, the operator pins the latest concrete Opus id
- * directly here — exactly as before @verevoir/llm 0.28.0 existed.
- * `resolveSettings` names the value `requestedModel` (see below) — the id
- * requested of the transport, not confirmed against what answered — and
- * the report carries it under that same honest framing, so the report
- * output and both routes' wiring are already in the shape term-based
- * resolution will need; only the right-hand side of that one line changes
- * once it lands.
+ * Governance switches `DEFAULT_MODEL` to the term `'opus'`, and wires
+ * `resolveModelByTerm` in before the route split, once @verevoir/llm
+ * 0.29.0's side-effect-free catalog subpath (e.g. `@verevoir/llm/catalog`,
+ * or registration moved into core) is published — tracked as a follow-up
+ * in that project, not this one.
  *
- * Term-based resolution follows once @verevoir/llm exposes its catalog
- * without the SDK (e.g. a side-effect-free `@verevoir/llm/catalog`
- * subpath, or registering in core) — tracked as a follow-up in that
- * project, not this one.
+ * `@verevoir/llm` is bumped to ^0.28.0 here regardless: the operator's
+ * policy is that this project — its only consumer — tracks `@verevoir/llm`
+ * at latest. No governance code path uses anything new in 0.28.0 yet; the
+ * bump buys currency, not functionality, in this change.
  *
  * Still sent to both routes: `anthropic.ts` sends it as `model`,
  * `claudeCli.ts` sends it as `--model`
@@ -434,10 +431,10 @@ export async function resolveSettings(
   // The model id requested of the transport: the env override, else the
   // pinned default (DEFAULT_MODEL). Not verified against what answered —
   // see DEFAULT_MODEL's own header for the interim status and the
-  // catalog-resolution follow-up. Named `requestedModel` rather than
-  // `model` because the report attribution and both routes already read
-  // it under that name; term resolution, when it lands, replaces only
-  // the right-hand side of this line.
+  // catalog-resolution follow-up. `requestedModel` is a LOCAL variable
+  // name, scoped to this function — everything downstream
+  // (CommonSettings.model, run.ts, both routes) reads `settings.model`,
+  // not this name.
   const requestedModel = present(env['AIGENCY_REVIEW_MODEL']) ?? DEFAULT_MODEL;
 
   let maxTokens = DEFAULT_MAX_TOKENS;

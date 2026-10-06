@@ -102,6 +102,16 @@ describe('renderReport', () => {
     expect(lines[lines.length - 1]).toContain('review/lenses.json');
   });
 
+  // The failure-modes finding from the panel's review of ca48a7d: a report
+  // built from a ReportContext with no `model` silently dropped the model
+  // clause entirely, so "the model was not recorded" was indistinguishable
+  // from "the report predates this field". CONTEXT here carries no model.
+  it('says the model was not recorded, rather than silently omitting the clause, when the context carries none', () => {
+    const report = renderReport(aggregate(DECLARED, DECLARED.map(approved)), CONTEXT);
+    const lines = report.split('\n');
+    expect(lines[lines.length - 1]).toContain('model not recorded.');
+  });
+
   it('names the subject', () => {
     const report = renderReport(aggregate(DECLARED, DECLARED.map(approved)), CONTEXT);
     expect(report).toContain('PR #1: add a retry');
