@@ -700,7 +700,10 @@ describe('resolveSettings, falling back to defaults', () => {
   // that would notice. It tests a decision, not a behaviour, and that is why
   // it exists rather than an oversight.
   it('pins the defaults to specific values, not merely to itself', () => {
-    expect(DEFAULT_MODEL).toBe('claude-sonnet-5');
+    // A concrete id, not a term — an interim pin until @verevoir/llm exposes
+    // its catalog without the SDK (see DEFAULT_MODEL's own header in
+    // settings.ts).
+    expect(DEFAULT_MODEL).toBe('claude-opus-5-5');
     expect(DEFAULT_MAX_TOKENS).toBe(65536);
     expect(DEFAULT_LENS_SOURCE).toBe(
       'https://raw.githubusercontent.com/verevoir/aigency-governance/main/review/lenses.json',

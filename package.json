@@ -18,7 +18,7 @@
     "aigency-review": "dist/cli/review.js"
   },
   "dependencies": {
-    "@verevoir/llm": "^0.26.0"
+    "@verevoir/llm": "^0.28.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
