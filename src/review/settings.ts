@@ -147,9 +147,10 @@ export interface MissingSetting {
  * whether a billed key was configured.
  */
 interface CommonSettings {
-  /** The id that actually answers — see DEFAULT_MODEL's own header below.
-   * INTERIM: a concrete pin, not a resolved catalog term; term resolution
-   * follows once @verevoir/llm exposes its catalog without the SDK. */
+  /** The model id requested of the transport: the env override, else the
+   * pinned default (DEFAULT_MODEL). Not verified against what answered —
+   * see DEFAULT_MODEL's own header for the interim status and the
+   * catalog-resolution follow-up. */
   readonly model: string;
   readonly maxTokens: number;
   readonly lensSource: string;
@@ -218,10 +219,12 @@ export type KeyFileReader = (path: string) => Promise<KeyFileResult>;
  *
  * So, as an interim, the operator pins the latest concrete Opus id
  * directly here — exactly as before @verevoir/llm 0.28.0 existed.
- * `resolveSettings` still names the value `resolvedModel` (see below) and
- * the report carries it under that attribution, so the report output and
- * both routes' wiring are already in the shape term-based resolution will
- * need; only the right-hand side of that one line changes once it lands.
+ * `resolveSettings` names the value `requestedModel` (see below) — the id
+ * requested of the transport, not confirmed against what answered — and
+ * the report carries it under that same honest framing, so the report
+ * output and both routes' wiring are already in the shape term-based
+ * resolution will need; only the right-hand side of that one line changes
+ * once it lands.
  *
  * Term-based resolution follows once @verevoir/llm exposes its catalog
  * without the SDK (e.g. a side-effect-free `@verevoir/llm/catalog`
@@ -428,13 +431,14 @@ export async function resolveSettings(
     });
   }
 
-  // INTERIM (see DEFAULT_MODEL's own header): no catalog resolution yet —
-  // this is already a concrete id, from the environment override or the
-  // pinned default. Kept as `resolvedModel` (rather than reverted to
-  // `model`) because the report attribution and both routes already read
-  // it as "the id that actually answered"; term resolution, when it lands,
-  // replaces only the right-hand side of this line.
-  const resolvedModel = present(env['AIGENCY_REVIEW_MODEL']) ?? DEFAULT_MODEL;
+  // The model id requested of the transport: the env override, else the
+  // pinned default (DEFAULT_MODEL). Not verified against what answered —
+  // see DEFAULT_MODEL's own header for the interim status and the
+  // catalog-resolution follow-up. Named `requestedModel` rather than
+  // `model` because the report attribution and both routes already read
+  // it under that name; term resolution, when it lands, replaces only
+  // the right-hand side of this line.
+  const requestedModel = present(env['AIGENCY_REVIEW_MODEL']) ?? DEFAULT_MODEL;
 
   let maxTokens = DEFAULT_MAX_TOKENS;
   const rawMaxTokens = present(env['AIGENCY_REVIEW_MAX_TOKENS']);
@@ -464,7 +468,7 @@ export async function resolveSettings(
   }
 
   const common: CommonSettings = {
-    model: resolvedModel,
+    model: requestedModel,
     maxTokens,
     lensSource,
     ...(lensToken !== undefined ? { lensToken } : {}),

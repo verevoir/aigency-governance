@@ -31,13 +31,15 @@ export interface ReportContext {
   /** What was reviewed. */
   readonly subject: string;
   /**
-   * The concrete model id that actually answered, once resolved from its
-   * catalog term (see settings.ts's DEFAULT_MODEL and resolveSettings's
-   * `resolvedModel`). Optional only so a ReportContext built before this
-   * field existed still compiles; a real run through cli/run.ts always
-   * supplies it. Recorded here because this report is the one place most
-   * people reading a review ever look — closing what was otherwise
-   * unobservable from the output: which model actually judged the change.
+   * The model id requested of the transport (the env override, else the
+   * pinned default — see settings.ts's DEFAULT_MODEL and
+   * resolveSettings's `requestedModel`). Not verified against what
+   * answered. Optional only so a ReportContext built before this field
+   * existed still compiles; a real run through cli/run.ts always
+   * supplies it. Recorded here because this report is the one place
+   * most people reading a review ever look — closing what was otherwise
+   * unobservable from the output: which model id the run was configured
+   * to use.
    */
   readonly model?: string;
 }

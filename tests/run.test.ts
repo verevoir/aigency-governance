@@ -500,4 +500,17 @@ describe('runReview, wiring the dependencies', () => {
     expect(fakes.settingsSeen[0]?.model).toBe('claude-haiku-3');
     expect(fakes.settingsSeen[0]?.maxTokens).toBe(12000);
   });
+
+  // The non-blocking finding from the panel's review of ca48a7d: nothing
+  // pinned that runReview actually threads settings.model into the report
+  // context (ReportContext.model) — a silent regression there would stay
+  // green. This asserts the attribution line the report renders when it
+  // is supplied.
+  it('passes the requested model into the report context, so the report names which model id the run was configured to use', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+
+    expect(outcome.report).toContain(`model \`${DEFAULT_MODEL}\``);
+  });
 });
