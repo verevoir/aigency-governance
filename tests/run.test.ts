@@ -500,4 +500,25 @@ describe('runReview, wiring the dependencies', () => {
     expect(fakes.settingsSeen[0]?.model).toBe('claude-haiku-3');
     expect(fakes.settingsSeen[0]?.maxTokens).toBe(12000);
   });
+
+  // The non-blocking finding from the panel's review of ca48a7d: nothing
+  // pinned that runReview actually threads settings.model into the report
+  // context (ReportContext.model) — a silent regression there would stay
+  // green. Asserted under an AIGENCY_REVIEW_MODEL override, not the
+  // default, so this test would fail if run.ts passed DEFAULT_MODEL
+  // instead of settings.model — proved by mutation (temporarily
+  // hardcoding run.ts's `model` field and confirming this test turned
+  // red) before this change was committed.
+  it('passes the requested model into the report context, so the report names which model id the run was configured to use', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(
+      env({ AIGENCY_REVIEW_MODEL: 'claude-haiku-3' }),
+      SUBJECT,
+      fakes.deps,
+    );
+
+    expect(outcome.report).toContain('model `claude-haiku-3`');
+    expect(outcome.report).not.toContain(`model \`${DEFAULT_MODEL}\``);
+  });
 });

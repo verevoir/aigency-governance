@@ -147,6 +147,10 @@ export interface MissingSetting {
  * whether a billed key was configured.
  */
 interface CommonSettings {
+  /** The model id requested of the transport: the env override, else the
+   * pinned default (DEFAULT_MODEL). Not verified against what answered —
+   * see DEFAULT_MODEL's own header for the interim status and the
+   * catalog-resolution follow-up. */
   readonly model: string;
   readonly maxTokens: number;
   readonly lensSource: string;
@@ -202,14 +206,34 @@ export type KeyFileResult =
 export type KeyFileReader = (path: string) => Promise<KeyFileResult>;
 
 /**
- * Pinned, not discovered. The same commit judged by two different models is
- * two different verdicts, and a judge that changes because someone's shell
- * differs is a bar that moved without anyone deciding to move it. Sent to
- * both routes: `anthropic.ts` sends it as `model`, `claudeCli.ts` sends it
- * as `--model` (`@verevoir/llm/claude-cli`'s `ChatOptions.model`) — the same
- * commit judged by the same model whichever transport answered.
+ * 'claude-opus-5-5' is a LITERAL INTERIM PIN, not a resolved catalog term.
+ * The goal is to pin the TERM ('opus') and resolve it to a concrete id
+ * once, through `@verevoir/llm`'s model registry (`resolveModelByTerm`),
+ * before any route split — but that registry is populated only as a side
+ * effect of importing a provider subpath (`@verevoir/llm/anthropic`), and
+ * that subpath unconditionally imports the `@anthropic-ai/sdk` package.
+ * This repository deliberately does not depend on that SDK (see
+ * anthropic.ts's own header for why it hand-rolls `fetch` instead), and
+ * importing a subpath purely for its registration side effect would
+ * reintroduce exactly the dependency that file exists to avoid.
+ *
+ * Governance switches `DEFAULT_MODEL` to the term `'opus'`, and wires
+ * `resolveModelByTerm` in before the route split, once @verevoir/llm
+ * 0.29.0's side-effect-free catalog subpath (e.g. `@verevoir/llm/catalog`,
+ * or registration moved into core) is published — tracked as a follow-up
+ * in that project, not this one.
+ *
+ * `@verevoir/llm` is bumped to ^0.28.0 here regardless: the operator's
+ * policy is that this project — its only consumer — tracks `@verevoir/llm`
+ * at latest. No governance code path uses anything new in 0.28.0 yet; the
+ * bump buys currency, not functionality, in this change.
+ *
+ * Still sent to both routes: `anthropic.ts` sends it as `model`,
+ * `claudeCli.ts` sends it as `--model`
+ * (`@verevoir/llm/claude-cli`'s `ChatOptions.model`) — the same commit
+ * judged by the same model whichever transport answered.
  */
-export const DEFAULT_MODEL = 'claude-sonnet-5';
+export const DEFAULT_MODEL = 'claude-opus-5-5';
 
 /**
  * Raised from 4096 on direct evidence, not a guess: PR #1's own review
@@ -404,7 +428,14 @@ export async function resolveSettings(
     });
   }
 
-  const model = present(env['AIGENCY_REVIEW_MODEL']) ?? DEFAULT_MODEL;
+  // The model id requested of the transport: the env override, else the
+  // pinned default (DEFAULT_MODEL). Not verified against what answered —
+  // see DEFAULT_MODEL's own header for the interim status and the
+  // catalog-resolution follow-up. `requestedModel` is a LOCAL variable
+  // name, scoped to this function — everything downstream
+  // (CommonSettings.model, run.ts, both routes) reads `settings.model`,
+  // not this name.
+  const requestedModel = present(env['AIGENCY_REVIEW_MODEL']) ?? DEFAULT_MODEL;
 
   let maxTokens = DEFAULT_MAX_TOKENS;
   const rawMaxTokens = present(env['AIGENCY_REVIEW_MAX_TOKENS']);
@@ -434,7 +465,7 @@ export async function resolveSettings(
   }
 
   const common: CommonSettings = {
-    model,
+    model: requestedModel,
     maxTokens,
     lensSource,
     ...(lensToken !== undefined ? { lensToken } : {}),

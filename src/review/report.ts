@@ -30,6 +30,18 @@ export interface ReportContext {
   readonly source: string;
   /** What was reviewed. */
   readonly subject: string;
+  /**
+   * The model id requested of the transport (the env override, else the
+   * pinned default — see settings.ts's DEFAULT_MODEL and
+   * resolveSettings's `requestedModel`). Not verified against what
+   * answered. Optional only so a ReportContext built before this field
+   * existed still compiles; a real run through cli/run.ts always
+   * supplies it. Recorded here because this report is the one place
+   * most people reading a review ever look — closing what was otherwise
+   * unobservable from the output: which model id the run was configured
+   * to use.
+   */
+  readonly model?: string;
 }
 
 /**
@@ -216,7 +228,9 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
 
   // Whose idea of correct, and how much of it ran. A reader who cannot tell
   // which definition judged a change cannot tell whether the bar moved.
-  const attribution = `Judged by ${verdict.results.length} lens(es) from \`${context.source}\`.`;
+  const attribution =
+    `Judged by ${verdict.results.length} lens(es) from \`${context.source}\`, model ` +
+    (context.model === undefined ? 'not recorded.' : `\`${context.model}\`.`);
   lines.push('---', '', attribution);
 
   return lines.join('\n');
