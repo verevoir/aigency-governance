@@ -112,7 +112,7 @@ export async function runReview(
 
   // Nothing to review is not the same as nothing wrong with it. A workflow
   // that computed its diff against the wrong base, or cloned shallowly, hands
-  // this an empty string — and five lenses would each read it, find nothing,
+  // this an empty string — and every lens would read it, find nothing,
   // and approve. That is the most likely way this stops working without
   // anybody noticing, so it is checked here rather than trusted upstream.
   //

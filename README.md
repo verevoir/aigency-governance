@@ -256,7 +256,7 @@ fully-uncovered modules passes.
 
 The run refuses it rather than approving. An empty diff usually means a wiring
 problem — a diff computed against the wrong base, or a shallow clone with no
-merge base — and five lenses reviewing nothing would each find nothing wrong.
+merge base — and every lens reviewing nothing would find nothing wrong.
 That is the most likely way this stops working without anybody noticing, so it
 is checked rather than trusted.
 

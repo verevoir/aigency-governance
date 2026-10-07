@@ -335,7 +335,7 @@ const CONTEXT_PAD_LINES = 8;
 const MAX_REGION_LINES = 120;
 
 /** Total characters this module will include across every region in one
- * run. A five-lens panel sends this once, in the shared half (prompt.ts),
+ * run. A lens panel sends this once, in the shared half (prompt.ts),
  * so this budget is paid once per review, not once per lens — but it is
  * still a real cost added on top of the diff and the bar, and "err small"
  * applies to the total as much as to any one region. */

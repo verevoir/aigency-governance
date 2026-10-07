@@ -4,27 +4,67 @@
     {
       "id": "correctness",
       "title": "Correctness",
-      "focus": "Does the change do what the diff, its comments and its description say it does? Read the claim and the code as two independent assertions and look for the gap between them. Prefer a concrete failing input over a description of a risk. This dimension judges work performed against a claim about it, not a description of a requirement: where the change under review is itself a description of a requirement, there is no behaviour yet for this lens to check — answer out_of_scope rather than manufacturing a gap between a description and work that does not exist yet."
+      "focus": "Does the change do what the diff, its comments and its description say it does? Read the claim and the code as two independent assertions and look for the gap between them. Prefer a concrete failing input over a description of a risk. Where the change under review is itself a description of a requirement, with no behaviour, handling or test yet existing to judge, answer out_of_scope rather than reviewing prose about an intention as though it were the thing itself."
     },
     {
-      "id": "honesty",
-      "title": "Honesty of the record",
-      "focus": "Anything that reports a state it did not observe: a comment claiming a property the code does not have, a log line or return value describing work that did not happen, a success reported over an empty result, documentation asserting a behaviour the implementation lacks. This still applies in full where a description of a requirement makes a false claim about the system's CURRENT state — that is exactly as dishonest there as anywhere else. But a description of a requirement is not dishonest merely for reporting no success — the absence of a completion claim is not itself a finding, and must not be written up as one."
+      "id": "honesty-claims",
+      "title": "Honesty: existing claims",
+      "focus": "Anything existing — a comment, a log line, a return value, a docstring — that claims a property or an outcome the code does not actually have: a comment asserting 'never' or 'always' where the code three lines away contradicts it, documentation describing a behaviour the implementation lacks. This still applies where a description of a requirement makes a false claim about the system's CURRENT state. Absent or stale documentation belongs to docs, not here — this lens is for an existing claim that is actively false, not one that is simply missing."
     },
     {
-      "id": "failure-modes",
-      "title": "Failure distinguishable from silence",
-      "focus": "Where the change can fail, can a reader tell which failure happened? Missing, empty and broken must stay three answers. A swallowed error, a catch that returns a default, or a single word covering two outcomes belongs here. This judges error handling that exists in the change. A description of a requirement has no catch, return or logged outcome yet — answer out_of_scope, not a review of prose about intended handling as though it were the handling itself."
+      "id": "honesty-reported-outcomes",
+      "title": "Honesty: reported outcomes",
+      "focus": "A success, a completion, or a result reported where none actually occurred: a return value or log line describing work that did not happen, a success reported over an empty result, a run that printed nothing and exited 0 read as though it had answered. A description of a requirement is NOT dishonest merely for reporting no success — the absence of a completion claim is not itself a finding; this lens is for a false claim of success, not an honest absence of one."
     },
     {
-      "id": "verification",
-      "title": "Verification that verifies",
-      "focus": "Would each new or changed test fail if the code it covers were wrong? Look for assertions that hold vacuously, suites that pass because they found nothing to run, and guards whose only test exercises the pure function underneath rather than the guard. This judges a test that exists in the change. A description of a requirement — including one describing what a future test must prove — has no test yet for this lens to check against; answer out_of_scope, not a verdict on a stated intention."
+      "id": "failure-distinguishability",
+      "title": "Failure: distinguishable reporting",
+      "focus": "Where the change can fail, can a reader tell which failure happened? Missing, empty and broken must stay three answers; a single word covering two outcomes, or a log line that does not say which of several causes fired, belongs here. This judges error REPORTING that exists in the change. See failure-recovery for what the code does about a failure once it is detected. Where the change under review is itself a description of a requirement, with no behaviour, handling or test yet existing to judge, answer out_of_scope rather than reviewing prose about an intention as though it were the thing itself."
     },
     {
-      "id": "blast-radius",
-      "title": "Scope, collateral and credentials",
-      "focus": "What does this change touch that it did not need to touch? Reformatting, drive-by renames, widened permissions, a credential reaching a wider process than before, or a bound that moved without being named."
+      "id": "failure-recovery",
+      "title": "Failure: handling, not just reporting",
+      "focus": "A swallowed error, a catch that returns a default instead of propagating, or a fallback (??, ||, a default parameter) applied to a value that should have been required: does the change paper over a failure rather than surfacing or correctly handling it? This judges the HANDLING itself. Not whether it is reported distinguishably (see failure-distinguishability), and not a dependency-outage/retry case (see resilience). Where the change under review is itself a description of a requirement, with no behaviour, handling or test yet existing to judge, answer out_of_scope rather than reviewing prose about an intention as though it were the thing itself."
+    },
+    {
+      "id": "verification-strength",
+      "title": "Verification: test strength",
+      "focus": "Would each new or changed test actually fail if the code it covers were wrong? Look for assertions that hold vacuously, suites that pass because they found nothing to run, and a guard whose only test exercises the pure function underneath rather than the guard itself. This judges the STRENGTH of a test that exists. See verification-coverage for whether a test exists at all. Where the change under review is itself a description of a requirement, with no behaviour, handling or test yet existing to judge, answer out_of_scope rather than reviewing prose about an intention as though it were the thing itself."
+    },
+    {
+      "id": "verification-coverage",
+      "title": "Verification: test coverage",
+      "focus": "Does every new or changed branch, path or outcome the diff introduces have ANY test exercising it at all — not whether that test is strong, but whether it exists. A new if/else, a new error path, or a new case with no test reaching it at all belongs here. See verification-strength for whether that test is strong. Where the change under review is itself a description of a requirement, with no behaviour, handling or test yet existing to judge, answer out_of_scope rather than reviewing prose about an intention as though it were the thing itself."
+    },
+    {
+      "id": "blast-radius-scope",
+      "title": "Blast-radius: surface area",
+      "focus": "What does this change touch that it did not need to touch to do what it claims: reformatting, a drive-by rename, a second, undeclared change bundled alongside the real one? This judges the SURFACE AREA of the change. See blast-radius-credentials for permission/credential reach specifically, and security-input-handling for whether what IS touched is handled safely."
+    },
+    {
+      "id": "blast-radius-credentials",
+      "title": "Blast-radius: credential and permission reach",
+      "focus": "Does this change widen a permission, hand a credential to a wider process than it previously reached, or move a bound (an allowlist, an env-var ceiling, a scope) without naming that it did so? This judges PERMISSION/CREDENTIAL REACH specifically. See blast-radius-scope for unrelated bundled changes, and security-secret-handling for unsafe handling of something already in scope."
+    },
+    {
+      "id": "security-input-handling",
+      "title": "Security: input handling",
+      "focus": "Does unsanitised input reach a shell, a query, a file path, or a deserialiser? Is user- or environment-controlled data trusted where it should be validated? Has an authorisation check been removed, weakened or bypassed? This judges INPUT SAFETY and access control. See security-secret-handling for credential/secret exposure specifically."
+    },
+    {
+      "id": "security-secret-handling",
+      "title": "Security: secret handling",
+      "focus": "Is a secret, token or credential written to a log, a comment, a committed file, or exposed to a wider scope than declared? This judges SECRET HANDLING specifically. See blast-radius-credentials for a credential reaching a wider process, rather than a secret being written somewhere it is readable at all."
+    },
+    {
+      "id": "docs",
+      "title": "Documentation presence and currency",
+      "focus": "Is there documentation for the capability this change adds, removes or alters, and does it match what the change actually does? Absence or staleness is a finding here even when nothing existing makes a false claim. See honesty-claims for a doc that actively lies."
+    },
+    {
+      "id": "resilience",
+      "title": "Recovery under failure",
+      "focus": "When a dependency this change relies on is slow, unavailable, or returns a failure, does the change behave sensibly: a bounded retry with backoff, a timeout, an idempotent retry, or a named degraded path? This judges recovery behaviour. See failure-distinguishability for whether a failure is reported distinguishably."
     }
   ]
 }
