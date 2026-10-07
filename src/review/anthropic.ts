@@ -139,7 +139,7 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
       max_tokens: config.maxTokens,
       // The shared half, marked cacheable. This is the ordering contract from
       // `Prompt` made real: identical bytes for every lens, sent first, so a
-      // five-lens panel pays for the diff once.
+      // lens panel pays for the diff once, however many lenses it has.
       system: [{ type: 'text', text: prompt.shared, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: prompt.perLens }],
     });
