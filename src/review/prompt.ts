@@ -4,7 +4,7 @@
 // module: `shared` is byte-identical for every lens in a run, `perLens` is the
 // only thing that differs. The diff and the practices are the large payloads
 // and they live in the shared half, so a lens panel sends one big prefix
-// five times rather than five different ones — which is what makes a provider
+// once per lens rather than a different one each time — which is what makes a provider
 // cache hit possible at all.
 //
 // Whether the cache is actually hit is MEASURED elsewhere, not asserted here
