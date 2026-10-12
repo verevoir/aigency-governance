@@ -212,7 +212,7 @@ describe('the wire format', () => {
     expect(reply.content).toBe('VERDICT: approved');
   });
 
-  it("carries the API response's usage onto the returned ReviewerReply, in GenAI semconv field names -- the billed route's own half of \"usage reaches the report on each route\"", async () => {
+  it('carries the API response\'s usage onto the returned ReviewerReply, in GenAI semconv field names -- the billed route\'s own half of "usage reaches the report on each route"', async () => {
     const post = () =>
       Promise.resolve({
         ok: true,
@@ -382,8 +382,8 @@ describe('failures', () => {
       }),
     );
     const reply = await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    expect(reply).toBe('before after');
-    expect(reply).not.toContain('NOT-FOR-THE-PARSER');
+    expect(reply.content).toBe('before after');
+    expect(reply.content).not.toContain('NOT-FOR-THE-PARSER');
   });
 
   // The `typeof block.text === 'string'` half of the filter. Without it, `join`

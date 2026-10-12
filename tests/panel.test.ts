@@ -25,7 +25,7 @@ const APPROVE = `${VERDICT_MARKER} ${APPROVED_WORD}`;
 const REJECT = `${VERDICT_MARKER} ${REJECTED_WORD}\n${FINDING_MARKER} a real finding`;
 
 function replying(byLens: Record<string, string>): Reviewer {
-  return (lensId) => Promise.resolve(byLens[lensId] ?? APPROVE);
+  return (lensId) => Promise.resolve({ content: byLens[lensId] ?? APPROVE });
 }
 
 describe('runPanel', () => {
@@ -33,7 +33,7 @@ describe('runPanel', () => {
     const seen: string[] = [];
     await runPanel(SET, SUBJECT, (lensId) => {
       seen.push(lensId);
-      return Promise.resolve(APPROVE);
+      return Promise.resolve({ content: APPROVE });
     });
     expect([...seen].sort()).toEqual(['blast-radius', 'correctness', 'honesty']);
   });
@@ -66,7 +66,9 @@ describe('runPanel', () => {
   // stating rather than a gap worth closing.
   it('keeps the reviews that finished when one reviewer throws', async () => {
     const run = await runPanel(SET, SUBJECT, (lensId) =>
-      lensId === 'honesty' ? Promise.reject(new Error('socket hang up')) : Promise.resolve(REJECT),
+      lensId === 'honesty'
+        ? Promise.reject(new Error('socket hang up'))
+        : Promise.resolve({ content: REJECT }),
     );
     expect(run.verdict.outcome).toBe('could_not_run');
     expect(run.verdict.unran).toEqual([
@@ -92,7 +94,7 @@ describe('runPanel', () => {
               'response carried no text: 1 block(s) [thinking], stop_reason max_tokens',
             ),
           )
-        : Promise.resolve(REJECT),
+        : Promise.resolve({ content: REJECT }),
     );
     expect(run.verdict.unran).toEqual([
       {
@@ -105,7 +107,9 @@ describe('runPanel', () => {
 
   it('does not lose a rejection that was not an Error', async () => {
     const run = await runPanel(SET, SUBJECT, (lensId) =>
-      lensId === 'correctness' ? Promise.reject('rate limited') : Promise.resolve(APPROVE),
+      lensId === 'correctness'
+        ? Promise.reject('rate limited')
+        : Promise.resolve({ content: APPROVE }),
     );
     expect(run.verdict.unran[0]?.reason).toBe('reviewer threw: rate limited');
   });
@@ -133,7 +137,7 @@ describe('runPanel', () => {
     const received = new Map<string, string>();
     const run = await runPanel(SET, SUBJECT, (lensId, prompt) => {
       received.set(lensId, prompt.perLens);
-      return Promise.resolve(APPROVE);
+      return Promise.resolve({ content: APPROVE });
     });
     expect(received.size).toBe(3);
     for (const [lensId, perLens] of received) {
@@ -165,7 +169,7 @@ describe('runPanel', () => {
         open();
       }
       await gate;
-      return APPROVE;
+      return { content: APPROVE };
     });
     expect(started).toHaveLength(3);
     expect(run.verdict.outcome).toBe('approved');
