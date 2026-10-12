@@ -70,7 +70,7 @@ describe('reviewerFor, given billed settings', () => {
 
     const reply = await reviewerFor(BILLED)('honesty', PROMPT);
 
-    expect(reply).toBe('VERDICT: approved');
+    expect(reply.content).toBe('VERDICT: approved');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(chat).not.toHaveBeenCalled();
   });
@@ -116,7 +116,7 @@ describe('reviewerFor, given keyless settings', () => {
 
     const reply = await reviewerFor(KEYLESS)('honesty', PROMPT);
 
-    expect(reply).toBe('VERDICT: approved');
+    expect(reply.content).toBe('VERDICT: approved');
     expect(chat).toHaveBeenCalledTimes(1);
     expect(fetchMock).not.toHaveBeenCalled();
   });

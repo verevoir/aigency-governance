@@ -11,7 +11,7 @@
 //   of findings invites exactly the reading where the findings get addressed
 //   and the gap does not.
 
-import type { Finding, Outcome, Verdict } from './verdict.js';
+import { sumUsage, type Finding, type GenAiUsage, type Outcome, type Verdict } from './verdict.js';
 
 const HEADING: Record<Outcome, string> = {
   approved: 'Approved',
@@ -77,6 +77,33 @@ function findingsByLens(findings: readonly Finding[]): Map<string, Finding[]> {
     }
   }
   return grouped;
+}
+
+/**
+ * Render one GenAiUsage as a short fragment -- only the fields actually
+ * present, in GenAI semconv order (input, output, then the two cache
+ * figures). "not recorded" when there is nothing to show, rather than a
+ * fabricated zero: see GenAiUsage's own doc comment (verdict.ts) for why
+ * that distinction is kept all the way to the rendered line.
+ */
+function formatUsage(usage: GenAiUsage | undefined): string {
+  if (usage === undefined) {
+    return 'not recorded';
+  }
+  const parts: string[] = [];
+  if (usage.inputTokens !== undefined) {
+    parts.push(`${String(usage.inputTokens)} input`);
+  }
+  if (usage.outputTokens !== undefined) {
+    parts.push(`${String(usage.outputTokens)} output`);
+  }
+  if (usage.cacheReadInputTokens !== undefined) {
+    parts.push(`${String(usage.cacheReadInputTokens)} cache read`);
+  }
+  if (usage.cacheCreationInputTokens !== undefined) {
+    parts.push(`${String(usage.cacheCreationInputTokens)} cache write`);
+  }
+  return parts.length > 0 ? parts.join(', ') : 'not recorded';
 }
 
 export function renderReport(verdict: Verdict, context: ReportContext): string {
@@ -224,6 +251,21 @@ export function renderReport(verdict: Verdict, context: ReportContext): string {
           'cited.'
         : '';
     lines.push(base + suffix, '');
+  }
+
+  // One line per lens, plus the total -- GenAI semconv figures, never
+  // fabricated for a lens whose transport did not report one (formatUsage
+  // says "not recorded" there instead of a false zero). Shown only when at
+  // least one lens reported something, so a panel where nothing reported
+  // usage at all prints no section rather than a page of "not recorded"
+  // lines.
+  const totalUsage = sumUsage(verdict.results);
+  if (totalUsage !== undefined || verdict.results.some((result) => result.usage !== undefined)) {
+    lines.push('### Tokens', '');
+    for (const result of verdict.results) {
+      lines.push(`- **${result.lens}** — ${formatUsage(result.usage)}`);
+    }
+    lines.push(`- **Total** — ${formatUsage(totalUsage)}`, '');
   }
 
   // Whose idea of correct, and how much of it ran. A reader who cannot tell

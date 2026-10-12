@@ -98,7 +98,7 @@ function harness(options: HarnessOptions = {}): Harness {
   const calls: Calls = { factory: 0, read: [], reviewed: [], shared: [] };
   const settingsSeen: ReviewSettings[] = [];
   const found: ReadResult = options.found ?? { kind: 'text', text: TWO_LENSES };
-  const reply: Reviewer = options.reply ?? (() => Promise.resolve(APPROVE));
+  const reply: Reviewer = options.reply ?? (() => Promise.resolve({ content: APPROVE }));
   const practices = options.practices;
 
   const read: SourceReader = (source) => {
@@ -361,7 +361,7 @@ describe('runReview, when the panel runs', () => {
 
   it('exits 1 and carries the finding when one lens rejects', async () => {
     const fakes = harness({
-      reply: (lensId) => Promise.resolve(lensId === 'honesty' ? REJECT : APPROVE),
+      reply: (lensId) => Promise.resolve({ content: lensId === 'honesty' ? REJECT : APPROVE }),
     });
 
     const outcome = await runReview(env(), SUBJECT, fakes.deps);
@@ -379,7 +379,7 @@ describe('runReview, when the panel runs', () => {
       reply: (lensId) =>
         lensId === 'honesty'
           ? Promise.reject(new Error('socket hang up'))
-          : Promise.resolve(REJECT),
+          : Promise.resolve({ content: REJECT }),
     });
 
     const outcome = await runReview(env(), SUBJECT, fakes.deps);

@@ -24,6 +24,21 @@
 
 export type Outcome = 'approved' | 'rejected' | 'could_not_run' | 'out_of_scope';
 
+/**
+ * One model call's token usage, following the OTel GenAI semantic
+ * conventions (`gen_ai.usage.input_tokens` / `output_tokens`, plus the two
+ * cache figures when the transport reports them). A field a transport did
+ * not report is OMITTED, never defaulted to zero -- "we do not know" and
+ * "zero of this kind" are different facts, and only the transport that made
+ * the call can tell them apart.
+ */
+export interface GenAiUsage {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly cacheReadInputTokens?: number;
+  readonly cacheCreationInputTokens?: number;
+}
+
 export interface Finding {
   readonly lens: string;
   readonly summary: string;
@@ -47,6 +62,10 @@ export interface LensResult {
   /** Why this lens could not run, or why it found nothing in scope.
    * Meaningless on `approved` and `rejected`. */
   readonly reason?: string;
+  /** This call's token usage, when the reviewer reported one. Absent for
+   * a lens that did not run, and may be absent even for one that did, if
+   * its transport never reported a figure -- never synthesized. */
+  readonly usage?: GenAiUsage;
 }
 
 export interface Verdict {
@@ -262,4 +281,36 @@ export function aggregate(declared: readonly string[], results: readonly LensRes
           : 'approved';
 
   return { outcome, results: ordered, findings, unran, outOfScope };
+}
+
+/**
+ * Sum token usage across every lens result, field by field. A field absent
+ * from every result stays absent in the total too -- "no lens reported this"
+ * is not the same fact as "the total is zero", and only distinguishing them
+ * lets a reader tell a transport that never wired usage apart from one that
+ * genuinely spent nothing of that kind. Returns `undefined` when nothing
+ * anywhere reported any figure at all, so a caller can omit the whole
+ * section rather than print an all-absent total.
+ */
+export function sumUsage(results: readonly LensResult[]): GenAiUsage | undefined {
+  const fields = [
+    'inputTokens',
+    'outputTokens',
+    'cacheReadInputTokens',
+    'cacheCreationInputTokens',
+  ] as const;
+  const total: Record<string, number> = {};
+  for (const field of fields) {
+    let sum: number | undefined;
+    for (const result of results) {
+      const value = result.usage?.[field];
+      if (value !== undefined) {
+        sum = (sum ?? 0) + value;
+      }
+    }
+    if (sum !== undefined) {
+      total[field] = sum;
+    }
+  }
+  return Object.keys(total).length > 0 ? (total as GenAiUsage) : undefined;
 }
