@@ -90,7 +90,7 @@ describe('the wire format', () => {
       stopReason: 'end_turn',
     });
     const reply = await claudeCliReviewer()('honesty', PROMPT);
-    expect(reply).toBe('VERDICT: rejected\nFINDING: [blocking] a real finding');
+    expect(reply.content).toBe('VERDICT: rejected\nFINDING: [blocking] a real finding');
   });
 });
 
@@ -244,7 +244,7 @@ describe('a truncated reply is refused, not returned as though it were complete'
 
     const reply = await claudeCliReviewer()('honesty', PROMPT);
 
-    expect(reply).toBe('VERDICT: approved');
+    expect(reply.content).toBe('VERDICT: approved');
   });
 
   it('does not fire on a stopReason that merely contains "max_tokens" as a substring', async () => {
@@ -261,7 +261,7 @@ describe('a truncated reply is refused, not returned as though it were complete'
 
     const reply = await claudeCliReviewer()('honesty', PROMPT);
 
-    expect(reply).toBe('VERDICT: approved');
+    expect(reply.content).toBe('VERDICT: approved');
   });
 });
 

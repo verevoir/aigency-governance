@@ -11,13 +11,15 @@
 // parser's job; a transport that started interpreting would give the system
 // two places where a verdict is decided.
 //
-// Usage figures come back on every response and are deliberately discarded
-// here. Accounting is its own story with its own shape (four numbers kept
-// apart, per provider call), and a half-implementation that recorded a total
-// would be worse than none — it would look like accounting exists.
+// Usage figures come back on every response and are carried onto this
+// Reviewer's own return value (ReviewerReply.usage, panel.ts) -- never
+// synthesized when the response did not carry one. Accounting from there is
+// panel.ts's and report.ts's story: this transport's only job is to not lose
+// the figure between the wire and the caller.
 
 import type { Prompt } from './prompt.js';
-import { NoRoomToAnswerError, type Reviewer } from './panel.js';
+import { NoRoomToAnswerError, type Reviewer, type ReviewerReply } from './panel.js';
+import type { GenAiUsage } from './verdict.js';
 
 /** A POST, shaped so the global `fetch` satisfies it without adaptation. */
 export type HttpPost = (
@@ -121,6 +123,56 @@ function textFrom(body: string): string {
   return text;
 }
 
+interface UsageBody {
+  readonly usage?: {
+    readonly input_tokens?: unknown;
+    readonly output_tokens?: unknown;
+    readonly cache_read_input_tokens?: unknown;
+    readonly cache_creation_input_tokens?: unknown;
+  };
+}
+
+/**
+ * Pull token usage out of a response body, in GenAI semconv field names. A
+ * field the API did not report is OMITTED, never defaulted to zero -- see
+ * GenAiUsage's own doc comment (verdict.ts) for why that distinction
+ * matters. Returns `undefined`, not an all-absent object, when the body
+ * carried no `usage` object at all (malformed JSON included: this never
+ * throws, unlike `textFrom`, because a usage figure is secondary to the
+ * reply text and must not fail a call that otherwise succeeded).
+ */
+function usageFrom(body: string): GenAiUsage | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  const usage = (parsed as UsageBody).usage;
+  if (typeof usage !== 'object' || usage === null) {
+    return undefined;
+  }
+  const result: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
+  } = {};
+  if (typeof usage.input_tokens === 'number') {
+    result.inputTokens = usage.input_tokens;
+  }
+  if (typeof usage.output_tokens === 'number') {
+    result.outputTokens = usage.output_tokens;
+  }
+  if (typeof usage.cache_read_input_tokens === 'number') {
+    result.cacheReadInputTokens = usage.cache_read_input_tokens;
+  }
+  if (typeof usage.cache_creation_input_tokens === 'number') {
+    result.cacheCreationInputTokens = usage.cache_creation_input_tokens;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 /**
  * A `Reviewer` backed by the Anthropic messages API.
  *
@@ -133,7 +185,7 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
   const url = `${config.baseUrl ?? DEFAULT_BASE_URL}/v1/messages`;
   const secrets = [config.apiKey];
 
-  return async (_lensId: string, prompt: Prompt): Promise<string> => {
+  return async (_lensId: string, prompt: Prompt): Promise<ReviewerReply> => {
     const body = JSON.stringify({
       model: config.model,
       max_tokens: config.maxTokens,
@@ -195,7 +247,9 @@ export function anthropicReviewer(config: AnthropicConfig, post: HttpPost): Revi
     }
 
     try {
-      return textFrom(raw);
+      const content = textFrom(raw);
+      const usage = usageFrom(raw);
+      return usage === undefined ? { content } : { content, usage };
     } catch (cause) {
       const message = redact((cause as Error).message, secrets);
       // Preserve the class through redaction rather than rewrap into a plain

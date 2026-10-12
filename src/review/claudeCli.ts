@@ -94,7 +94,7 @@
 
 import { chat } from '@verevoir/llm/claude-cli';
 
-import { NoRoomToAnswerError, type Reviewer } from './panel.js';
+import { NoRoomToAnswerError, type Reviewer, type ReviewerReply } from './panel.js';
 import type { Prompt } from './prompt.js';
 
 /**
@@ -177,7 +177,7 @@ export interface ClaudeCliOptions {
 const TRUNCATED_STOP_REASON = 'max_tokens';
 
 export function claudeCliReviewer(options: ClaudeCliOptions = {}): Reviewer {
-  return async (_lensId: string, prompt: Prompt): Promise<string> => {
+  return async (_lensId: string, prompt: Prompt): Promise<ReviewerReply> => {
     try {
       const reply = await chat({
         systemPrompt: prompt.shared,
@@ -197,7 +197,10 @@ export function claudeCliReviewer(options: ClaudeCliOptions = {}): Reviewer {
             'character(s) of reply text had arrived)',
         );
       }
-      return reply.content;
+      // Carried onto the Reviewer's own return value, not discarded here --
+      // @verevoir/llm's chat() usage shape already matches GenAiUsage's own
+      // field names exactly, so this needs no translation.
+      return { content: reply.content, usage: reply.usage };
     } catch (cause) {
       const message = augmentBareExit(cause instanceof Error ? cause.message : String(cause));
       // Preserve the class through augmentation rather than rewrap into a

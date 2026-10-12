@@ -9,14 +9,27 @@
 import type { LensSet } from './lensSet.js';
 import { parseReply } from './parseReply.js';
 import { buildPrompt, type Prompt, type Subject } from './prompt.js';
-import { aggregate, type LensResult, type Verdict } from './verdict.js';
+import { aggregate, type GenAiUsage, type LensResult, type Verdict } from './verdict.js';
+
+/**
+ * What a Reviewer actually returns: the reply content `parseReply` turns
+ * into a verdict, plus this call's own token usage, when the transport
+ * reported one. `usage` absent means not reported -- never defaulted to
+ * zero.
+ */
+export interface ReviewerReply {
+  readonly content: string;
+  readonly usage?: GenAiUsage;
+}
 
 /**
  * Whatever actually asks a model. Takes the two prompt halves separately so a
- * composition can cache the shared one; returns raw reply text, because
- * deciding what a reply MEANS is the parser's job and not the transport's.
+ * composition can cache the shared one; returns the reply content plus this
+ * call's own usage, because deciding what a reply MEANS is the parser's job
+ * and not the transport's, but the transport is the only thing that ever
+ * sees a usage figure at all.
  */
-export type Reviewer = (lensId: string, prompt: Prompt) => Promise<string>;
+export type Reviewer = (lensId: string, prompt: Prompt) => Promise<ReviewerReply>;
 
 /**
  * Thrown by a Reviewer when a reply arrived but its entire output budget
@@ -54,7 +67,10 @@ export async function runPanel(
       // Non-null: every lens id was just written into the map above.
       const prompt = prompts.get(lens.id) as Prompt;
       const reply = await review(lens.id, prompt);
-      return parseReply(lens.id, reply);
+      const result = parseReply(lens.id, reply.content);
+      // Usage is carried onto the result exactly as the transport reported
+      // it for this call -- absent stays absent, never defaulted to zero.
+      return reply.usage === undefined ? result : { ...result, usage: reply.usage };
     }),
   );
 

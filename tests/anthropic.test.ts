@@ -209,7 +209,34 @@ describe('the wire format', () => {
   it('returns the reply text and nothing else', async () => {
     const post = replying('VERDICT: approved');
     const reply = await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    expect(reply).toBe('VERDICT: approved');
+    expect(reply.content).toBe('VERDICT: approved');
+  });
+
+  it("carries the API response's usage onto the returned ReviewerReply, in GenAI semconv field names -- the billed route's own half of \"usage reaches the report on each route\"", async () => {
+    const post = () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              content: [{ type: 'text', text: 'VERDICT: approved' }],
+              usage: {
+                input_tokens: 900,
+                output_tokens: 42,
+                cache_read_input_tokens: 10,
+                cache_creation_input_tokens: 5,
+              },
+            }),
+          ),
+      });
+    const reply = await anthropicReviewer(CONFIG, post)('honesty', PROMPT);
+    expect(reply.usage).toEqual({
+      inputTokens: 900,
+      outputTokens: 42,
+      cacheReadInputTokens: 10,
+      cacheCreationInputTokens: 5,
+    });
   });
 });
 
@@ -336,7 +363,7 @@ describe('failures', () => {
   it('joins two text blocks into one reply', async () => {
     const post = replying('VERDICT: rejected\n', 'FINDING: the second block');
     const reply = await anthropicReviewer(CONFIG, post.impl)('honesty', PROMPT);
-    expect(reply).toBe('VERDICT: rejected\nFINDING: the second block');
+    expect(reply.content).toBe('VERDICT: rejected\nFINDING: the second block');
   });
 
   // The middle block carries a `text` field of its own, and that is the point:
