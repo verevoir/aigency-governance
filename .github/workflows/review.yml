@@ -6,14 +6,16 @@
 # The runner is the PUBLISHED @verevoir/review `aigency-review` CLI, pinned
 # exactly by REVIEWER_PACKAGE below. The lenses are DERIVED from the practices
 # in verevoir/aigency-guardrails (corpus/practices), so the bar is the corpus
-# and not a second hand-maintained lens file. Callers pin this workflow by
-# SHA, so that pin pins the reviewer version for them too; the corpus floats
+# and not a second hand-maintained lens file. Callers should pin this workflow
+# by commit SHA, so that pin pins the reviewer version for them too. The
+# existing callers still use @main until their pin PRs land. The corpus floats
 # with `guardrails-ref` (default main), and its commit is recorded in the job
 # summary so a verdict can be traced to the bar it was judged by.
 #
-# The reviewer is installed OUTSIDE the repository under review, with
-# --ignore-scripts, and nothing from the pull request's tree is ever
-# installed, built or executed.
+# The reviewer is installed from npm into RUNNER_TEMP, outside the repository
+# under review, with --ignore-scripts, and run from there. The pull request's
+# tree is only READ: as the diff, and as files under --context-root. Nothing
+# in it is installed, built or executed.
 name: review
 
 on:
@@ -172,6 +174,10 @@ jobs:
             echo '```'
             echo ""
           } >> "${GITHUB_STEP_SUMMARY}"
+          # Also in the job log, since the summary is not part of it.
+          echo "::group::Checks given to the reviewer"
+          cat "${RUNNER_TEMP}/checks.txt"
+          echo "::endgroup::"
 
       # continue-on-error, with the verdict taken again below: the report is
       # published whether the review passed or failed, and publishing must not

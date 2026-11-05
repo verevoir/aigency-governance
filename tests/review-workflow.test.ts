@@ -147,6 +147,26 @@ describe('review.yml shape', () => {
     expect(text).toContain('cat "${RUNNER_TEMP}/checks.txt"');
   });
 
+  it('also prints the checks file to the job log, inside a group', () => {
+    const body = runBodies(text).find((b) => b.includes('### Checks given to the reviewer'));
+    expect(body).toBeDefined();
+    const script = body as string;
+    const start = script.indexOf('::group::Checks given to the reviewer');
+    const end = script.indexOf('::endgroup::');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(script.slice(start, end)).toContain('cat "${RUNNER_TEMP}/checks.txt"');
+  });
+
+  it('describes callers pinning by SHA as a requirement, and says what is executed precisely', () => {
+    // Whitespace-insensitive, and comment markers ignored, so a rewrap is safe.
+    const flat = text.replace(/\n\s*#/g, ' ').replace(/\s+/g, ' ');
+    expect(flat).toContain('Callers should pin this workflow');
+    expect(flat).not.toContain('Callers pin this workflow');
+    expect(flat).toContain("The pull request's tree is only READ");
+    expect(flat).not.toContain('nothing from the pull request');
+  });
+
   it('treats an empty or missing report as could-not-run, with the same -s test in both steps', () => {
     const steps = text.split(/\n {6}- /).slice(1);
     const note = steps.find((s) => s.includes('Note a missing report'));
@@ -205,6 +225,23 @@ describe('review-pr.yml wiring', () => {
   it('passes secrets.GOVERNANCE_TOKEN, not GITHUB_TOKEN, as governance-token', () => {
     expect(caller).toMatch(/^ {6}governance-token: \$\{\{ secrets\.GOVERNANCE_TOKEN \}\}$/m);
     expect(caller).not.toMatch(/governance-token: \$\{\{ secrets\.GITHUB_TOKEN/);
+  });
+
+  it('calls review.yml from main, not from the PR commit', () => {
+    expect(caller).toMatch(
+      /^ {4}uses: verevoir\/aigency-governance\/\.github\/workflows\/review\.yml@main$/m,
+    );
+    expect(caller).not.toContain('./.github/workflows/review.yml');
+  });
+
+  it('passes no governance-ref and no PR-derived head expression', () => {
+    const code = caller
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('#'))
+      .join('\n');
+    expect(code).not.toMatch(/^\s*with:/m);
+    expect(code).not.toContain('governance-ref');
+    expect(code).not.toContain('github.event.pull_request.head');
   });
 
   it('grants every permission review.yml requests, at the same or higher level', () => {

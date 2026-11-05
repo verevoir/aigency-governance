@@ -30,18 +30,21 @@ jobs:
       governance-token: ${{ secrets.GOVERNANCE_TOKEN }}
 ```
 
-Pin to a commit SHA, as above, not a branch. That pin also fixes the reviewer
-version, so keep it current: bump the SHA when this repository changes the
-reviewer pin or the workflow.
+Callers should pin this workflow by commit SHA, as above, not a branch. That
+pin also fixes the reviewer version, so keep it current: bump the SHA when this
+repository changes the reviewer pin or the workflow. The existing callers still
+use `@main` until their pin PRs land.
 
 ### What the workflow does, and its interface
 
 - **The reviewer is pinned and installed from npm.** The workflow installs the
   published `@verevoir/review` at one exact version, declared once in
   `review.yml` (`REVIEWER_PACKAGE`), into the runner's temporary directory,
-  outside your repository, with `--ignore-scripts`. It is not built from this
-  repository, and nothing from your pull request's tree is installed or run.
-  Callers pin this workflow by SHA, so that pin pins the reviewer version too.
+  outside your repository, with `--ignore-scripts`, and runs it there. It is
+  not built from this repository. Your pull request's tree is only read, as the
+  diff and as `--context-root` files; nothing in it is installed or run.
+  Callers should pin this workflow by SHA, so that pin pins the reviewer
+  version too.
 - **The lenses come from the practices corpus.** `verevoir/aigency-guardrails`
   is checked out at `guardrails-ref` (default `main`) and the lenses are
   derived from `corpus/practices`. The job summary records the reviewer version
@@ -74,7 +77,7 @@ name of the secret behind it, on the right of `secrets.`, is not.** Nothing
 downstream ever reads the secret's own name, only its value, so your
 repository may call it anything, as long as it is mapped to
 `governance-token` on the left. `GOVERNANCE_TOKEN` above is shown because it
-is the org secret existing consumers use — not because that name is required.
+is the name existing consumers use — not because that name is required.
 This is stated explicitly because an unmarked example reads as a requirement,
 and getting it wrong is not loud: a secret referenced by a name that does not
 exist on your repository resolves to an empty string, which still satisfies the
@@ -119,15 +122,13 @@ the empty string, which still satisfies `required: true`. A blank
 secret to add. An under-scoped one fails later, at the corpus checkout, with
 `Repository not found`.
 
-**Accepted risk.** Governance's own self-review (`review-pr.yml`) calls
-`review.yml` by the local path `./`, so the job definition comes from the pull
-request's own commit and receives `GOVERNANCE_TOKEN`. A same-repository PR
-author could change `review.yml` to misuse that token. Fork PRs receive no
-secrets. The token is read-only (`contents: read` on `aigency-guardrails` and
-`aigency-governance`), which limits any misuse to reading those two
-repositories. This is accepted until the review moves to a sidecar that holds
-the token outside PR-defined code. Callers in other repositories pin
-`review.yml` by SHA, so their PRs cannot change the job definition.
+**Governance's own self-review.** `review-pr.yml` calls
+`verevoir/aigency-governance/.github/workflows/review.yml@main`, so the review
+definition comes from main (the base) and a PR cannot change the job that
+receives `GOVERNANCE_TOKEN`. A PR that changes `review.yml` is therefore reviewed
+by main's version, and its changes take effect from the next PR after merge; the
+shape tests in this repository still check `review.yml` before merge. `@main` is
+deliberate here because main is the base; other callers should pin by SHA.
 
 ## What comes back
 
@@ -179,16 +180,19 @@ history for `--base` (`fetch-depth: 0` in CI; a normal clone locally), and a
 `claude` login or an `ANTHROPIC_API_KEY`:
 
 ```sh
-npx -y -p @verevoir/review@0.3.1 aigency-review \
+npx -y -p @verevoir/review@<version> aigency-review \
   --base origin/main \
   --title "what you are reviewing" \
   --practices /path/to/aigency-guardrails/corpus/practices
 ```
 
+The version to use is `REVIEWER_PACKAGE` in `.github/workflows/review.yml`, the
+one place it lives.
+
 The diff can instead come from stdin, as the workflow does it:
 
 ```sh
-git diff --merge-base origin/main HEAD | npx -y -p @verevoir/review@0.3.1 aigency-review \
+git diff --merge-base origin/main HEAD | npx -y -p @verevoir/review@<version> aigency-review \
   --practices /path/to/aigency-guardrails/corpus/practices \
   --context-root .
 ```

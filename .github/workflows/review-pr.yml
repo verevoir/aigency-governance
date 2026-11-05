@@ -16,44 +16,35 @@ jobs:
     permissions:
       contents: read
       checks: read
-    # `./` rather than `verevoir/aigency-governance/...@main`, and the
-    # difference has a real cost that is being accepted rather than missed.
+    # The review definition is taken from main (the base), not from the pull
+    # request's commit, so a PR cannot change the job that receives
+    # GOVERNANCE_TOKEN. Gate configuration runs from the base, never the PR
+    # head. Consequently a PR that changes review.yml is reviewed by main's
+    # version, and its own review.yml changes take effect from the next PR
+    # after merge. The shape tests in this repository still check review.yml
+    # before merge.
     #
-    # With a local path, GitHub runs the reusable workflow from the pull
-    # request's OWN commit. So a change to the reviewer is tested by the pull
-    # request that makes it, which is the only way a reviewer can ever be
-    # improved safely — and it also means a pull request can modify the thing
-    # that reviews it. For this repository that trade is right: the alternative
-    # is a reviewer nobody can change without merging blind.
+    # `@main` is deliberate here, because main IS the base for PRs to main.
+    # It is unlike external callers, which should pin review.yml by commit
+    # SHA (they still call `@main` until their pin PRs land).
+    uses: verevoir/aigency-governance/.github/workflows/review.yml@main
+    # No `governance-ref` is passed, and no PR-derived ref of any kind. The
+    # new review.yml ignores that input, but until this change merges,
+    # review.yml@main is the OLD workflow, which checks out and builds
+    # governance at governance-ref with the secrets in the job. Passing no
+    # PR-derived ref means even that old workflow builds main's runner, so PR
+    # code never receives GOVERNANCE_TOKEN. review.yml still DECLARES the
+    # input, for backward compatibility with other callers.
     #
-    # The other five repositories will pin `@main` and will NOT have that
-    # property, which is the correct asymmetry: they consume the reviewer, this
-    # one develops it.
-    uses: ./.github/workflows/review.yml
-    # `governance-ref`, still passed, and now UNUSED by review.yml.
-    #
-    # review.yml no longer checks out or builds governance. It installs the
-    # published @verevoir/review, pinned exactly in review.yml itself, into
-    # RUNNER_TEMP (outside the repository, with --ignore-scripts), and reads
-    # the practices corpus from verevoir/aigency-guardrails (corpus/practices)
-    # at its own `guardrails-ref` input, which defaults to main. So the
-    # input below no longer selects a reviewer revision.
-    #
-    # It is kept because the interface is backward compatible: callers may
-    # keep passing it, and removing it here would be a needless divergence
-    # from the examples other repositories copy.
-    #
-    # What the local `./` path above still decides, and is the only thing
-    # that makes self-review work: which JOB DEFINITION runs. GitHub reads
-    # review.yml from this pull request's own commit, so a change to the
-    # review workflow is exercised by the pull request that makes it. The
-    # reviewer version it installs is whatever that commit pins.
-    with:
-      governance-ref: ${{ github.event.pull_request.head.sha }}
+    # Which JOB DEFINITION runs is decided by the `@main` above: GitHub reads
+    # review.yml from main. The reviewer version it installs is whatever main
+    # pins.
     secrets:
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
       # Reads the private verevoir/aigency-guardrails corpus, so it needs
       # contents:read on that repository. The ambient GITHUB_TOKEN is scoped to
-      # this repository alone and cannot do that, which is why the org secret
-      # GOVERNANCE_TOKEN is passed here, as every other caller does.
+      # this repository alone and cannot do that, which is why GOVERNANCE_TOKEN
+      # is passed here, as every other caller does. It must exist as a
+      # repository secret on this private repository: on the GitHub Free plan,
+      # organization secrets are not passed to private repositories.
       governance-token: ${{ secrets.GOVERNANCE_TOKEN }}
