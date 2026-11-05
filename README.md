@@ -22,7 +22,7 @@ jobs:
     uses: verevoir/aigency-governance/.github/workflows/review.yml@<commit-sha> # <tag or date>
     secrets:
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-      governance-token: ${{ secrets.GOVERNANCE_TOKEN }}
+      guardrails-app-private-key: ${{ secrets.GUARDRAILS_APP_PRIVATE_KEY }}
 ```
 
 Callers should pin this workflow by commit SHA, as above, not a branch. That
@@ -48,13 +48,15 @@ use `@main` until their pin PRs land.
 - **The job** has `timeout-minutes: 20` and permissions of exactly
   `contents: read` and `checks: read`. Nothing is written to your repository.
 
-| Kind   | Name                | Required | Meaning                                                                                                                       |
-| ------ | ------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| secret | `anthropic-api-key` | **yes**  | The key the panel calls a model with, once per lens.                                                                          |
-| secret | `governance-token`  | **yes**  | Reads the private `verevoir/aigency-guardrails` corpus. Must have `contents: read` on it. It no longer reads this repository. |
-| input  | `guardrails-ref`    | no       | Revision of `aigency-guardrails` the lenses are derived from. Default `main`.                                                 |
-| input  | `model`             | no       | Overrides the pinned judge. Blank means the reviewer's own default.                                                           |
-| input  | `governance-ref`    | no       | **Accepted but unused.** Kept so callers that still pass it keep working; it no longer selects anything.                      |
+| Kind   | Name                         | Required           | Meaning                                                                                                                                                                                                                                                              |
+| ------ | ---------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| secret | `anthropic-api-key`          | **yes**            | The key the panel calls a model with, once per lens.                                                                                                                                                                                                                 |
+| secret | `guardrails-app-private-key` | **yes, in effect** | The private key of the GitHub App that reads the private `verevoir/aigency-guardrails` corpus. Declared optional so that a missing key fails the first step by name; a missing required secret would be a startup failure and the check would silently never appear. |
+| secret | `governance-token`           | no                 | **No longer used.** Accepted only so a caller that still passes it gets a named failure (the missing `guardrails-app-private-key`) rather than a startup failure.                                                                                                    |
+| input  | `guardrails-app-client-id`   | no                 | Client ID of the GitHub App. Not sensitive. Default `Iv23lid18mHn32QW1lbL`; leave it alone.                                                                                                                                                                          |
+| input  | `guardrails-ref`             | no                 | Revision of `aigency-guardrails` the lenses are derived from. Default `main`.                                                                                                                                                                                        |
+| input  | `model`                      | no                 | Overrides the pinned judge. Blank means the reviewer's own default.                                                                                                                                                                                                  |
+| input  | `governance-ref`             | no                 | **Accepted but unused.** Kept so callers that still pass it keep working; it no longer selects anything.                                                                                                                                                             |
 
 **Every caller's job must grant `contents: read` and `checks: read`**, as the
 example above does. A called workflow cannot exceed its caller's grant, and
@@ -63,30 +65,32 @@ the calling job grants less (and the repository default is the restricted
 `read`, which does not include `checks`), the run fails at startup with no jobs,
 and the check silently does not appear.
 
-**`aigency-guardrails` is private, so the token behind `governance-token` needs
-`contents: read` on `verevoir/aigency-guardrails`.** A token that can read only
-your own repository, including the default `GITHUB_TOKEN`, cannot do this and
-fails the corpus checkout with `Repository not found`. **Migration:** existing
-callers' `GOVERNANCE_TOKEN` previously needed only read access to this
-repository; it now also needs `contents: read` on `aigency-guardrails`.
+**`aigency-guardrails` is private, so the workflow reads it with a GitHub App
+token, not a personal access token.** The App is installed only on
+`verevoir/aigency-guardrails`, with `Contents` read-only. At the start of each
+run the workflow mints a token from the App's private key (`guardrails-app-private-key`)
+and uses it for the corpus checkout alone: the token can read
+`aigency-guardrails` and nothing else, it is created for that run, and it is
+revoked when the job ends. It is not persisted into the checkout's git config,
+and no other step receives it. The default `GITHUB_TOKEN` cannot read the
+corpus, because it is scoped to your repository alone.
 
-**The workflow's own input is `governance-token` — that name is fixed. The
-name of the secret behind it, on the right of `secrets.`, is not.** Nothing
-downstream ever reads the secret's own name, only its value, so your
+**Migration.** A caller that bumps its pin to this commit swaps
+`governance-token` for `guardrails-app-private-key` in the same change, as the
+example above shows. A caller still on an earlier SHA keeps using its
+`GOVERNANCE_TOKEN` until it bumps. Once a caller is on this commit it can
+delete `GOVERNANCE_TOKEN`.
+
+**The workflow's own input is `guardrails-app-private-key` — that name is
+fixed. The name of the secret behind it, on the right of `secrets.`, is not.**
+Nothing downstream ever reads the secret's own name, only its value, so your
 repository may call it anything, as long as it is mapped to
-`governance-token` on the left. `GOVERNANCE_TOKEN` above is shown because it
-is the name existing consumers use — not because that name is required.
-This is stated explicitly because an unmarked example reads as a requirement,
-and getting it wrong is not loud: a secret referenced by a name that does not
-exist on your repository resolves to an empty string, which still satisfies the
-reusable workflow's `required: true`, and the run fails later at the
-cross-repository corpus checkout with `Repository not found` — a message that
-does not point back at a naming mismatch in your own workflow file.
-`design/stories/S01e-name-the-token-what-it-is.md` in
-`verevoir/aigency-rebuild` records this exact failure shape once already,
-for this same input: a caller referenced a secret that did not exist at
-all, and the run failed silently one step downstream rather than naming
-the missing secret.
+`guardrails-app-private-key` on the left. `GUARDRAILS_APP_PRIVATE_KEY` above is
+shown because it is the name callers are told to use — not because that name is
+required. A secret referenced by a name that does not exist on your repository
+resolves to an empty string; the first step of the job then fails and names
+`guardrails-app-private-key`, so a naming mismatch is reported rather than
+surfacing later as a generic failure.
 
 Your repository gets no copy of the lens set, the prompts or the runner. The
 reviewer arrives at the version this workflow pins, and the bar arrives from the
@@ -104,21 +108,39 @@ one, which is a bar that has moved without anyone deciding to move it.
 
 The names below are illustrative; the workflow inputs they satisfy are fixed.
 
-| Name                | What it is for                                                                                                                                                                                                                       |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ANTHROPIC_API_KEY` | Satisfies `anthropic-api-key`. The panel calls a model once per lens.                                                                                                                                                                |
-| `GOVERNANCE_TOKEN`  | Satisfies `governance-token`. Required. It reads `verevoir/aigency-guardrails`, which is private, so it must have `contents: read` on that repository. The default `GITHUB_TOKEN` is scoped to _your_ repository and cannot do this. |
+| Name                         | What it is for                                                                                                                                                         |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`          | Satisfies `anthropic-api-key`. The panel calls a model once per lens.                                                                                                  |
+| `GUARDRAILS_APP_PRIVATE_KEY` | Satisfies `guardrails-app-private-key`. The private key of the GitHub App that reads `verevoir/aigency-guardrails`, from which each run mints its own read-only token. |
 
 On GitHub Free, organization secrets do not reach private repositories, so a
-private caller must set `GOVERNANCE_TOKEN` (and `ANTHROPIC_API_KEY`) as
-repository secrets.
+private caller must set `GUARDRAILS_APP_PRIVATE_KEY` (and `ANTHROPIC_API_KEY`)
+as repository secrets. An organization secret does reach public repositories.
 
 If `anthropic-api-key` is missing or blank, the first step of the job fails and
 names it. A blank value counts as missing: an unset secret in Actions arrives as
-the empty string, which still satisfies `required: true`. A blank
-`governance-token` fails the same step with a message naming the repository
-secret to add. An under-scoped one fails later, at the corpus checkout, with
-`Repository not found`.
+the empty string. A blank `guardrails-app-private-key` fails the same step with
+a message naming the secret to map, and saying `governance-token` is no longer
+used. Both secrets are declared optional in the interface for this reason: a
+missing _required_ secret is a startup failure, and the check then silently
+never appears.
+
+### Trigger and trust
+
+Callers use `on: pull_request`. A fork's pull request gets no secrets, so the
+review fails closed and the App key is never spent on an outside diff, and no
+job holds secrets while checking out untrusted code.
+
+The risk: a pull request's own caller workflow is what runs, so a
+same-repository pull request can edit or repoint its own review.
+
+The mitigation lives in the merge automation, not in this workflow: no automatic
+merge of a pull request that changes `.github/workflows/`, `.github/actions/` or
+the other operator-owned files, and a verdict is accepted only from a run that
+called this `review.yml` at an allowlisted SHA. A repository that auto-merges on
+green without those checks does not get this protection.
+
+The residual: anyone with push access can bypass the gate by hand.
 
 **Governance's own self-review.** `review-pr.yml` calls
 `verevoir/aigency-governance/.github/workflows/review.yml@main`, so the review
@@ -129,6 +151,9 @@ is read from the PR, like any workflow file, so this guards against accidental
 self-review drift, not against a same-repository writer, who can already run
 workflows with the repository's secrets. Fork PRs receive no secrets. `@main` is
 deliberate here because main is the base; other callers should pin by SHA.
+`review-pr.yml` switches to the App key in a follow-up pull request. Until then,
+governance's own review fails fast at the first step, naming
+`guardrails-app-private-key`.
 
 ## What comes back
 
