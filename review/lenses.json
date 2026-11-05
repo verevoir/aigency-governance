@@ -14,12 +14,12 @@
     {
       "id": "failure-modes",
       "title": "Failure distinguishable from silence",
-      "focus": "Where the change can fail, can a reader tell which failure happened? Missing, empty and broken must stay three answers. A swallowed error, a catch that returns a default, or a single word covering two outcomes belongs here. This judges error handling that exists in the change. A description of a requirement has no catch, return or logged outcome yet — answer out_of_scope, not a review of prose about intended handling as though it were the handling itself."
+      "focus": "Where the change can fail, can a reader tell which failure happened? Missing, empty and broken must stay three answers. A swallowed error, a catch that returns a default, or a single word covering two outcomes belongs here. An aggregation over several sources that drops results already collected when a later source fails, and reports only the failure, collapses two facts into one — partial success must stay distinguishable from total failure. This judges error handling that exists in the change. A description of a requirement has no catch, return or logged outcome yet — answer out_of_scope, not a review of prose about intended handling as though it were the handling itself."
     },
     {
       "id": "verification",
       "title": "Verification that verifies",
-      "focus": "Would each new or changed test fail if the code it covers were wrong? Look for assertions that hold vacuously, suites that pass because they found nothing to run, and guards whose only test exercises the pure function underneath rather than the guard. This judges a test that exists in the change. A description of a requirement — including one describing what a future test must prove — has no test yet for this lens to check against; answer out_of_scope, not a verdict on a stated intention."
+      "focus": "Would each new or changed test fail if the code it covers were wrong? For each new or changed test, name the one code change that would make it fail: an assertion also satisfied by an unrelated failure path — a deleted guard, a module-not-found, a default value, a stub that always returns the expected shape — has not been seen to fail for the reason it names, and does not verify. A field, flag or outcome threaded through a layer must be exercised at that layer with its own non-default value, not only in the layer below. Look for assertions that hold vacuously, suites that pass because they found nothing to run, and guards whose only test exercises the pure function underneath rather than the guard. This judges a test that exists in the change. A description of a requirement — including one describing what a future test must prove — has no test yet for this lens to check against; answer out_of_scope, not a verdict on a stated intention."
     },
     {
       "id": "blast-radius",
