@@ -104,10 +104,15 @@ The names below are illustrative; the workflow inputs they satisfy are fixed.
 | `ANTHROPIC_API_KEY` | Satisfies `anthropic-api-key`. The panel calls a model once per lens.                                                                                                                                                                |
 | `GOVERNANCE_TOKEN`  | Satisfies `governance-token`. Required. It reads `verevoir/aigency-guardrails`, which is private, so it must have `contents: read` on that repository. The default `GITHUB_TOKEN` is scoped to _your_ repository and cannot do this. |
 
+On GitHub Free, organization secrets do not reach private repositories, so a
+private caller must set `GOVERNANCE_TOKEN` (and `ANTHROPIC_API_KEY`) as
+repository secrets.
+
 If `anthropic-api-key` is missing or blank, the first step of the job fails and
 names it. A blank value counts as missing: an unset secret in Actions arrives as
-the empty string, which still satisfies `required: true`. A missing or
-under-scoped `governance-token` fails later, at the corpus checkout, with
+the empty string, which still satisfies `required: true`. A blank
+`governance-token` fails the same step with a message naming the repository
+secret to add. An under-scoped one fails later, at the corpus checkout, with
 `Repository not found`.
 
 ## What comes back

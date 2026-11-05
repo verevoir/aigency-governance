@@ -126,6 +126,19 @@ describe('review.yml shape', () => {
     expect(text).not.toContain('corpus-token');
   });
 
+  it('fails fast on an empty governance-token, through env:, naming "repository secret"', () => {
+    const steps = text.split(/\n {6}- /).slice(1);
+    const step = steps.find((s) => s.includes('Confirm the key is available'));
+    expect(step).toBeDefined();
+    expect(step).toMatch(/\n {10}GOVERNANCE_TOKEN: \$\{\{ secrets\.governance-token \}\}\n/);
+    expect(step).toContain('[ -z "${GOVERNANCE_TOKEN}" ]');
+    expect(step).toContain('governance-token is empty');
+    expect(step).toContain('repository secret');
+    // The value is never printed.
+    expect(step).not.toMatch(/echo[^\n]*\$\{?GOVERNANCE_TOKEN[^\n]*\n/);
+    expect(step).not.toContain('${#GOVERNANCE_TOKEN');
+  });
+
   it('reads the guardrails corpus with governance-token', () => {
     const step = /repository: verevoir\/aigency-guardrails\n(?: {10}.+\n)+/.exec(text);
     expect(step).not.toBeNull();
