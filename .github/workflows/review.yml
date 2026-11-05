@@ -12,8 +12,10 @@
 # with `guardrails-ref` (default main), and its commit is recorded in the job
 # summary so a verdict can be traced to the bar it was judged by. The private
 # corpus is read with a short-lived token minted per run from a GitHub App
-# (read-only on aigency-guardrails alone) and revoked when the job ends; there
-# is no long-lived personal access token.
+# (read-only on aigency-guardrails alone) and revoked when the job ends. There
+# is no long-lived personal access token, but there is one long-lived App
+# private key, scoped by the App's installation to reading one repository.
+# See the README for how to rotate it.
 #
 # The reviewer is installed from npm into RUNNER_TEMP, outside the repository
 # under review, with --ignore-scripts, and run from there. The pull request's

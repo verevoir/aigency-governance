@@ -75,6 +75,26 @@ revoked when the job ends. It is not persisted into the checkout's git config,
 and no other step receives it. The default `GITHUB_TOKEN` cannot read the
 corpus, because it is scoped to your repository alone.
 
+**`GUARDRAILS_APP_PRIVATE_KEY` is a long-lived credential.** It is the
+private key of the verevoir `guardrails-reader` App, and a copy sits in every
+caller that stores it. What changed from the personal access token is what a
+leak grants: only tokens that can read `aigency-guardrails`, each created per
+run and revoked at job end, instead of a PAT's wider reach. There is no
+long-lived personal access token, but there is one long-lived App key, scoped
+by the App's installation to reading one repository.
+
+### Rotating the App key
+
+1. Generate a new private key on the App.
+2. Update `GUARDRAILS_APP_PRIVATE_KEY` in every caller: repository secrets for
+   private repositories, and the organization secret for public ones.
+3. Confirm one caller's review run passes.
+4. Delete the old key on the App.
+
+**On a suspected leak,** delete the key on the App first, which revokes it at
+once, then rotate as above. Reviews fail fast, naming the key, until callers
+have the new one.
+
 **Migration.** A caller that bumps its pin to this commit swaps
 `governance-token` for `guardrails-app-private-key` in the same change, as the
 example above shows. A caller still on an earlier SHA keeps using its
