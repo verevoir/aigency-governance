@@ -1,17 +1,19 @@
 # The review, as one referenced step.
 #
 # A repository that wants the panel adds a few lines calling this workflow.
-# It does NOT get a copy of the lens set, the prompts or the runner — that
-# duplication is the defect this story exists to remove, and a vendored copy
-# looks harmless for about a month before the copies start disagreeing about
-# what the bar is.
+# It does NOT get a copy of the lens set, the prompts or the runner.
 #
-# The definition and the runner arrive together, from one checkout at one ref.
-# What that makes impossible is worth stating precisely, because an earlier
-# version of this comment overclaimed: within a run, a runner from one
-# revision cannot read a lens set from another. BETWEEN runs both halves
-# float, because `governance-ref` defaults to `main` — which is deliberate,
-# and is how a fix reaches every repository at once.
+# The runner is the PUBLISHED @verevoir/review `aigency-review` CLI, pinned
+# exactly by REVIEWER_PACKAGE below. The lenses are DERIVED from the practices
+# in verevoir/aigency-guardrails (corpus/practices), so the bar is the corpus
+# and not a second hand-maintained lens file. Callers pin this workflow by
+# SHA, so that pin pins the reviewer version for them too; the corpus floats
+# with `guardrails-ref` (default main), and its commit is recorded in the job
+# summary so a verdict can be traced to the bar it was judged by.
+#
+# The reviewer is installed OUTSIDE the repository under review, with
+# --ignore-scripts, and nothing from the pull request's tree is ever
+# installed, built or executed.
 name: review
 
 on:
@@ -19,9 +21,16 @@ on:
     inputs:
       governance-ref:
         description: >-
-          Which revision of the reviewer to run. Defaults to main, so a fix to
-          the lens set or the runner reaches every repository at once — which
-          is the point of there being one home.
+          Retained for backward compatibility and now UNUSED. The reviewer is
+          no longer checked out from governance; it is the published package
+          pinned in this workflow. Callers may keep passing it.
+        type: string
+        required: false
+        default: main
+      guardrails-ref:
+        description: >-
+          Which revision of verevoir/aigency-guardrails supplies the practices
+          the lenses are derived from. Defaults to main.
         type: string
         required: false
         default: main
@@ -29,10 +38,7 @@ on:
         description: >-
           Override the pinned judge. Leave this alone unless you know why you
           are changing it: the same commit judged by two models is two
-          verdicts, and a judge that varies between repositories is a bar that
-          moved without anyone deciding to move it. Blank means the pinned
-          default, which is declared once in settings.ts and deliberately not
-          repeated here.
+          verdicts. Blank means the reviewer's own pinned default.
         type: string
         required: false
         default: ''
@@ -42,247 +48,157 @@ on:
         required: true
       governance-token:
         description: >-
-          Read access to verevoir/aigency-governance, which is private. The
-          default GITHUB_TOKEN is scoped to the repository that triggered the
-          run — yours — so it cannot see the reviewer, and a run without this
-          fails at the checkout with "Repository not found". A fine-grained
-          token with contents:read on that one repository is enough.
+          Reads the private verevoir/aigency-guardrails practices corpus. It
+          must have contents:read on aigency-guardrails; the default
+          GITHUB_TOKEN cannot do this. Required, as it always has been.
         required: true
+
+env:
+  # The one place the reviewer version lives. PLACEHOLDER: confirm at publish.
+  REVIEWER_PACKAGE: '@verevoir/review@0.3.0'
 
 jobs:
   review:
     runs-on: ubuntu-latest
-    # Stated rather than inherited. Without this the job takes the calling
-    # repository's default, which on older organisations is write-all — and
-    # this job checks out contributor-authored code and hands a
-    # contributor-authored title to a process. It also serves as the statement
-    # that no pull-request write permission is being taken.
+    timeout-minutes: 20
+    # Stated rather than inherited. checks: read is for listing the head
+    # commit's check runs; nothing here writes anything.
     permissions:
       contents: read
+      checks: read
     steps:
-      # Runs before anything else in this job: no checkout, no npm ci, no
-      # build. A review found that a missing ANTHROPIC_API_KEY was only ever
-      # discovered after all of that had already run, behind the exact
-      # "review did not approve" ambiguity the Checks-tab step below exists
-      # to prevent — a red check with no legible reason short of reading the
-      # Actions log directly. This step costs nothing (no network, no
-      # process) and fails immediately, naming the missing secret, rather
-      # than letting the absence surface three steps and several minutes
-      # later as a generic build-and-review failure.
-      #
-      # Checks only anthropic-api-key, deliberately. `required: true` on a
-      # workflow_call secret enforces that the CALLER's `secrets:` mapping
-      # names the key — it does not enforce that the value is non-blank, and
-      # `${{ secrets.X }}` for a secret that does not exist on the calling
-      # repository evaluates to the empty string, which satisfies
-      # `required: true` and arrives here blank. governance-token's failure
-      # mode is already distinct and already legible on its own — a missing
-      # or wrong value fails the very next step, the governance checkout,
-      # with GitHub's own "Repository not found", which is unambiguous
-      # without needing this pattern repeated for it.
+      # First, before anything expensive: a missing secret is reported by name
+      # rather than surfacing later as a generic failure. `required: true`
+      # does not enforce a non-blank value.
       - name: Confirm the key is available before doing anything expensive
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
         run: |
           if [ -z "${ANTHROPIC_API_KEY}" ]; then
-            echo "::error title=Review::ANTHROPIC_API_KEY is not available to this workflow." 
-            echo "::error title=Review::Check that the repository (or organisation) running" 
-            echo "::error title=Review::this job has an ANTHROPIC_API_KEY secret configured," 
-            echo "::error title=Review::and that whatever calls this reusable workflow passes" 
-            echo "::error title=Review::it under secrets.anthropic-api-key rather than" 
-            echo "::error title=Review::secrets: inherit or nothing at all." 
+            echo "::error title=Review::ANTHROPIC_API_KEY is not available to this workflow."
+            echo "::error title=Review::Pass it under secrets.anthropic-api-key rather than secrets: inherit or nothing at all."
             exit 1
           fi
 
-      # fetch-depth: 0 is load-bearing, and the single most likely line here
-      # to be "tidied up" by someone speeding up CI.
-      #
-      # The failure it prevents is not the one you might expect, and the
-      # earlier version of this comment had it wrong. With the default depth,
-      # checkout fetches only refs/pull/N/merge and never creates
-      # refs/remotes/origin/<base> at all — so the diff step does not produce
-      # an empty diff to be caught downstream, it dies with "ambiguous
-      # argument: unknown revision". Red immediately, which is the better
-      # outcome, and the runner's empty-diff guard never sees it.
-      #
-      # persist-credentials: false here as well. The reason is weaker than on
-      # the governance checkout — this token is the caller's own, short-lived
-      # and scoped to the repository being reviewed — but `npm ci` runs in a
-      # subdirectory of this workspace, so a postinstall script can read
-      # <workspace>/.git/config either way. Nothing pushes from here, so the
-      # credential has no work to do after the clone, and leaving it costs
-      # nothing to remove.
-      - uses: actions/checkout@v4
+      # fetch-depth: 0 is load-bearing: without it origin/<base> does not
+      # exist and the diff step dies with "unknown revision".
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      # Every value that reaches a shell goes through the environment rather
-      # than through `${{ }}`, because that expansion happens before the shell
-      # sees it: a value containing $(...) executes. A branch name is a less
-      # likely carrier than a title, and the rule is not worth having two
-      # versions of.
+      # Every github.event value reaches a shell through env:, never through
+      # an expression inside run:.
       - name: Work out what changed
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          # Only a pull request has a base to diff against. On a push or a
-          # merge group this is empty, `origin/` is a malformed ref, and git
-          # fails with a message about revisions — which sends the reader to
-          # look at their repository when the answer is that this workflow
-          # only means anything on a pull request. Say that instead.
           if [ -z "${BASE_REF}" ]; then
             echo "No base ref. This workflow reviews a pull request against its base," >&2
-            echo "and the event that triggered it has no base — so there is nothing to" >&2
-            echo "compare. Call it from an 'on: pull_request' workflow." >&2
+            echo "so call it from an 'on: pull_request' workflow." >&2
             exit 1
           fi
-          # On a pull_request event HEAD is the merge commit, whose first
-          # parent is the base tip — so --merge-base resolves to that tip and
-          # the diff is exactly the change, carrying no base-only commits. It
-          # stays correct if the base advances afterwards, and if the branch
-          # has merged the base into itself.
-          #
-          # `fetch-depth: 2` with `git diff HEAD^1 HEAD` is the cheaper
-          # equivalent, because HEAD^1 IS the base tip. It is deliberately not
-          # used: it becomes silently wrong the moment someone checks out
-          # pull_request.head.sha instead of the merge ref, where --merge-base
-          # stays right. The full clone buys a form that cannot be quietly
-          # broken, and the next person to find HEAD^1 should know it was
-          # considered.
+          # HEAD is the merge commit on a pull_request event, so --merge-base
+          # yields exactly the change.
           git diff --merge-base "origin/${BASE_REF}" HEAD > "${RUNNER_TEMP}/review.diff"
 
-      # persist-credentials: false, and it matters more here than it usually
-      # does. Left at its default, checkout writes this token into
-      # .aigency-review/.git/config as a header credential — and the next step
-      # runs `npm ci` in that same directory, so any postinstall script in the
-      # dependency tree can read it. That was survivable when this was the
-      # ambient GITHUB_TOKEN: scoped to the calling repository, expiring with
-      # the job. It is not survivable for a long-lived cross-repository token,
-      # which is what fixing the previous defect turned it into. Nothing here
-      # pushes, so the credential has no work to do after the clone.
-      - name: Fetch the reviewer and the definition together
-        uses: actions/checkout@v4
+      # The practices the lenses are derived from. Checked out inside the
+      # workspace (checkout requires that) but untracked, so it is not in the
+      # diff, and it is not a path any PR can supply. Token: governance-token,
+      # which needs contents:read on aigency-guardrails (private).
+      - name: Fetch the practices corpus
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          repository: verevoir/aigency-governance
-          ref: ${{ inputs.governance-ref }}
+          repository: verevoir/aigency-guardrails
+          ref: ${{ inputs.guardrails-ref }}
           token: ${{ secrets.governance-token }}
-          path: .aigency-review
+          path: .aigency-guardrails
           persist-credentials: false
 
-      # No `cache: npm`, and it is a choice rather than an impossibility — an
-      # earlier comment here said the latter, which was wrong. `setup-node`
-      # takes `cache-dependency-path`, and this step runs after the governance
-      # checkout, so pointing it at .aigency-review/package-lock.json would
-      # cache the right lockfile. It is left off because the key would then be
-      # a lockfile from a ref that floats with main, cached per consumer
-      # repository — a cache that is sometimes stale in a way nobody can see
-      # from either repository. Left as a deliberate cost, not an oversight.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
-      - name: Build the reviewer
-        working-directory: .aigency-review
+      # Outside the repo, no lockfile, no lifecycle scripts. Runs with cwd in
+      # RUNNER_TEMP, not the PR checkout, so a PR-supplied .npmrc cannot steer
+      # the registry.
+      - name: Install the reviewer
+        working-directory: ${{ runner.temp }}
         run: |
-          npm ci
-          npm run build
+          npm install --no-save --no-package-lock --ignore-scripts \
+            --prefix "${RUNNER_TEMP}/aigency-review" "${REVIEWER_PACKAGE}"
 
-      # Three things in this step are less obvious than they look.
-      #
-      # The title is contributor-controlled on any repository taking outside
-      # pull requests, so it reaches the process as an argument through the
-      # environment and never as shell text. The `:-` default is needed
-      # because the runner's own fallback is nullish — an empty title is a
-      # string, so it passes straight through and heads the report with
-      # nothing. Note that this is now the second fallback for an empty title,
-      # the first being the runner's own. They can drift, and only one of them
-      # is covered by a test.
-      #
-      # Both paths are absolute — the lens set and the entrypoint. An earlier
-      # version absolutised only the first while claiming the step was
-      # defended against someone adding a working-directory, which would still
-      # have broken the second. Half a fix under a comment describing a whole
-      # one is worse than neither.
-      # Through GITHUB_WORKSPACE rather than ${{ github.workspace }}, which is
-      # the same value by the sanctioned route. The first attempt at this fix
-      # used the expression form and put a ${{ }} back into a run: — not
-      # exploitable, since the runner supplies that value, but the argument
-      # against it was never that it was exploitable. It was that a file
-      # teaching a rule and breaking it on the same screen teaches the wrong
-      # thing. The env: line above keeps the expression form, correctly:
-      # env: is not a shell context, and that is the pattern this file argues
-      # for rather than against.
-      #
-      # continue-on-error, with the verdict taken again below: the report must
-      # be published whether the review passed or failed, and publishing must
-      # not be able to change the verdict.
+      - name: Record what is judging and against what
+        run: |
+          corpus_sha="$(git -C "${GITHUB_WORKSPACE}/.aigency-guardrails" rev-parse HEAD)"
+          {
+            echo "### Review provenance"
+            echo ""
+            echo "- Reviewer: \`${REVIEWER_PACKAGE}\`"
+            echo "- Corpus: \`verevoir/aigency-guardrails@${corpus_sha}\` (\`corpus/practices\`)"
+            echo ""
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # One line per check on the head commit, "name: status/conclusion".
+      # This job's own check, and every other review check, is left out: the
+      # file is input to a review.
+      - name: Collect the other checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/check-runs" \
+            --jq '.check_runs[] | select(.name | test("review"; "i") | not) | "\(.name): \(.status)/\(.conclusion // "none")"' \
+            > "${RUNNER_TEMP}/checks.txt"
+          echo "Omitted deliberately: review checks are not listed here, because this file is input to a review." \
+            >> "${RUNNER_TEMP}/checks.txt"
+
+      # continue-on-error, with the verdict taken again below: the report is
+      # published whether the review passed or failed, and publishing must not
+      # change the verdict. The CLI appends its own report to
+      # GITHUB_STEP_SUMMARY, so nothing re-appends it.
       - name: Review
         id: review
         continue-on-error: true
+        # cwd outside the PR checkout; every path below is absolute.
+        working-directory: ${{ runner.temp }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
-          AIGENCY_REVIEW_LENSES: ${{ github.workspace }}/.aigency-review/review/lenses.json
           AIGENCY_REVIEW_MODEL: ${{ inputs.model }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -o pipefail
-          node "${GITHUB_WORKSPACE}/.aigency-review/dist/cli/review.js" "${PR_TITLE:-this change}" \
+          args=(--practices "${GITHUB_WORKSPACE}/.aigency-guardrails/corpus/practices"
+                --context-root "${GITHUB_WORKSPACE}"
+                --checks-file "${RUNNER_TEMP}/checks.txt")
+          if [ -n "${PR_TITLE}" ]; then args+=(--title "${PR_TITLE}"); fi
+          if [ -n "${PR_BODY//[[:space:]]/}" ]; then
+            printf '%s\n' "${PR_BODY}" > "${RUNNER_TEMP}/description.md"
+            args+=(--description-file "${RUNNER_TEMP}/description.md")
+          fi
+          "${RUNNER_TEMP}/aigency-review/node_modules/.bin/aigency-review" "${args[@]}" \
             < "${RUNNER_TEMP}/review.diff" \
             | tee "${RUNNER_TEMP}/review.md"
 
-      # Not always(): that also runs on cancellation, and if an earlier step
-      # failed the report was never written — cat would fail with "No such
-      # file", landing a confusing red step after the real one and burying it.
-      - name: Publish the report
+      # The CLI already wrote the report to the summary. This only covers a
+      # failure before any report existed.
+      - name: Note a missing report
         if: success() || failure()
         run: |
-          if [ -f "${RUNNER_TEMP}/review.md" ]; then
-            cat "${RUNNER_TEMP}/review.md" >> "${GITHUB_STEP_SUMMARY}"
-          else
+          if [ ! -s "${RUNNER_TEMP}/review.md" ]; then
             echo "The review produced no report: it failed before writing one." >> "${GITHUB_STEP_SUMMARY}"
             echo "The failing step above says why." >> "${GITHUB_STEP_SUMMARY}"
           fi
 
-      # The verdict, taken from the step that produced it. `success` means the
-      # binary exited 0, which it does only for an approval — a rejection and
-      # a could-not-run are both 1, and both are red.
-      #
-      # The condition lives in `if:` rather than in the shell, so no `${{ }}`
-      # reaches a `run:`. The value is a controlled enum and would not be
-      # exploitable; a file that teaches a rule and breaks it on the same
-      # screen teaches the wrong thing.
-      #
-      # `::error` puts the verdict on the pull request's Checks tab with no
-      # token and no permission — most of what a comment would buy, for one
-      # line. A real comment would need pull-requests: write declared by the
-      # CALLER, and would fail on fork pull requests, which are precisely the
-      # ones where outside code is being judged.
-      #
-      # `== 'failure'` rather than `!= 'success'`, and the difference is a
-      # false statement. A skipped step has an outcome of '', which is not
-      # 'success' — so the loose form fires when the checkout or the build
-      # failed and the review never ran, and annotates the Checks tab with
-      # "the review did not approve" about a review that did not happen. That
-      # is the most visible surface in the whole workflow saying the one thing
-      # this system exists to prevent.
-      #
-      # The `success() || failure()` guard is not redundant beside
-      # `== 'failure'`, and deleting it as noise is the obvious mistake. Bare
-      # `== 'failure'` carries an implicit success(), so a failing Publish
-      # step would skip this one — the job still goes red, but the annotation
-      # and the sentence explaining it vanish, and a consumer sees a red run
-      # whose only red step is a `cat`. That is publishing changing what the
-      # verdict says, which is the one thing the two steps are split apart to
-      # prevent.
+      # Green only when the CLI exited 0 (approved, or nothing in scope). A
+      # rejection and a could-not-run both exit 1. `== 'failure'` rather than
+      # `!= 'success'`: a skipped Review has outcome '' and must not be
+      # reported as "did not approve".
       - name: Take the verdict
         if: (success() || failure()) && steps.review.outcome == 'failure'
         run: |
-          # The report's own heading already carries the distinction this
-          # annotation must not throw away (see report.ts: every report opens
-          # with "## Review: Approved", "## Review: Rejected" or
-          # "## Review: Could not run"). Grepped rather than re-derived, so
-          # this step can never say something the report itself does not.
           if [ -f "${RUNNER_TEMP}/review.md" ] && grep -q '^## Review: Could not run' "${RUNNER_TEMP}/review.md"; then
             echo "::error title=Review::The review could not run — nothing was reviewed. The report says why, in the job summary."
           else
