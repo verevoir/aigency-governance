@@ -14,6 +14,7 @@ import {
   DEFAULT_LENS_SOURCE,
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL,
+  DEFAULT_PRACTICES_MAX_CHARS,
   renderMissing,
   resolveSettings,
   type KeyFileReader,
@@ -128,6 +129,7 @@ describe('resolveSettings, given everything it needs', () => {
       maxTokens: 8192,
       lensSource: 'https://lenses.test/set.json',
       lensToken: 'lens-token',
+      practicesMaxChars: DEFAULT_PRACTICES_MAX_CHARS,
     });
   });
 });
@@ -690,6 +692,12 @@ describe('resolveSettings, falling back to defaults', () => {
     expect(settings.model).toBe(DEFAULT_MODEL);
     expect(settings.maxTokens).toBe(DEFAULT_MAX_TOKENS);
     expect(settings.lensSource).toBe(DEFAULT_LENS_SOURCE);
+    // Unlike the lens set, the practices corpus has no default to fall back
+    // to at all — see resolveSettings' own comment on why not — so "falls
+    // back to defaults" for this setting means the bound gets one and the
+    // source stays entirely absent.
+    expect(settings.practicesMaxChars).toBe(DEFAULT_PRACTICES_MAX_CHARS);
+    expect('practicesSource' in settings).toBe(false);
   });
 
   // A change-detector, deliberately, and the only one in this file. The three
@@ -708,6 +716,7 @@ describe('resolveSettings, falling back to defaults', () => {
     expect(DEFAULT_LENS_SOURCE).toBe(
       'https://raw.githubusercontent.com/verevoir/aigency-governance/main/review/lenses.json',
     );
+    expect(DEFAULT_PRACTICES_MAX_CHARS).toBe(20_000);
   });
 
   it('takes an override for the model', async () => {
@@ -783,6 +792,72 @@ describe('resolveSettings, given a maxTokens it cannot use', () => {
       problemsOf(result).some((problem) => problem.includes('AIGENCY_REVIEW_MAX_TOKENS')),
     ).toBe(true);
   });
+});
+
+describe('resolveSettings, resolving the practices corpus source', () => {
+  it('is absent by default — no corpus configured is a legitimate choice, not a fault', async () => {
+    const settings = readyOf(await resolveSettings(env(), NO_FILES));
+
+    expect('practicesSource' in settings).toBe(false);
+  });
+
+  // Unlike the lens set, there is no published default to fall back to, so
+  // this is the only way a run ever gets one.
+  it('takes the override, with no default standing behind it', async () => {
+    const settings = readyOf(
+      await resolveSettings(
+        env({ AIGENCY_REVIEW_PRACTICES: 'https://corpus.test/practices.json' }),
+        NO_FILES,
+      ),
+    );
+
+    expect(settings.practicesSource).toBe('https://corpus.test/practices.json');
+  });
+
+  it('treats a blank value as absent, not as a configured-but-empty source', async () => {
+    const settings = readyOf(
+      await resolveSettings(env({ AIGENCY_REVIEW_PRACTICES: '   ' }), NO_FILES),
+    );
+
+    expect('practicesSource' in settings).toBe(false);
+  });
+
+  it('accepts a local path, needing no token the way the lens set sometimes does', async () => {
+    const settings = readyOf(
+      await resolveSettings(env({ AIGENCY_REVIEW_PRACTICES: './corpus/practices.json' }), NO_FILES),
+    );
+
+    expect(settings.practicesSource).toBe('./corpus/practices.json');
+  });
+});
+
+describe('resolveSettings, given a practicesMaxChars it cannot use', () => {
+  // Same shape as the AIGENCY_REVIEW_MAX_TOKENS suite above, and for the same
+  // reason: a value someone deliberately typed must never be silently
+  // replaced by a default they did not ask for.
+  for (const raw of ['abc', '0', '-1', '1.5', '1e400']) {
+    it(`refuses ${raw} rather than quietly defaulting`, async () => {
+      const result = await resolveSettings(
+        env({ AIGENCY_REVIEW_PRACTICES_MAX_CHARS: raw }),
+        NO_FILES,
+      );
+
+      expect(result.kind).toBe('invalid');
+      const problems = problemsOf(result);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain('AIGENCY_REVIEW_PRACTICES_MAX_CHARS');
+      expect(problems[0]).toContain(raw);
+    });
+  }
+
+  for (const raw of ['1', '5000', '50000']) {
+    it(`accepts ${raw}`, async () => {
+      expect(
+        readyOf(await resolveSettings(env({ AIGENCY_REVIEW_PRACTICES_MAX_CHARS: raw }), NO_FILES))
+          .practicesMaxChars,
+      ).toBe(Number(raw));
+    });
+  }
 });
 
 describe('renderMissing', () => {

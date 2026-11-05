@@ -27,6 +27,7 @@ import {
   DEFAULT_LENS_SOURCE,
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL,
+  DEFAULT_PRACTICES_MAX_CHARS,
   type ReviewSettings,
 } from '../src/review/settings.js';
 
@@ -435,6 +436,7 @@ describe('runReview, wiring the dependencies', () => {
       maxTokens: DEFAULT_MAX_TOKENS,
       lensSource: DEFAULT_LENS_SOURCE,
       lensToken: 'lens-token',
+      practicesMaxChars: DEFAULT_PRACTICES_MAX_CHARS,
     });
   });
 
@@ -452,6 +454,7 @@ describe('runReview, wiring the dependencies', () => {
       maxTokens: DEFAULT_MAX_TOKENS,
       lensSource: DEFAULT_LENS_SOURCE,
       lensToken: 'lens-token',
+      practicesMaxChars: DEFAULT_PRACTICES_MAX_CHARS,
     });
   });
 
@@ -520,5 +523,142 @@ describe('runReview, wiring the dependencies', () => {
 
     expect(outcome.report).toContain('model `claude-haiku-3`');
     expect(outcome.report).not.toContain(`model \`${DEFAULT_MODEL}\``);
+  });
+});
+
+// THE JOIN. Both halves already existed and were already tested separately:
+// `provision` (src/practices/provision.ts) reading a corpus, and `runPanel`
+// threading a `practices` string to every lens (the describe block above).
+// Nothing before this called the first from the second — `review.ts`'s deps
+// factory omitted `practicesConsult` unconditionally, so every real run judged
+// against NO_PRACTICES_NOTICE regardless of what any corpus held. These
+// tests drive `practicesConsult`, the field that closes that gap, with no
+// network and no real corpus — removing `resolvePractices`'s call in run.ts
+// (or reverting `practicesConsult` to being ignored) turns every one of
+// these red, which is the property that makes them worth having rather than
+// a restatement of what `provision.test.ts` already proves in isolation.
+describe('runReview, consulting a practices corpus', () => {
+  const ONE_PRACTICE = JSON.stringify({
+    version: 1,
+    practices: [
+      {
+        id: 'p1',
+        title: 'PRACTICES-BAR-MARKER',
+        body: 'say what you observed, always',
+      },
+    ],
+  });
+
+  function corpusReaderReturning(found: ReadResult): SourceReader {
+    return () => Promise.resolve(found);
+  }
+
+  it('reaches every lens with a real practice, via practicesConsult rather than a direct string', async () => {
+    const fakes = harness();
+    const asked: string[] = [];
+    const practicesConsult = {
+      source: 'https://corpus.test/practices.json',
+      read: ((source: string) => {
+        asked.push(source);
+        return Promise.resolve({ kind: 'text', text: ONE_PRACTICE } as ReadResult);
+      }) as SourceReader,
+    };
+
+    const outcome = await runReview(env(), SUBJECT, (settings) => ({
+      ...fakes.deps(settings),
+      practicesConsult,
+    }));
+
+    expect(outcome.exitCode).toBe(0);
+    expect(fakes.calls.shared).toHaveLength(2);
+    for (const shared of fakes.calls.shared) {
+      expect(shared).toContain('PRACTICES-BAR-MARKER');
+    }
+    // The corpus source consulted is the one named in settings — not a
+    // hardcoded stand-in — proving the source string actually threads through
+    // rather than a fixed value happening to work.
+    expect(asked).toEqual(['https://corpus.test/practices.json']);
+  });
+
+  it('fails the whole review, spending nothing on any lens, when the configured corpus cannot be read', async () => {
+    const fakes = harness();
+    const practicesConsult = {
+      source: 'https://corpus.test/practices.json',
+      read: corpusReaderReturning({ kind: 'unreachable', reason: 'ECONNREFUSED' }),
+    };
+
+    const outcome = await runReview(env(), SUBJECT, (settings) => ({
+      ...fakes.deps(settings),
+      practicesConsult,
+    }));
+
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.report).toContain('practices corpus');
+    expect(outcome.report).toContain('ECONNREFUSED');
+    expect(outcome.report).toContain('Nothing was reviewed');
+    // The fail-closed half: a corpus that is configured and broken must never
+    // be quietly treated as "no corpus configured" — that would make the two
+    // read identically, which is the exact collapse this join exists to
+    // prevent. No lens is asked, so nothing is billed against a bar that was
+    // never actually seen.
+    expect(fakes.calls.reviewed).toEqual([]);
+  });
+
+  it('is red for a malformed corpus too, distinguishably from an unreachable one', async () => {
+    const fakes = harness();
+    const practicesConsult = {
+      source: 's',
+      read: corpusReaderReturning({ kind: 'text', text: '{ not json' }),
+    };
+
+    const outcome = await runReview(env(), SUBJECT, (settings) => ({
+      ...fakes.deps(settings),
+      practicesConsult,
+    }));
+
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.report).toContain('malformed');
+    expect(fakes.calls.reviewed).toEqual([]);
+  });
+
+  it('marks the bar as partial, distinctly from a complete one, when the bound elides part of the corpus', async () => {
+    const fakes = harness();
+    const twoPractices = JSON.stringify({
+      version: 1,
+      practices: [
+        { id: 'p1', title: 'T1', body: 'x'.repeat(40) },
+        { id: 'p2', title: 'T2', body: 'y'.repeat(40) },
+      ],
+    });
+    const practicesConsult = {
+      source: 's',
+      read: corpusReaderReturning({ kind: 'text', text: twoPractices }),
+    };
+
+    const outcome = await runReview(
+      env({ AIGENCY_REVIEW_PRACTICES_MAX_CHARS: '50' }),
+      SUBJECT,
+      (settings) => ({ ...fakes.deps(settings), practicesConsult }),
+    );
+
+    expect(outcome.exitCode).toBe(0);
+    expect(fakes.calls.shared.length).toBeGreaterThan(0);
+    for (const shared of fakes.calls.shared) {
+      expect(shared).toContain('T1');
+      expect(shared).not.toContain('T2');
+      expect(shared).toContain('NOTE:');
+      expect(shared).toContain('This bar is partial');
+    }
+  });
+
+  it('runs exactly as before — NO_PRACTICES_NOTICE, every lens — when no corpus is configured at all', async () => {
+    const fakes = harness();
+
+    const outcome = await runReview(env(), SUBJECT, fakes.deps);
+
+    expect(outcome.exitCode).toBe(0);
+    for (const shared of fakes.calls.shared) {
+      expect(shared).toContain(NO_PRACTICES_NOTICE);
+    }
   });
 });

@@ -29,6 +29,7 @@ import {
   keyFileReader,
   lensReaderFor,
   listTrackedFiles,
+  readerFor,
 } from '../review/readers.js';
 import type { ReviewDeps } from './run.js';
 import { runReview } from './run.js';
@@ -104,6 +105,25 @@ async function main(): Promise<number> {
       // `lensReaderFor`'s own doc comment for what that omission is worth.
       read: lensReaderFor(settings, fetch),
       review: reviewerFor(settings),
+      // `readerFor`, not `lensReaderFor`: the practices corpus is a
+      // different source from the lens set and may sit on a different
+      // scheme entirely (a local checkout while the lens set is fetched
+      // over HTTP, or the reverse) — `readerFor` picks http-vs-file from
+      // THIS source, not the lens set's. No bearer token is attached here;
+      // a corpus that needs one is not yet a case this boundary handles,
+      // which is a real, disclosed limit rather than a silent one — see
+      // `run.ts`'s own header on this field for what it does and does not
+      // decide. Present only when a corpus is actually configured: the
+      // decision about what an absent one means belongs to `run.ts`, not
+      // here.
+      ...(settings.practicesSource !== undefined
+        ? {
+            practicesConsult: {
+              source: settings.practicesSource,
+              read: readerFor(settings.practicesSource, fetch),
+            },
+          }
+        : {}),
     }),
     // The real key-file source. Constructed here, at the process boundary,
     // for the same reason `readerFor` and `anthropicReviewer` are: `run.ts`
