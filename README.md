@@ -141,24 +141,46 @@ If `anthropic-api-key` is missing or blank, the first step of the job fails and
 names it. A blank value counts as missing: an unset secret in Actions arrives as
 the empty string. A blank `guardrails-app-private-key` fails the same step with
 a message naming the secret to map, and saying `governance-token` is no longer
-used. Both secrets are declared optional in the interface for this reason: a
-missing _required_ secret is a startup failure, and the check then silently
-never appears.
+used.
+
+Only two secrets are declared optional in the interface, each for its own
+reason. `guardrails-app-private-key` is optional so that a missing key fails
+the first step by name: a missing _required_ secret is a startup failure, and
+the check then silently never appears. `governance-token` is optional because
+it is no longer used, and is accepted only so a caller that still passes it
+gets that named failure. `anthropic-api-key` stays `required: true`.
+
+**If minting the token fails,** the `actions/create-github-app-token` step's
+own error is shown, and a following step adds one naming
+`guardrails-app-private-key` and the App installation. Two shapes to expect:
+
+- **A malformed key.** The secret is set but is not the App's complete private
+  key. Check that it is the whole PEM, header and footer lines included, with no
+  added quotes or lost line breaks.
+- **The App is not installed on `aigency-guardrails`.** The key is fine but the
+  App has no installation that includes `verevoir/aigency-guardrails`. Check the
+  App's installation, and that it grants `Contents` read-only.
 
 ### Trigger and trust
 
 Callers use `on: pull_request`. A fork's pull request gets no secrets, so the
-review fails closed and the App key is never spent on an outside diff, and no
-job holds secrets while checking out untrusted code.
+review fails closed and the App key is never spent on an outside diff.
+
+A same-repository pull request is different: the review job holds both secrets
+while it checks out that pull request's tree. That is safe only because the tree
+is never _executed_ by the job. It is read as the diff and as `--context-root`
+files, and nothing in it is installed, built or run.
 
 The risk: a pull request's own caller workflow is what runs, so a
 same-repository pull request can edit or repoint its own review.
 
-The mitigation lives in the merge automation, not in this workflow: no automatic
-merge of a pull request that changes `.github/workflows/`, `.github/actions/` or
-the other operator-owned files, and a verdict is accepted only from a run that
-called this `review.yml` at an allowlisted SHA. A repository that auto-merges on
-green without those checks does not get this protection.
+The mitigation lives outside this repository: the operator's merge automation
+enforces it, and nothing in this repository shows or tests it. It does not
+auto-merge a pull request that changes `.github/workflows/`, `.github/actions/`
+or the other operator-owned files, and it accepts a verdict only from a run that
+called this `review.yml` at an allowlisted SHA. A repository without equivalent
+checks, for example one that auto-merges on green, does not get this
+protection.
 
 The residual: anyone with push access can bypass the gate by hand.
 
@@ -174,6 +196,26 @@ deliberate here because main is the base; other callers should pin by SHA.
 `review-pr.yml` switches to the App key in a follow-up pull request. Until then,
 governance's own review fails fast at the first step, naming
 `guardrails-app-private-key`.
+
+### The transition
+
+On merge, every caller still on `@main` breaks at once, because `main` then
+requires the App key. The order that contains this is manual:
+
+1. `aigency-runtime-v2` pins this workflow by SHA first, with the key mapped,
+   and only then does this change merge.
+2. `aigency-harness` also calls `@main`, but its review is already failing at
+   startup (its job does not grant `checks: read`), so it moves in the
+   caller-bump sweep.
+3. Governance's own `review-pr.yml` still passes only `governance-token`. It
+   switches to the App key in the immediate follow-up pull request.
+
+What a stale caller sees: the `review` check goes red at its first step,
+"Confirm the key is available before doing anything expensive", with
+`guardrails-app-private-key is empty`, the secret to map, and the note that
+`governance-token` is no longer used. It is a named failure, not a startup
+failure, so the check still appears. Nothing is reviewed until the caller maps
+the key.
 
 ## What comes back
 

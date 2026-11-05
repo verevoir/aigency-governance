@@ -221,16 +221,24 @@ describe('review.yml shape', () => {
   it('stays callable by existing callers', () => {
     expect(text).toMatch(/governance-ref:/);
     expect(text).toMatch(/\bmodel:/);
-    // Each secret's own block, so one secret's `required: true` can't satisfy another.
-    const secretBlock = (name: string): string =>
-      new RegExp(`^ {6}${name}:\\n((?: {8}.*\\n)+)`, 'm').exec(text)?.[1] ?? '';
+    expect(text).toMatch(/guardrails-ref:/);
+  });
+
+  // Each secret's own block, so one secret's `required` can't satisfy another.
+  const secretBlock = (name: string): string =>
+    new RegExp(`^ {6}${name}:\\n((?: {8}.*\\n)+)`, 'm').exec(text)?.[1] ?? '';
+
+  it('keeps anthropic-api-key required', () => {
     expect(secretBlock('anthropic-api-key')).toMatch(/^ {8}required: true$/m);
-    // Optional, so a missing one fails fast by name rather than as a startup failure.
+  });
+
+  it('declares guardrails-app-private-key optional, so a missing one fails fast by name', () => {
     expect(secretBlock('guardrails-app-private-key')).toMatch(/^ {8}required: false$/m);
-    // Still accepted, but unused.
+  });
+
+  it('still accepts governance-token, optional and unused', () => {
     expect(secretBlock('governance-token')).toMatch(/^ {8}required: false$/m);
     expect(secretBlock('governance-token')).toContain('No longer used');
-    expect(text).toMatch(/guardrails-ref:/);
   });
 
   it('defaults guardrails-app-client-id to the App Client ID', () => {
@@ -303,8 +311,26 @@ describe('review.yml shape', () => {
   });
 
   it('gives the App token to no other step', () => {
-    expect(text.match(/steps\.corpus-token/g)).toHaveLength(1);
+    expect(text.match(/steps\.corpus-token\.outputs/g)).toHaveLength(1);
+    // The only other reference reads the mint step's outcome, never its token.
+    expect(text.match(/steps\.corpus-token(?!\.outputs\.token \}\})/g)).toEqual([
+      'steps.corpus-token',
+    ]);
+  });
+
+  it('hands the private key to the fail-fast step and the mint step only', () => {
     expect(text.match(/secrets\.guardrails-app-private-key/g)).toHaveLength(2);
+  });
+
+  it('names a failed mint in the workflow vocabulary, reading no secret or token', () => {
+    const steps = text.split(/\n {6}- /).slice(1);
+    const step = steps.find((s) => s.includes('Name a failed token mint')) as string;
+    expect(step).toBeDefined();
+    expect(step).toContain("if: failure() && steps.corpus-token.outcome == 'failure'");
+    expect(step).toContain('guardrails-app-private-key');
+    expect(step).toContain('verevoir/aigency-guardrails');
+    expect(step).not.toContain('secrets.');
+    expect(step).not.toContain('outputs.token');
   });
 });
 

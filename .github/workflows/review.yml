@@ -131,14 +131,9 @@ jobs:
           # yields exactly the change.
           git diff --merge-base "origin/${BASE_REF}" HEAD > "${RUNNER_TEMP}/review.diff"
 
-      # The practices the lenses are derived from. Checked out inside the
-      # workspace (checkout requires that) but untracked, so it is not in the
-      # diff, and it is not a path any PR can supply. The token is the App
-      # token minted in the previous step, and persist-credentials: false keeps
-      # it out of .aigency-guardrails/.git/config. No other step receives it.
-      #
-      # skip-token-revoke is deliberately not set, so the token is revoked when
-      # the job ends.
+      # A read-only token for the private practices corpus, from the GitHub App
+      # named by guardrails-app-client-id. skip-token-revoke is deliberately not
+      # set, so the token is revoked when the job ends.
       - name: Mint a read-only token for the practices corpus
         id: corpus-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -149,6 +144,11 @@ jobs:
           repositories: aigency-guardrails
           permission-contents: read
 
+      # The practices the lenses are derived from. Checked out inside the
+      # workspace (checkout requires that) but untracked, so it is not in the
+      # diff, and it is not a path any PR can supply. The token is the App
+      # token minted in the previous step, and persist-credentials: false keeps
+      # it out of .aigency-guardrails/.git/config. No other step receives it.
       - name: Fetch the practices corpus
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -157,6 +157,15 @@ jobs:
           token: ${{ steps.corpus-token.outputs.token }}
           path: .aigency-guardrails
           persist-credentials: false
+
+      # Runs only when the mint failed. The action's own error (a malformed key,
+      # or the App not installed on aigency-guardrails) is in the log above; this
+      # adds one in this workflow's vocabulary. It reads no secret and no token.
+      - name: Name a failed token mint
+        if: failure() && steps.corpus-token.outcome == 'failure'
+        run: |
+          echo "::error title=Review::Could not mint the read-only corpus token. Check that guardrails-app-private-key holds the App's complete private key (the PEM, header and footer lines included), and that the App is installed on verevoir/aigency-guardrails with Contents read-only. The action's own error is in the Mint step above."
+          exit 1
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
