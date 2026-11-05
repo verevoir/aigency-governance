@@ -55,7 +55,7 @@ on:
 
 env:
   # The one place the reviewer version lives. PLACEHOLDER: confirm at publish.
-  REVIEWER_PACKAGE: '@verevoir/review@0.3.0'
+  REVIEWER_PACKAGE: '@verevoir/review@0.3.1'
 
 jobs:
   review:

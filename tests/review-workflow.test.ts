@@ -51,8 +51,8 @@ describe('review.yml shape', () => {
   });
 
   it('pins the reviewer exactly, once, and installs it safely outside the repo', () => {
-    expect(text.match(/@verevoir\/review@\d+\.\d+\.\d+/g)).toEqual(['@verevoir/review@0.3.0']);
-    expect(text).toContain("REVIEWER_PACKAGE: '@verevoir/review@0.3.0'");
+    expect(text.match(/@verevoir\/review@\d+\.\d+\.\d+/g)).toEqual(['@verevoir/review@0.3.1']);
+    expect(text).toContain("REVIEWER_PACKAGE: '@verevoir/review@0.3.1'");
     const install = runBodies(text).find((b) => b.includes('npm install'));
     expect(install).toBeDefined();
     expect(install).toContain('--ignore-scripts');
