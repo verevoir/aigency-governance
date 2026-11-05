@@ -51,8 +51,8 @@ describe('review.yml shape', () => {
   });
 
   it('pins the reviewer exactly, once', () => {
-    expect(text.match(/@verevoir\/review@\d+\.\d+\.\d+/g)).toEqual(['@verevoir/review@0.3.1']);
-    expect(text).toContain("REVIEWER_PACKAGE: '@verevoir/review@0.3.1'");
+    expect(text.match(/@verevoir\/review@\d+\.\d+\.\d+/g)).toEqual(['@verevoir/review@0.3.2']);
+    expect(text).toContain("REVIEWER_PACKAGE: '@verevoir/review@0.3.2'");
   });
 
   it('installs the reviewer with no scripts, no save, no lockfile, under --prefix', () => {
@@ -131,10 +131,16 @@ describe('review.yml shape', () => {
     expect(text).not.toContain('test("review"; "i")');
   });
 
-  it('the filter regex matches review checks and spares unrelated ones', () => {
+  it('a COPY of the filter regex (tied to the workflow by the text pin above) matches review checks and spares unrelated ones', () => {
     // The regex jq receives, after YAML/shell/jq unescaping.
     const re = /^(review|review \/ review|antagonistic[- ]review.*|review \(.*\))$/i;
-    for (const name of ['antagonistic-review', 'review (correctness)', 'Antagonistic review']) {
+    for (const name of [
+      'review',
+      'review / review',
+      'antagonistic-review',
+      'review (correctness)',
+      'Antagonistic review',
+    ]) {
       expect(re.test(name), name).toBe(true);
     }
     for (const name of ['verify', 'preview-deploy', 'code review lint']) {
@@ -158,7 +164,7 @@ describe('review.yml shape', () => {
     expect(script.slice(start, end)).toContain('cat "${RUNNER_TEMP}/checks.txt"');
   });
 
-  it('describes callers pinning by SHA as a requirement, and says what is executed precisely', () => {
+  it('header words SHA pinning as a requirement ("should") and says the PR tree is only read', () => {
     // Whitespace-insensitive, and comment markers ignored, so a rewrap is safe.
     const flat = text.replace(/\n\s*#/g, ' ').replace(/\s+/g, ' ');
     expect(flat).toContain('Callers should pin this workflow');
@@ -167,16 +173,41 @@ describe('review.yml shape', () => {
     expect(flat).not.toContain('nothing from the pull request');
   });
 
-  it('treats an empty or missing report as could-not-run, with the same -s test in both steps', () => {
+  it('Note a missing report uses -s; Take the verdict treats anything but a positive Rejected as could-not-run', () => {
     const steps = text.split(/\n {6}- /).slice(1);
     const note = steps.find((s) => s.includes('Note a missing report'));
     const verdict = steps.find((s) => s.includes('Take the verdict'));
     expect(note).toBeDefined();
     expect(verdict).toBeDefined();
     expect(note).toContain('[ ! -s "${RUNNER_TEMP}/review.md" ]');
-    expect(verdict).toContain('[ ! -s "${RUNNER_TEMP}/review.md" ]');
+    expect(verdict).toContain('[ -s "${RUNNER_TEMP}/review.md" ]');
     expect(verdict).not.toContain('-f ');
     expect(verdict).toContain('could not run');
+  });
+
+  it('Take the verdict reports did-not-approve only for a positive Rejected heading', () => {
+    const steps = text.split(/\n {6}- /).slice(1);
+    const verdict = steps.find((s) => s.includes('Take the verdict')) as string;
+    expect(verdict).toBeDefined();
+    const script = verdict
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('#'))
+      .join('\n');
+    expect(script).toMatch(
+      /if \[ -s "\$\{RUNNER_TEMP\}\/review\.md" \] && grep -q '\^## Review: Rejected' /,
+    );
+    // The positive branch says "did not approve"; the else branch (anything
+    // else, including Could not run, empty, unrecognised) says "could not run".
+    const thenPart = script.slice(script.indexOf('then'), script.indexOf('else'));
+    const elsePart = script.slice(script.indexOf('else'));
+    expect(thenPart).toContain('did not approve');
+    expect(thenPart).not.toContain('could not run');
+    expect(elsePart).toContain('could not run');
+    expect(elsePart).not.toContain('did not approve');
+    // Every path exits 1.
+    expect(script).toMatch(/fi\n\s+exit 1/);
+    // No negative match on the Could not run heading any more.
+    expect(script).not.toContain('Could not run');
   });
 
   it('passes the derived-lens inputs to the CLI', () => {
@@ -190,7 +221,11 @@ describe('review.yml shape', () => {
   it('stays callable by existing callers', () => {
     expect(text).toMatch(/governance-ref:/);
     expect(text).toMatch(/\bmodel:/);
-    expect(text).toMatch(/anthropic-api-key:\n(?:.*\n)*?\s+required: true/);
+    // Each secret's own block, so one secret's `required: true` can't satisfy another.
+    const secretBlock = (name: string): string =>
+      new RegExp(`^ {6}${name}:\\n((?: {8}.*\\n)+)`, 'm').exec(text)?.[1] ?? '';
+    expect(secretBlock('anthropic-api-key')).toMatch(/^ {8}required: true$/m);
+    expect(secretBlock('governance-token')).toMatch(/^ {8}required: true$/m);
     expect(text).toMatch(/governance-token:/);
     expect(text).toMatch(/guardrails-ref:/);
     expect(text).not.toContain('corpus-token');

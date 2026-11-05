@@ -57,7 +57,7 @@ on:
 
 env:
   # The one place the reviewer version lives.
-  REVIEWER_PACKAGE: '@verevoir/review@0.3.1'
+  REVIEWER_PACKAGE: '@verevoir/review@0.3.2'
 
 jobs:
   review:
@@ -225,9 +225,12 @@ jobs:
       - name: Take the verdict
         if: (success() || failure()) && steps.review.outcome == 'failure'
         run: |
-          if [ ! -s "${RUNNER_TEMP}/review.md" ] || grep -q '^## Review: Could not run' "${RUNNER_TEMP}/review.md"; then
-            echo "::error title=Review::The review could not run — nothing was reviewed. The report says why, in the job summary."
-          else
+          # "Did not approve" only when the report positively says Rejected.
+          # An empty or missing report, a Could not run heading, or anything
+          # unrecognised is reported as could-not-run.
+          if [ -s "${RUNNER_TEMP}/review.md" ] && grep -q '^## Review: Rejected' "${RUNNER_TEMP}/review.md"; then
             echo "::error title=Review::The review did not approve. The report is in the job summary."
+          else
+            echo "::error title=Review::The review could not run — nothing was reviewed. The report says why, in the job summary."
           fi
           exit 1

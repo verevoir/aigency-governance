@@ -39,7 +39,8 @@ use `@main` until their pin PRs land.
 
 - **The reviewer is pinned and installed from npm.** The workflow installs the
   published `@verevoir/review` at one exact version, declared once in
-  `review.yml` (`REVIEWER_PACKAGE`), into the runner's temporary directory,
+  `review.yml` (`REVIEWER_PACKAGE`; transitive dependencies are pinned from
+  `@verevoir/review` 0.3.2, which bundles them), into the runner's temporary directory,
   outside your repository, with `--ignore-scripts`, and runs it there. It is
   not built from this repository. Your pull request's tree is only read, as the
   diff and as `--context-root` files; nothing in it is installed or run.
@@ -70,7 +71,9 @@ and the check silently does not appear.
 **`aigency-guardrails` is private, so the token behind `governance-token` needs
 `contents: read` on `verevoir/aigency-guardrails`.** A token that can read only
 your own repository, including the default `GITHUB_TOKEN`, cannot do this and
-fails the corpus checkout with `Repository not found`.
+fails the corpus checkout with `Repository not found`. **Migration:** existing
+callers' `GOVERNANCE_TOKEN` previously needed only read access to this
+repository; it now also needs `contents: read` on `aigency-guardrails`.
 
 **The workflow's own input is `governance-token` — that name is fixed. The
 name of the secret behind it, on the right of `secrets.`, is not.** Nothing
@@ -124,10 +127,12 @@ secret to add. An under-scoped one fails later, at the corpus checkout, with
 
 **Governance's own self-review.** `review-pr.yml` calls
 `verevoir/aigency-governance/.github/workflows/review.yml@main`, so the review
-definition comes from main (the base) and a PR cannot change the job that
-receives `GOVERNANCE_TOKEN`. A PR that changes `review.yml` is therefore reviewed
-by main's version, and its changes take effect from the next PR after merge; the
-shape tests in this repository still check `review.yml` before merge. `@main` is
+definition comes from main, so a PR's changes to `review.yml` do not affect its
+own review; they take effect from the next PR after merge, and the shape tests
+in this repository still check `review.yml` before merge. `review-pr.yml` itself
+is read from the PR, like any workflow file, so this guards against accidental
+self-review drift, not against a same-repository writer, who can already run
+workflows with the repository's secrets. Fork PRs receive no secrets. `@main` is
 deliberate here because main is the base; other callers should pin by SHA.
 
 ## What comes back
@@ -141,15 +146,16 @@ The CLI reports one of four outcomes, and its exit code decides the check:
 | rejected         | `## Review: Rejected`         | 1    | At least one lens raised a blocking finding. The report says what.                                                                                                                                                                          |
 | could not run    | `## Review: Could not run`    | 1    | The review did not happen: bad arguments, an unreadable corpus, no `lens:` tags, an empty diff, a missing key, and so on. Red **on purpose**: a green badge over a review that never ran is worse than a red one over a review that failed. |
 
-So the check is green for approved and nothing in scope, and red for everything
-else. A lens that did not run is named in the report before any findings, and
+So the check is green for approved and nothing in scope (which now exits 0, not
+1), and red for everything else. A lens that did not run is named in the report before any findings, and
 it keeps the panel from approving: addressing the findings and not noticing the
 gap is the failure that matters.
 
 The CLI appends its report to the job summary itself, and the workflow does not
 append it again. When the CLI exits 1, the **Take the verdict** step adds an
-annotation to the Checks tab: one saying the review could not run if the report
-heading is `Could not run`, otherwise one saying it did not approve. A green
+annotation to the Checks tab: one saying the review did not approve if the report
+heading is `Rejected`; an empty, missing, `Could not run` or unrecognised report
+is reported as could-not-run. A green
 run emits no annotation, only the job summary. The report is not posted as a
 pull request comment, deliberately — that would need `pull-requests: write`
 granted by your workflow, and this job reads a contributor-authored diff and a
@@ -199,8 +205,8 @@ git diff --merge-base origin/main HEAD | npx -y -p @verevoir/review@<version> ai
 
 Other flags the workflow uses: `--description-file <path>` (the PR description),
 `--checks-file <path>` (CI check results, shown to the lenses verbatim) and
-`--context-root <dir>` (a tree at the change's head, so touched files are shown
-in full). `--print-lenses` with `--practices` prints the derived lenses and
+`--context-root <dir>` (a checked-out tree, so touched files are shown in full;
+in CI it is the pull request's merge commit). `--print-lenses` with `--practices` prints the derived lenses and
 exits without a model call. `aigency-review --help` lists the rest, and the
 `@verevoir/review` README is the reference.
 

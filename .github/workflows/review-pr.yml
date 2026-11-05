@@ -16,13 +16,17 @@ jobs:
     permissions:
       contents: read
       checks: read
-    # The review definition is taken from main (the base), not from the pull
-    # request's commit, so a PR cannot change the job that receives
-    # GOVERNANCE_TOKEN. Gate configuration runs from the base, never the PR
-    # head. Consequently a PR that changes review.yml is reviewed by main's
-    # version, and its own review.yml changes take effect from the next PR
-    # after merge. The shape tests in this repository still check review.yml
-    # before merge.
+    # The review DEFINITION (review.yml) is taken from main, so a PR's changes
+    # to review.yml do not affect its own review. A PR that changes review.yml
+    # is reviewed by main's version, and its changes take effect from the next
+    # PR after merge. The shape tests in this repository still check
+    # review.yml before merge.
+    #
+    # What this does NOT do: review-pr.yml itself is read from the PR, like any
+    # workflow file, so a same-repository writer could change this caller. This
+    # protects against accidental self-review drift, not against a same-repo
+    # writer, who can already run workflows with the repository's secrets.
+    # Fork PRs receive no secrets.
     #
     # `@main` is deliberate here, because main IS the base for PRs to main.
     # It is unlike external callers, which should pin review.yml by commit
@@ -32,8 +36,8 @@ jobs:
     # new review.yml ignores that input, but until this change merges,
     # review.yml@main is the OLD workflow, which checks out and builds
     # governance at governance-ref with the secrets in the job. Passing no
-    # PR-derived ref means even that old workflow builds main's runner, so PR
-    # code never receives GOVERNANCE_TOKEN. review.yml still DECLARES the
+    # PR-derived ref means even that old workflow builds main's runner, not
+    # the PR's code. review.yml still DECLARES the
     # input, for backward compatibility with other callers.
     #
     # Which JOB DEFINITION runs is decided by the `@main` above: GitHub reads
