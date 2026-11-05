@@ -5,11 +5,6 @@ The review, as one reusable GitHub workflow. It runs the published
 the lenses derived from the practices in `verevoir/aigency-guardrails`. Nothing
 that consumes the review holds a copy of the runner or the lens set.
 
-The old in-repo runner (`src/cli/review.ts`) and its static lens set
-(`review/lenses.json`) are **still in this repository but no longer used by the
-workflow**. Their removal is a follow-up. Sections of this file that describe
-them say so, or have been replaced.
-
 ## Add the review to a repository
 
 One file, and that is the whole of it.
@@ -226,17 +221,6 @@ Read by the `aigency-review` CLI, not by this repository:
 | `AIGENCY_REVIEW_MODEL`      | the reviewer's own pinned default                                                        | In the workflow, set from the `model` input; blank means the default. The same commit judged by two models is two verdicts.                     |
 | `AIGENCY_REVIEW_MAX_TOKENS` | the reviewer's own default                                                               | A value that is present and not a positive whole number is refused, never silently replaced.                                                    |
 | `GITHUB_STEP_SUMMARY`       | set by GitHub Actions                                                                    | When set, the CLI appends its report there.                                                                                                     |
-
-`AIGENCY_REVIEW_LENSES` and `--lenses` select a static lens set, and cannot be
-combined with `--practices`. The workflow does not use them.
-
-## The old runner
-
-`src/cli/review.ts`, `review/lenses.json` and the code under `src/review/` are
-the runner and static lens set this workflow used to build and run. The
-workflow no longer touches them. They remain in the repository, and removing
-them is a follow-up; until then, treat their own comments as describing the old
-runner, not what the workflow does.
 
 ## What this is not
 

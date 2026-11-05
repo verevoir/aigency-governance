@@ -13,14 +13,7 @@
 
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
-    // The lens set is data, and data that fails to parse is a panel that does
-    // not run. Importing it puts `review/lenses.json` inside the typechecked
-    // surface, so a broken definition is caught by the gate rather than at the
-    // moment a review is needed.
-    "resolveJsonModule": true,
-    "declaration": true,
-    "outDir": "dist",
     "skipLibCheck": true
   },
-  "include": ["src", "tests"]
+  "include": ["tests"]
 }
