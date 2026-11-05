@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 const text = readFileSync(new URL('../.github/workflows/review.yml', import.meta.url), 'utf8');
 
-/** The bodies of every `run: |` block (and single-line `run:`), comments excluded. */
+/** The bodies of every `run: |` block (and single-line `run:`). Shell comment lines inside them are included. */
 function runBodies(source: string): string[] {
   const lines = source.split('\n');
   const bodies: string[] = [];
@@ -50,9 +50,12 @@ describe('review.yml shape', () => {
     expect(text).toMatch(/PR_BODY: \$\{\{ github\.event\.pull_request\.body \}\}/);
   });
 
-  it('pins the reviewer exactly, once, and installs it safely outside the repo', () => {
+  it('pins the reviewer exactly, once', () => {
     expect(text.match(/@verevoir\/review@\d+\.\d+\.\d+/g)).toEqual(['@verevoir/review@0.3.1']);
     expect(text).toContain("REVIEWER_PACKAGE: '@verevoir/review@0.3.1'");
+  });
+
+  it('installs the reviewer with no scripts, no save, no lockfile, under --prefix', () => {
     const install = runBodies(text).find((b) => b.includes('npm install'));
     expect(install).toBeDefined();
     expect(install).toContain('--ignore-scripts');
@@ -61,7 +64,7 @@ describe('review.yml shape', () => {
     expect(install).toContain('--prefix "${RUNNER_TEMP}/aigency-review"');
   });
 
-  it('runs nothing from the pull request tree', () => {
+  it('has exactly one npm invocation, and it installs under --prefix', () => {
     const npmBodies = runBodies(text).filter((b) => /\bnpm\b/.test(b));
     expect(npmBodies).toHaveLength(1);
     expect(npmBodies[0]).toContain('--prefix');
@@ -103,10 +106,57 @@ describe('review.yml shape', () => {
     expect(entries.sort()).toEqual(['checks: read', 'contents: read']);
   });
 
-  it('ends the checks file with the deliberate-omission line', () => {
+  it('appends the deliberate-omission line to the checks file, last', () => {
+    const body = runBodies(text).find((b) => b.includes('check-runs'));
+    expect(body).toBeDefined();
+    const line =
+      'Omitted deliberately: review checks are not listed here, because this file is input to a review.';
+    expect(body).toContain(`echo "${line}"`);
+    // Order: the gh api write (`> checks.txt`) comes first, then the omission
+    // line's append (`>> checks.txt`) after it, and no write follows that.
+    const script = body as string;
+    const writes = [...script.matchAll(/(>>?) "\$\{RUNNER_TEMP\}\/checks\.txt"/g)];
+    expect(writes.map((w) => w[1])).toEqual(['>', '>>']);
+    const ghWrite = (writes[0]?.index ?? -1) as number;
+    const omissionWrite = (writes[1]?.index ?? -1) as number;
+    expect(script.indexOf('check-runs')).toBeLessThan(ghWrite);
+    expect(script.indexOf(line)).toBeGreaterThan(ghWrite);
+    expect(script.indexOf(line)).toBeLessThan(omissionWrite);
+  });
+
+  it('filters only the review checks themselves, with an anchored pattern', () => {
     expect(text).toContain(
-      'Omitted deliberately: review checks are not listed here, because this file is input to a review.',
+      'test("^(review|review / review|antagonistic[- ]review.*|review \\\\(.*\\\\))$"; "i")',
     );
+    expect(text).not.toContain('test("review"; "i")');
+  });
+
+  it('the filter regex matches review checks and spares unrelated ones', () => {
+    // The regex jq receives, after YAML/shell/jq unescaping.
+    const re = /^(review|review \/ review|antagonistic[- ]review.*|review \(.*\))$/i;
+    for (const name of ['antagonistic-review', 'review (correctness)', 'Antagonistic review']) {
+      expect(re.test(name), name).toBe(true);
+    }
+    for (const name of ['verify', 'preview-deploy', 'code review lint']) {
+      expect(re.test(name), name).toBe(false);
+    }
+  });
+
+  it('lists the checks file in the job summary under its heading', () => {
+    expect(text).toContain('### Checks given to the reviewer');
+    expect(text).toContain('cat "${RUNNER_TEMP}/checks.txt"');
+  });
+
+  it('treats an empty or missing report as could-not-run, with the same -s test in both steps', () => {
+    const steps = text.split(/\n {6}- /).slice(1);
+    const note = steps.find((s) => s.includes('Note a missing report'));
+    const verdict = steps.find((s) => s.includes('Take the verdict'));
+    expect(note).toBeDefined();
+    expect(verdict).toBeDefined();
+    expect(note).toContain('[ ! -s "${RUNNER_TEMP}/review.md" ]');
+    expect(verdict).toContain('[ ! -s "${RUNNER_TEMP}/review.md" ]');
+    expect(verdict).not.toContain('-f ');
+    expect(verdict).toContain('could not run');
   });
 
   it('passes the derived-lens inputs to the CLI', () => {

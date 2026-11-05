@@ -54,7 +54,7 @@ on:
         required: true
 
 env:
-  # The one place the reviewer version lives. PLACEHOLDER: confirm at publish.
+  # The one place the reviewer version lives.
   REVIEWER_PACKAGE: '@verevoir/review@0.3.1'
 
 jobs:
@@ -146,8 +146,12 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       # One line per check on the head commit, "name: status/conclusion".
-      # This job's own check, and every other review check, is left out: the
-      # file is input to a review.
+      # The review checks themselves are left out (this workflow's own check,
+      # named "review" or "review / review" depending on the caller, and the
+      # "Antagonistic review" / "antagonistic-review" checks, and the
+      # antagonist's "review (correctness)" style checks): the file is input
+      # to a review.
+      # Other checks whose names merely contain "review" are kept.
       - name: Collect the other checks
         env:
           GH_TOKEN: ${{ github.token }}
@@ -155,10 +159,19 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/check-runs" \
-            --jq '.check_runs[] | select(.name | test("review"; "i") | not) | "\(.name): \(.status)/\(.conclusion // "none")"' \
+            --jq '.check_runs[] | select(.name | test("^(review|review / review|antagonistic[- ]review.*|review \\(.*\\))$"; "i") | not) | "\(.name): \(.status)/\(.conclusion // "none")"' \
             > "${RUNNER_TEMP}/checks.txt"
           echo "Omitted deliberately: review checks are not listed here, because this file is input to a review." \
             >> "${RUNNER_TEMP}/checks.txt"
+          # Auditable: only check names, statuses and conclusions.
+          {
+            echo "### Checks given to the reviewer"
+            echo ""
+            echo '```'
+            cat "${RUNNER_TEMP}/checks.txt"
+            echo '```'
+            echo ""
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       # continue-on-error, with the verdict taken again below: the report is
       # published whether the review passed or failed, and publishing must not
@@ -189,7 +202,8 @@ jobs:
             | tee "${RUNNER_TEMP}/review.md"
 
       # The CLI already wrote the report to the summary. This only covers a
-      # failure before any report existed.
+      # failure before any report existed. tee creates review.md even when the
+      # CLI crashes, so "no report" means an EMPTY file (-s), not a missing one.
       - name: Note a missing report
         if: success() || failure()
         run: |
@@ -205,7 +219,7 @@ jobs:
       - name: Take the verdict
         if: (success() || failure()) && steps.review.outcome == 'failure'
         run: |
-          if [ -f "${RUNNER_TEMP}/review.md" ] && grep -q '^## Review: Could not run' "${RUNNER_TEMP}/review.md"; then
+          if [ ! -s "${RUNNER_TEMP}/review.md" ] || grep -q '^## Review: Could not run' "${RUNNER_TEMP}/review.md"; then
             echo "::error title=Review::The review could not run — nothing was reviewed. The report says why, in the job summary."
           else
             echo "::error title=Review::The review did not approve. The report is in the job summary."

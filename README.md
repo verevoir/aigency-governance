@@ -24,11 +24,15 @@ jobs:
     permissions:
       contents: read
       checks: read
-    uses: verevoir/aigency-governance/.github/workflows/review.yml@main
+    uses: verevoir/aigency-governance/.github/workflows/review.yml@<commit-sha> # <tag or date>
     secrets:
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
       governance-token: ${{ secrets.GOVERNANCE_TOKEN }}
 ```
+
+Pin to a commit SHA, as above, not a branch. That pin also fixes the reviewer
+version, so keep it current: bump the SHA when this repository changes the
+reviewer pin or the workflow.
 
 ### What the workflow does, and its interface
 
@@ -115,6 +119,16 @@ the empty string, which still satisfies `required: true`. A blank
 secret to add. An under-scoped one fails later, at the corpus checkout, with
 `Repository not found`.
 
+**Accepted risk.** Governance's own self-review (`review-pr.yml`) calls
+`review.yml` by the local path `./`, so the job definition comes from the pull
+request's own commit and receives `GOVERNANCE_TOKEN`. A same-repository PR
+author could change `review.yml` to misuse that token. Fork PRs receive no
+secrets. The token is read-only (`contents: read` on `aigency-guardrails` and
+`aigency-governance`), which limits any misuse to reading those two
+repositories. This is accepted until the review moves to a sidecar that holds
+the token outside PR-defined code. Callers in other repositories pin
+`review.yml` by SHA, so their PRs cannot change the job definition.
+
 ## What comes back
 
 The CLI reports one of four outcomes, and its exit code decides the check:
@@ -165,7 +179,7 @@ history for `--base` (`fetch-depth: 0` in CI; a normal clone locally), and a
 `claude` login or an `ANTHROPIC_API_KEY`:
 
 ```sh
-npx -y @verevoir/review aigency-review \
+npx -y -p @verevoir/review@0.3.1 aigency-review \
   --base origin/main \
   --title "what you are reviewing" \
   --practices /path/to/aigency-guardrails/corpus/practices
@@ -174,7 +188,7 @@ npx -y @verevoir/review aigency-review \
 The diff can instead come from stdin, as the workflow does it:
 
 ```sh
-git diff --merge-base origin/main HEAD | npx -y @verevoir/review aigency-review \
+git diff --merge-base origin/main HEAD | npx -y -p @verevoir/review@0.3.1 aigency-review \
   --practices /path/to/aigency-guardrails/corpus/practices \
   --context-root .
 ```
