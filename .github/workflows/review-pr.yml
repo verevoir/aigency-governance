@@ -11,6 +11,11 @@ on:
 
 jobs:
   review:
+    # A called workflow can't exceed its caller's grant, and review.yml needs
+    # checks: read to list the PR's other checks.
+    permissions:
+      contents: read
+      checks: read
     # `./` rather than `verevoir/aigency-governance/...@main`, and the
     # difference has a real cost that is being accepted rather than missed.
     #

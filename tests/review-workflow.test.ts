@@ -143,4 +143,26 @@ describe('review-pr.yml wiring', () => {
     expect(caller).toMatch(/^ {6}governance-token: \$\{\{ secrets\.GOVERNANCE_TOKEN \}\}$/m);
     expect(caller).not.toMatch(/governance-token: \$\{\{ secrets\.GITHUB_TOKEN/);
   });
+
+  it('grants every permission review.yml requests, at the same or higher level', () => {
+    const rank: Record<string, number> = { none: 0, read: 1, write: 2 };
+    const parse = (source: string, indent: number): Record<string, string> => {
+      const pad = ' '.repeat(indent);
+      const re = new RegExp(`^${pad}permissions:\\n((?:${pad}  .+\\n)+)`, 'm');
+      const block = re.exec(source);
+      const out: Record<string, string> = {};
+      for (const line of (block?.[1] ?? '').split('\n')) {
+        const m = /^\s*([a-z-]+):\s*([a-z]+)\s*(?:#.*)?$/.exec(line);
+        if (m !== null) out[m[1] as string] = m[2] as string;
+      }
+      return out;
+    };
+    const required = parse(text, 4);
+    const granted = parse(caller, 4);
+    expect(Object.keys(required).length).toBeGreaterThan(0);
+    const missing = Object.entries(required)
+      .filter(([name, level]) => (rank[granted[name] ?? 'none'] ?? 0) < (rank[level] ?? 0))
+      .map(([name, level]) => `${name}: ${level} (caller grants ${granted[name] ?? 'nothing'})`);
+    expect(missing, `review-pr.yml's review job is missing: ${missing.join(', ')}`).toEqual([]);
+  });
 });

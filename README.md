@@ -21,6 +21,9 @@ name: review
 on: pull_request
 jobs:
   review:
+    permissions:
+      contents: read
+      checks: read
     uses: verevoir/aigency-governance/.github/workflows/review.yml@main
     secrets:
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -49,6 +52,13 @@ jobs:
 | input  | `guardrails-ref`    | no       | Revision of `aigency-guardrails` the lenses are derived from. Default `main`.                                                 |
 | input  | `model`             | no       | Overrides the pinned judge. Blank means the reviewer's own default.                                                           |
 | input  | `governance-ref`    | no       | **Accepted but unused.** Kept so callers that still pass it keep working; it no longer selects anything.                      |
+
+**Every caller's job must grant `contents: read` and `checks: read`**, as the
+example above does. A called workflow cannot exceed its caller's grant, and
+`review.yml` needs `checks: read` to list the pull request's other checks. If
+the calling job grants less (and the repository default is the restricted
+`read`, which does not include `checks`), the run fails at startup with no jobs,
+and the check silently does not appear.
 
 **`aigency-guardrails` is private, so the token behind `governance-token` needs
 `contents: read` on `verevoir/aigency-guardrails`.** A token that can read only
