@@ -13,15 +13,20 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_provider_id = local.pool_id
   display_name                       = "GitHub OIDC"
 
+  # repo_id_workflow is <repo id>@<ref>|<workflow ref>. repo_id_workflow_env is
+  # the same string plus |<environment>, where the environment claim exists
+  # only on a job that names an environment: has() keeps a job without one
+  # from failing the mapping, and gives it an empty environment.
   attribute_mapping = {
-    "google.subject"                = "assertion.sub"
-    "attribute.repository"          = "assertion.repository"
-    "attribute.repository_owner"    = "assertion.repository_owner"
-    "attribute.repository_id"       = "assertion.repository_id"
-    "attribute.repository_owner_id" = "assertion.repository_owner_id"
-    "attribute.ref"                 = "assertion.ref"
-    "attribute.job_workflow_ref"    = "assertion.job_workflow_ref"
-    "attribute.repo_id_workflow"    = "assertion.repository_id + '@' + assertion.ref + '|' + assertion.job_workflow_ref"
+    "google.subject"                 = "assertion.sub"
+    "attribute.repository"           = "assertion.repository"
+    "attribute.repository_owner"     = "assertion.repository_owner"
+    "attribute.repository_id"        = "assertion.repository_id"
+    "attribute.repository_owner_id"  = "assertion.repository_owner_id"
+    "attribute.ref"                  = "assertion.ref"
+    "attribute.job_workflow_ref"     = "assertion.job_workflow_ref"
+    "attribute.repo_id_workflow"     = "assertion.repository_id + '@' + assertion.ref + '|' + assertion.job_workflow_ref"
+    "attribute.repo_id_workflow_env" = "assertion.repository_id + '@' + assertion.ref + '|' + assertion.job_workflow_ref + '|' + (has(assertion.environment) ? assertion.environment : '')"
   }
 
   attribute_condition = local.attribute_condition

@@ -87,11 +87,14 @@ Optional module arguments: `manage_apis` and `create_deployer` (both default
 second installation in the same project), `pool_suffix` (default empty; see
 step 8) and `allowed_owner_condition` (optional; the owner-id check
 is always applied and a value here is ANDed with it, so it can only narrow
-trust). The module itself holds no project- or organisation-specific
-value and is not edited.
+trust), `deploy_environment` (default `infra-apply`; the GitHub environment the
+deployer is bound to, step 6) and `noncurrent_retention_days` (default 30;
+how long an overwritten corpus object version is kept). The module itself
+holds no project- or organisation-specific value and is not edited.
 
 If you also want the workflow in `.github/workflows/infra.yml` to deploy your
-copy, change its two `infra/installations/verevoir` paths to your directory.
+copy, change the single `INSTALLATION` value in the `env:` block at the top of
+it to your directory.
 
 ## 4. Create the state bucket (once, by an operator)
 
@@ -158,18 +161,18 @@ gh variable set CORPUS_PUBLISHER_SA --repo "$CORPUS_REPO" --body "$(tofu output 
 gh variable set CORPUS_BUCKET       --repo "$CORPUS_REPO" --body "$(tofu output -raw corpus_bucket)"
 ```
 
-| Variable              | Value (output)  | Set on                                               | Used by                                |
-| --------------------- | --------------- | ---------------------------------------------------- | -------------------------------------- |
-| `INFRA_WIF_PROVIDER`  | `wif_provider`  | the governance repo (`$GOV_REPO`)                    | `infra.yml`, the apply job             |
-| `INFRA_DEPLOYER_SA`   | `deployer_sa`   | the governance repo                                  | `infra.yml`, the apply job             |
-| `INFRA_PLANNER_SA`    | `planner_sa`    | the governance repo                                  | `infra.yml`, the plan and drift jobs   |
-| `TF_STATE_BUCKET`     | `state_bucket`  | the governance repo                                  | `infra.yml`, every job with state      |
-| `TF_STATE_PREFIX`     | your prefix     | the governance repo                                  | `infra.yml`, every job with state      |
-| `CORPUS_WIF_PROVIDER` | `wif_provider`  | the corpus repo (`$CORPUS_REPO`)                     | the corpus repo's publish workflow     |
-| `CORPUS_PUBLISHER_SA` | `publisher_sa`  | the corpus repo                                      | the corpus repo's publish workflow     |
-| `CORPUS_BUCKET`       | `corpus_bucket` | the corpus repo, and every repo that runs the review | publish, and the review's corpus fetch |
-| `CORPUS_WIF_PROVIDER` | `wif_provider`  | every repo that runs the review (or the org)         | the review workflow (pass B)           |
-| `CORPUS_READER_SA`    | `reader_sa`     | every repo that runs the review (or the org)         | the review workflow (pass B)           |
+| Variable              | Value (output)  | Set on                                               | Used by                                     |
+| --------------------- | --------------- | ---------------------------------------------------- | ------------------------------------------- |
+| `INFRA_WIF_PROVIDER`  | `wif_provider`  | the governance repo (`$GOV_REPO`)                    | `infra.yml`, the plan, apply and drift jobs |
+| `INFRA_DEPLOYER_SA`   | `deployer_sa`   | the governance repo                                  | `infra.yml`, the apply job                  |
+| `INFRA_PLANNER_SA`    | `planner_sa`    | the governance repo                                  | `infra.yml`, the plan and drift jobs        |
+| `TF_STATE_BUCKET`     | `state_bucket`  | the governance repo                                  | `infra.yml`, every job with state           |
+| `TF_STATE_PREFIX`     | your prefix     | the governance repo                                  | `infra.yml`, every job with state           |
+| `CORPUS_WIF_PROVIDER` | `wif_provider`  | the corpus repo (`$CORPUS_REPO`)                     | the corpus repo's publish workflow          |
+| `CORPUS_PUBLISHER_SA` | `publisher_sa`  | the corpus repo                                      | the corpus repo's publish workflow          |
+| `CORPUS_BUCKET`       | `corpus_bucket` | the corpus repo, and every repo that runs the review | publish, and the review's corpus fetch      |
+| `CORPUS_WIF_PROVIDER` | `wif_provider`  | every repo that runs the review (or the org)         | the review workflow (pass B)                |
+| `CORPUS_READER_SA`    | `reader_sa`     | every repo that runs the review (or the org)         | the review workflow (pass B)                |
 
 For the review-running repositories:
 
@@ -194,11 +197,19 @@ gh variable set TF_STATE_PREFIX  --repo "$GOV_REPO" --body "$TF_STATE_PREFIX"
 ```
 
 Then, in the governance repository, create the environment `infra-apply`
-(**Settings → Environments**) and add **required reviewers**. The apply job
-waits there, after the plan job has printed the plan. The apply job then plans
-again and applies that second plan, so the approval covers the printed plan, not
-the second one; if state or `main` changed in between, read the apply job's own
-plan output, which is in its log, before approving a long-queued run.
+(**Settings → Environments**), add **required reviewers**, and restrict its
+deployment branches to `main`. The name must equal the module's
+`deploy_environment` (default `infra-apply`). The apply job waits there, after
+the plan job has printed the plan and saved it as an artifact. The apply job
+downloads that same plan file and applies it without planning again, so what
+the reviewers approve is what is applied. If the state moved since, tofu
+refuses the stale plan and the apply fails; it never applies something else.
+
+The environment is enforced by the identity, not only by the workflow: the
+deployer can be assumed only by a token whose `environment` claim is this name
+(see below), so the planner's jobs, which name no environment, cannot assume
+it. What the environment does NOT enforce is the reviewers: those are a GitHub
+setting. With none configured the apply job is not gated.
 
 The corpus repository's own CI publishes to the bucket as the publisher
 service account; that workflow lives in that repository and uses
@@ -214,11 +225,15 @@ bucket. The consequence: only `main` of the corpus is served keylessly; a
 ### Why `main-evil` or a tag cannot match
 
 The provider maps `attribute.repo_id_workflow` to
-`assertion.repository_id + '@' + assertion.ref + '|' + assertion.job_workflow_ref`.
+`assertion.repository_id + '@' + assertion.ref + '|' + assertion.job_workflow_ref`,
+and `attribute.repo_id_workflow_env` to the same string plus `'|'` and the
+`environment` claim (empty for a job that names no environment).
 The publisher is bound to the principal
 `attribute.repo_id_workflow/<corpus_repo_id>@refs/heads/main|<corpus_repo>/<publish_workflow_path>@refs/heads/main`,
 and the deployer to
-`attribute.repo_id_workflow/<governance_repo_id>@refs/heads/main|<governance_repo>/<deploy_workflow_path>@refs/heads/main`.
+`attribute.repo_id_workflow_env/<governance_repo_id>@refs/heads/main|<governance_repo>/<deploy_workflow_path>@refs/heads/main|<deploy_environment>`.
+The read-only planner is bound to the same string without the environment, on
+`attribute.repo_id_workflow`, so it is a different principal from the deployer.
 The workflow paths default to `.github/workflows/publish-corpus.yml` and
 `.github/workflows/infra.yml` (inputs `publish_workflow_path` and
 `deploy_workflow_path`). A
@@ -253,8 +268,10 @@ Renaming the workflow file means changing the input and re-applying locally.
 Overwriting an object needs delete permission, which is why the second grant
 exists and why it is limited to the one object. The publisher therefore cannot
 overwrite or delete anything under `corpus/` or `manifests/` (objects are
-immutable once written; a republish of the same `<sha>` fails), and cannot read
-or list. Publish in this order: `corpus/<sha>/…`, then `manifests/<sha>.json`,
+immutable once written; a republish of the same `<sha>` fails), and can read
+only `refs/main` (`roles/storage.objectUser` includes `storage.objects.get`,
+limited by the same condition); it cannot read any other object. Publish in
+this order: `corpus/<sha>/…`, then `manifests/<sha>.json`,
 then `refs/main`. Use an upload that does not first read the object (for example
 `gcloud storage cp`, or the JSON API with `ifGenerationMatch=0` for new
 objects). If a first publish is refused for a read or list the conditions do not
@@ -288,11 +305,18 @@ older sha without anyone noticing.
 Change anything under `infra/` through a pull request. The `infra` workflow:
 
 - on the pull request runs `tofu fmt -check -recursive`, `tofu init
--backend=false` and `tofu validate`, with **no cloud credentials**;
+-backend=false` and `tofu validate`, with **no cloud credentials**; and, on
+  the pull request and on `main`, a Checkov misconfiguration scan of `infra/`
+  that blocks (`soft_fail: false`). It cannot be run locally here, so the first
+  CI run shows what it finds; no check is skipped. The action is pinned by SHA
+  but pulls its docker image by tag, which the pin does not cover;
 - on merge to `main` runs a **plan job** as the read-only planner (prints the
   plan), then an **apply job** that waits for the `infra-apply` environment's
-  required reviewers, authenticates as the deployer through OIDC, re-plans and
-  applies exactly that saved plan. Applies are serialised by a concurrency group;
+  required reviewers, authenticates as the deployer through OIDC and applies
+  exactly that saved plan, downloaded as an artifact (kept 7 days; after that
+  the apply fails rather than planning again). One apply runs at a time and
+  GitHub keeps a single pending run, so a newer push replaces an older pending
+  one, which is never applied late;
 - every Monday, and on demand, runs a **drift job** as the planner:
   `tofu plan -detailed-exitcode` fails the job when the real estate and the
   code differ (exit 2) or the plan errors (exit 1). It never applies;
@@ -300,8 +324,9 @@ Change anything under `infra/` through a pull request. The `infra` workflow:
   or `TF_STATE_PREFIX` is unset.
 
 The deployer and the planner can only be assumed by the `infra.yml` workflow of
-`$GOV_REPO` on `refs/heads/main`. Protect `main` accordingly: a merge to it is a
-deploy, gated by the `infra-apply` approval.
+`$GOV_REPO` on `refs/heads/main`, and the deployer additionally only by a job
+that names the `infra-apply` environment. Protect `main` accordingly: a merge to
+it starts a deploy, gated by that environment's reviewers.
 
 Changes the deployer cannot make: the module's project-level grants and its
 custom roles (it holds no role that sets a project IAM policy), and a service
@@ -356,14 +381,20 @@ changes anything.
 | custom `<prefix>_planner_bucket` | the two buckets only  | `storage.buckets.get` and `storage.buckets.getIamPolicy`: a bucket's settings and IAM. No object.    |
 | `roles/storage.objectViewer`     | the state bucket only | Read the state objects.                                                                              |
 
-A failed drift job is the alert: GitHub notifies the person who last edited the
-schedule, and the run stays red until the code and the estate agree again. Fix
-it by applying (merge a change, or a local apply for project-level grants), or
-by reverting the out-of-band change.
+A failed drift job is the only alert, and **there is no owned alert channel in
+this change**: the run shows red in the Actions tab, and GitHub emails whoever
+last edited the cron line, if their notification settings allow it. Nobody is
+paged and no team channel is told. Until a channel is wired (a follow-up), look
+at the Actions tab weekly. The title tells the two failures apart: `Drift` (the
+estate and the code differ) and `Plan failed` (tofu errored, which is not
+drift). Fix drift by applying (merge a change, or a local apply for
+project-level grants), or by reverting the out-of-band change.
 
 The permission lists of the three custom roles are written from the GCP
 permission names and have not been exercised against a real project: the first
-local apply (step 5) is where an invalid name would be reported.
+local apply (step 5) is where an invalid name would be reported. The same goes
+for the provider's `has(assertion.environment)` mapping expression: it is
+first evaluated by a real apply and a real token.
 
 ## 8. Teardown
 
@@ -450,7 +481,7 @@ module "review_corpus" {
   # ... project_id, region, github_owner(_id), corpus_repo(_id), governance_repo(_id) ...
 
   manage_apis     = false      # no google_project_service at all
-  create_deployer = false      # no deployer or planner SA, no custom role, no project-level grants
+  create_deployer = false      # no deployer or planner SA, no custom roles, no project-level grants
   name_prefix     = "rvw-corp" # unique in the project: every id carries it
 }
 ```
@@ -467,7 +498,7 @@ module "review_corpus" {
 - All IAM is additive (single-member grants); the module never replaces a
   policy or a role's member list.
 - Every id carries `name_prefix` (buckets, pool, provider, service accounts,
-  the custom role) and the pool also `pool_suffix`. Choose a prefix no other
+  the three custom roles) and the pool also `pool_suffix`. Choose a prefix no other
   installation or pool in the project uses.
 
 **The deployer's two project-wide roles (service usage admin, workload identity

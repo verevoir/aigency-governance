@@ -43,7 +43,7 @@ resource "google_storage_bucket" "corpus" {
 
   lifecycle_rule {
     condition {
-      days_since_noncurrent_time = 30
+      days_since_noncurrent_time = var.noncurrent_retention_days
     }
     action {
       type = "Delete"

@@ -2,15 +2,17 @@ locals {
   object_prefix  = "projects/_/buckets/${google_storage_bucket.corpus.name}/objects/"
   pool_principal = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}"
 
-  # The whole identity: <repo id>@<ref>|<owner/name>/<workflow path>@<ref>. It is
-  # compared as one exact string, so BOTH the repository+ref AND the workflow
-  # file must match.
-  publisher_identity = "${var.corpus_repo_id}@refs/heads/main|${var.corpus_repo}/${var.publish_workflow_path}@refs/heads/main"
-  deployer_identity  = "${var.governance_repo_id}@refs/heads/main|${var.governance_repo}/${var.deploy_workflow_path}@refs/heads/main"
+  # <repo id>@<ref>|<owner/name>/<workflow path>@<ref>, compared as one exact
+  # string, so the repository, the ref AND the workflow file must all match.
+  publisher_identity      = "${var.corpus_repo_id}@refs/heads/main|${var.corpus_repo}/${var.publish_workflow_path}@refs/heads/main"
+  infra_workflow_identity = "${var.governance_repo_id}@refs/heads/main|${var.governance_repo}/${var.deploy_workflow_path}@refs/heads/main"
+  # The deployer's identity also names the GitHub environment, so a token from
+  # a job that names none (the planner's) cannot satisfy it.
+  deployer_identity = "${local.infra_workflow_identity}|${var.deploy_environment}"
 }
 
-# Additive IAM only: every grant here is a single-member resource, so applying
-# or destroying this module never removes a grant someone else made.
+# Additive IAM only: every grant is a single-member resource, so applying or
+# destroying this module never removes a grant someone else made.
 
 # --- publisher: writes the corpus bucket, from the corpus repo's main only ---
 
@@ -23,9 +25,9 @@ resource "google_service_account" "publisher" {
   depends_on = [google_project_service.apis]
 }
 
-# The publisher can CREATE objects only under corpus/, manifests/ and refs/main,
-# and can OVERWRITE (delete) only refs/main. It cannot read, list or delete
-# anything else. Both grants are conditional on the object name.
+# Create only under corpus/, manifests/ and refs/main; overwrite (which needs
+# delete) only refs/main. objectUser also carries objects.get, so the publisher
+# can read refs/main and nothing else.
 resource "google_storage_bucket_iam_member" "publisher_create" {
   bucket = google_storage_bucket.corpus.name
   role   = "roles/storage.objectCreator"
@@ -50,11 +52,6 @@ resource "google_storage_bucket_iam_member" "publisher_overwrite_ref" {
   }
 }
 
-# Main only, by numeric id, from one workflow file: the principal is the WHOLE
-# string <corpus_repo_id>@refs/heads/main|<repo>/<workflow>@refs/heads/main, an
-# exact match. A branch such as main-evil, a tag, a re-registered repository
-# name, or any OTHER workflow on main has a different repo_id_workflow and
-# cannot assume the publisher.
 resource "google_service_account_iam_member" "publisher_wif" {
   service_account_id = google_service_account.publisher.name
   role               = "roles/iam.workloadIdentityUser"
@@ -85,27 +82,15 @@ resource "google_service_account_iam_member" "reader_wif" {
 }
 
 # --- deployer: applies this module, from the governance repo's main only ----
-# Everything below exists only when create_deployer is true. With it false the
-# module makes no project-level grant at all (for a shared project).
+# Everything from here on exists only when create_deployer is true.
 #
-# WHAT THE DEPLOYER CAN DO, stated plainly (infra/INSTALL.md has the table):
-#   - Project level, two PREDEFINED roles that cannot be narrowed to this
-#     module's resources: roles/serviceusage.serviceUsageAdmin (enable and
-#     disable ANY API in the project) and roles/iam.workloadIdentityPoolAdmin
-#     (change ANY identity pool or provider in the project, including this
-#     module's provider condition, which is the trust boundary).
-#   - Project level, one CUSTOM role (deployer_project): read the project's IAM
-#     policy, and create service accounts. Creating a service account is a
-#     project-level permission; it cannot be scoped to a name.
-#   - Resource level: roles/iam.serviceAccountAdmin on this module's own service
-#     accounts only (so it can manage them and change who may impersonate
-#     them), and roles/storage.admin on this module's two buckets only.
-# It holds no owner, editor, project IAM admin or security admin role, so the
-# project's own IAM policy changes only through a local apply by a person. It
-# CAN widen access to the module's own resources and rewrite the provider's
-# trust condition: that is an accepted residual risk. It is why the shipped
-# installation uses a DEDICATED project and why a shared project sets
-# create_deployer = false.
+# The deployer CAN widen access (full table: infra/INSTALL.md section 7). Two
+# project-wide predefined roles have no narrower form: workloadIdentityPoolAdmin
+# can rewrite the provider's trust condition, and serviceUsageAdmin reaches any
+# API. It also administers this module's service accounts and buckets. That is an
+# accepted residual risk, which is why the shipped installation uses a DEDICATED
+# project and a shared project sets create_deployer = false. It holds no owner,
+# editor or project IAM admin role.
 
 resource "google_service_account" "deployer" {
   count = var.create_deployer ? 1 : 0
@@ -113,7 +98,7 @@ resource "google_service_account" "deployer" {
   project      = var.project_id
   account_id   = "${var.name_prefix}-deployer"
   display_name = "Infrastructure deployer"
-  description  = "Applies this module on merge to main."
+  description  = "Applies this module on merge to main, behind the deploy environment."
 
   depends_on = [google_project_service.apis]
 }
@@ -123,10 +108,9 @@ resource "google_service_account_iam_member" "deployer_wif" {
 
   service_account_id = google_service_account.deployer[0].name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "${local.pool_principal}/attribute.repo_id_workflow/${local.deployer_identity}"
+  member             = "${local.pool_principal}/attribute.repo_id_workflow_env/${local.deployer_identity}"
 }
 
-# Predefined project roles that GCP offers no narrower form of (see above).
 resource "google_project_iam_member" "deployer" {
   for_each = var.create_deployer ? toset([
     "roles/serviceusage.serviceUsageAdmin",
@@ -138,9 +122,8 @@ resource "google_project_iam_member" "deployer" {
   member  = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
-# The two project-level permissions that are not available per resource:
-# reading the project IAM policy (so a plan can refresh the project grants it
-# cannot change) and creating a service account. It cannot set any policy.
+# Project-level permissions with no per-resource form: read the project IAM
+# policy (so a plan can refresh it) and create service accounts. Sets no policy.
 resource "google_project_iam_custom_role" "deployer_project" {
   count = var.create_deployer ? 1 : 0
 
@@ -165,10 +148,8 @@ resource "google_project_iam_member" "deployer_project" {
   member  = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
-# Service account administration on THIS module's accounts only, not
-# project-wide: the deployer cannot touch, or impersonate through, any other
-# service account in the project. (A service account created later, outside
-# this module, is not in this list; adding one is a local apply.)
+# Service account administration on THIS module's accounts only. A service
+# account created later, outside this module, is not covered.
 resource "google_service_account_iam_member" "deployer_sa_admin" {
   for_each = var.create_deployer ? {
     publisher = google_service_account.publisher.name
@@ -182,9 +163,7 @@ resource "google_service_account_iam_member" "deployer_sa_admin" {
   member             = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
-# Bucket-level, not project-level: the deployer administers these two buckets
-# (settings, their IAM, and the state objects) and no others. On the corpus
-# bucket that includes changing who can read or write the corpus.
+# Bucket-level: these two buckets, including who may read or write the corpus.
 resource "google_storage_bucket_iam_member" "deployer" {
   for_each = var.create_deployer ? {
     corpus = google_storage_bucket.corpus.name
@@ -196,11 +175,10 @@ resource "google_storage_bucket_iam_member" "deployer" {
   member = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
-# --- planner: the READ-ONLY twin of the deployer, for plans and drift checks ---
-# Same workflow identity, a different service account: the workflow picks which
-# one it authenticates as. It can read what a plan refreshes and nothing else:
-# no write to the state bucket (plans run with -lock=false), no grant of any
-# kind. It exists so the scheduled drift check never holds write credentials.
+# --- planner: the read-only twin, for plans and drift checks ----------------
+# Bound to the same workflow file but NOT to the environment, so the plan and
+# drift jobs never hold write credentials. Plans run with -lock=false, so it
+# writes nothing, state included.
 
 resource "google_service_account" "planner" {
   count = var.create_deployer ? 1 : 0
@@ -218,10 +196,9 @@ resource "google_service_account_iam_member" "planner_wif" {
 
   service_account_id = google_service_account.planner[0].name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "${local.pool_principal}/attribute.repo_id_workflow/${local.deployer_identity}"
+  member             = "${local.pool_principal}/attribute.repo_id_workflow/${local.infra_workflow_identity}"
 }
 
-# Project-level, read-only: everything a plan refreshes that is not a bucket.
 resource "google_project_iam_custom_role" "planner" {
   count = var.create_deployer ? 1 : 0
 
@@ -251,7 +228,6 @@ resource "google_project_iam_member" "planner" {
   member  = "serviceAccount:${google_service_account.planner[0].email}"
 }
 
-# Bucket-level, read-only: the settings and IAM policy of the two buckets.
 resource "google_project_iam_custom_role" "planner_bucket" {
   count = var.create_deployer ? 1 : 0
 

@@ -1,35 +1,51 @@
-// Pins the SHAPE of the keyless-corpus installation: infra.yml and the
-// OpenTofu module. Text-level, no cloud, no tofu, no YAML or HCL dependency.
+// Pins the SHAPE of the keyless-corpus installation: infra.yml, the OpenTofu
+// module and INSTALL.md. Text-level: no cloud, no tofu, no YAML or HCL library.
 //
-// One behaviour per test, so a red suite names exactly what broke. Checks that
-// repeat across a set (each job, each variable) use it.each, so each member
-// fails on its own. HCL is compared with alignment padding collapsed, so a
-// behaviour-preserving `tofu fmt` realignment does not break a test.
-import { readdirSync, readFileSync } from 'node:fs';
+// The module is tested by WHAT IT GRANTS AND TO WHOM, not by its spelling. The
+// HCL is read into (target, role, member, condition) grants, with Terraform
+// resource and local names normalised away: a service account is its
+// account_id suffix (`publisher`), a bucket its `<name>_bucket` local
+// (`corpus`), a custom role its role_id suffix, and locals are expanded. So a
+// pure rename of a resource or a local does not fail a test; a change to a
+// grant does. One behaviour per test; per-member checks use it.each.
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const root = new URL('../', import.meta.url);
 const read = (path: string): string => readFileSync(new URL(path, root), 'utf8');
 
-/** Collapse alignment padding after a token (not indentation): `a   = 1` -> `a = 1`. */
+/** Collapse alignment padding after a token, so a `tofu fmt` realignment cannot fail a test. */
 const squash = (source: string): string => source.replace(/(\S)[ \t]{2,}/g, '$1 ');
-
-const workflow = read('.github/workflows/infra.yml');
-const install = read('infra/INSTALL.md');
-const iamSource = read('infra/modules/review-corpus/iam.tf');
-const moduleDir = new URL('infra/modules/review-corpus/', root);
-const moduleFiles = readdirSync(moduleDir).filter((f) => f.endsWith('.tf'));
-const moduleText = squash(
-  moduleFiles.map((f) => readFileSync(new URL(f, moduleDir), 'utf8')).join('\n'),
-);
-const installation = squash(read('infra/installations/verevoir/main.tf'));
-
-/** Strip comment-only lines so prose in comments cannot satisfy or break a check. */
+/** Drop comment-only lines, so prose cannot satisfy or break a check. */
 const code = (source: string): string =>
   source
     .split('\n')
     .filter((l) => !/^\s*(#|\/\/)/.test(l))
     .join('\n');
+
+const workflow = read('.github/workflows/infra.yml');
+const install = read('infra/INSTALL.md');
+const flat = install.replace(/\s+/g, ' ');
+/** iam.tf with comment markers and line breaks collapsed, so a wrapped phrase still matches. */
+const iamSource = read('infra/modules/review-corpus/iam.tf').replace(/\n#?\s*/g, ' ');
+const gitignore = read('.gitignore');
+const moduleDir = new URL('infra/modules/review-corpus/', root);
+const moduleText = squash(
+  readdirSync(moduleDir)
+    .filter((f) => f.endsWith('.tf'))
+    .map((f) => readFileSync(new URL(f, moduleDir), 'utf8'))
+    .join('\n'),
+);
+const moduleCode = code(moduleText);
+const installation = squash(read('infra/installations/verevoir/main.tf'));
+
+const pairs = (names: string[], tokens: string[]): { name: string; token: string }[] =>
+  names.flatMap((name) => tokens.map((token) => ({ name, token })));
+
+// ---------------------------------------------------------------- workflow
 
 /** The bodies of every `run:` (block or single-line). */
 function runBodies(source: string): string[] {
@@ -44,7 +60,7 @@ function runBodies(source: string): string[] {
     for (let j = i + 1; j < lines.length; j++) {
       const line = lines[j] as string;
       if (line.trim() !== '' && line.length - line.trimStart().length <= indent) break;
-      body.push(line);
+      body.push(line.replace(new RegExp(`^ {${indent + 2}}`), ''));
     }
     bodies.push(body.join('\n'));
   }
@@ -67,12 +83,27 @@ const entries = (block: string | undefined): string[] =>
     .filter((l) => l !== '')
     .sort();
 
-const jobNames = ['check', 'plan', 'apply', 'drift'];
+const jobNames = ['scan', 'check', 'plan', 'apply', 'drift'];
 /** The jobs that authenticate to the cloud, and so use state. */
 const cloudJobs = ['plan', 'apply', 'drift'];
-/** Every (name, token) pair, so each pair is its own test. */
-const pairs = (names: string[], tokens: string[]): { name: string; token: string }[] =>
-  names.flatMap((name) => tokens.map((token) => ({ name, token })));
+const stateVars = ['TF_STATE_BUCKET', 'TF_STATE_PREFIX'];
+
+/** Run a workflow `run:` body in bash with a fake `tofu` that exits `tofuExit`. */
+function execute(
+  body: string,
+  env: Record<string, string>,
+  tofuExit = 0,
+): { status: number | null; out: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'infra-shape-'));
+  const fake = join(dir, 'tofu');
+  writeFileSync(fake, `#!/bin/sh\nexit ${tofuExit}\n`);
+  chmodSync(fake, 0o755);
+  const r = spawnSync('/bin/bash', ['-e', '-c', body], {
+    env: { PATH: `${dir}:/usr/bin:/bin`, ...env },
+    encoding: 'utf8',
+  });
+  return { status: r.status, out: `${r.stdout}${r.stderr}` };
+}
 
 describe('infra.yml pins', () => {
   it.each([
@@ -81,14 +112,18 @@ describe('infra.yml pins', () => {
       pin: '7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0',
     },
     { action: 'opentofu/setup-opentofu', pin: 'a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2' },
-  ])('pins $action by full SHA with a version comment', ({ action, pin }) => {
+    {
+      action: 'bridgecrewio/checkov-action',
+      pin: '45edc9d8856b664db2ec251f5f8632361f0a67aa # v12.3139.0',
+    },
+  ])('pins $action to the verified SHA', ({ action, pin }) => {
     expect(workflow).toContain(`${action}@${pin}`);
   });
 
   const uses = [...workflow.matchAll(/^\s*(?:- )?uses:\s*(.+)$/gm)].map((m) => m[1] as string);
 
   it('uses enough actions for the pin check to mean something', () => {
-    expect(uses.length).toBeGreaterThanOrEqual(5);
+    expect(uses.length).toBeGreaterThanOrEqual(10);
   });
 
   it.each(uses)('pins %s by 40-hex SHA with a version comment', (u) => {
@@ -106,18 +141,18 @@ describe('infra.yml permissions', () => {
     ]);
   });
 
-  it('gives the check job contents: read and nothing else', () => {
-    expect(perms('check')).toEqual(['contents: read']);
+  it.each(['scan', 'check'])('gives %s contents: read and nothing else', (name) => {
+    expect(perms(name)).toEqual(['contents: read']);
   });
 
-  it.each(cloudJobs)('gives the %s job only contents: read and id-token: write', (name) => {
+  it.each(cloudJobs)('gives %s only contents: read and id-token: write', (name) => {
     expect(perms(name)).toEqual(['contents: read', 'id-token: write']);
   });
 });
 
 describe('infra.yml hygiene', () => {
   it('has run bodies to check', () => {
-    expect(runBodies(workflow).length).toBeGreaterThanOrEqual(8);
+    expect(runBodies(workflow).length).toBeGreaterThanOrEqual(10);
   });
 
   it('never expands ${{ }} inside a run: body', () => {
@@ -132,20 +167,63 @@ describe('infra.yml hygiene', () => {
     expect(job(name)).toContain('persist-credentials: false');
   });
 
-  it('keeps the whole workflow free of secrets', () => {
+  it('uses no secrets', () => {
     expect(code(workflow)).not.toContain('secrets.');
+  });
+
+  it('names the installation directory once', () => {
+    expect(workflow.match(/infra\/installations\/verevoir/g)).toHaveLength(1);
+  });
+
+  it('explains that timeouts are unmeasured ceilings', () => {
+    expect(workflow).toContain('ceilings, not measurements');
+  });
+
+  it('writes a plan file that .gitignore covers', () => {
+    expect(gitignore.split('\n')).toContain('*.tfplan');
+    expect(workflow).toContain('-out=plan.tfplan');
+  });
+});
+
+describe('infra.yml scan job', () => {
+  const scan = (): string => job('scan');
+
+  it.each([
+    'directory: infra',
+    'framework: terraform',
+    'soft_fail: false',
+    'quiet: true',
+    'download_external_modules: false',
+  ])('runs checkov with %s', (input) => {
+    expect(scan()).toContain(input);
+  });
+
+  it('carries no credentials', () => {
+    expect(scan()).not.toContain('id-token');
+  });
+
+  it('states that the docker image is pulled by tag, outside the SHA pin', () => {
+    expect(workflow).toContain('docker image by TAG');
+  });
+
+  it('skips no check without a reason', () => {
+    expect(code(workflow)).not.toContain('skip_check');
+  });
+
+  it('blocks the plan', () => {
+    expect(job('plan')).toMatch(/\n {4}needs: scan\n/);
   });
 });
 
 describe('infra.yml check job (pull requests)', () => {
   const check = (): string => job('check');
 
-  it('runs on pull requests', () => {
+  it('runs on pull requests only', () => {
     expect(check()).toContain("github.event_name == 'pull_request'");
   });
 
-  it.each(['google-github-actions/auth', 'id-token', 'secrets.', 'vars.'])(
-    'carries no credentials: no %s',
+  it.each(['google-github-actions/auth', 'id-token', 'secrets.', 'vars.', 'tofu apply'])(
+    'carries no %s',
     (token) => {
       expect(check()).not.toContain(token);
     },
@@ -157,10 +235,6 @@ describe('infra.yml check job (pull requests)', () => {
       expect(check()).toContain(command);
     },
   );
-
-  it('never applies', () => {
-    expect(check()).not.toContain('tofu apply');
-  });
 });
 
 describe('infra.yml plan job (push to main)', () => {
@@ -174,24 +248,32 @@ describe('infra.yml plan job (push to main)', () => {
     expect(plan()).toContain("github.event_name == 'push'");
   });
 
-  it('takes the provider from a variable', () => {
-    expect(plan()).toContain('workload_identity_provider: ${{ vars.INFRA_WIF_PROVIDER }}');
-  });
-
-  it('authenticates as the read-only planner, from a variable', () => {
+  it('authenticates as the read-only planner', () => {
     expect(plan()).toContain('service_account: ${{ vars.INFRA_PLANNER_SA }}');
   });
 
-  it('prints a plan without locking the state', () => {
-    expect(plan()).toContain('tofu plan -input=false -lock=false');
+  it('never holds the deployer', () => {
+    expect(plan()).not.toContain('INFRA_DEPLOYER_SA');
   });
 
   it('never applies', () => {
     expect(plan()).not.toContain('tofu apply');
   });
 
-  it('never holds the deployer', () => {
-    expect(plan()).not.toContain('INFRA_DEPLOYER_SA');
+  it('plans without locking the state, and saves the plan', () => {
+    expect(plan()).toContain('tofu plan -input=false -lock=false -out=plan.tfplan');
+  });
+
+  it('prints the plan', () => {
+    expect(plan()).toContain('tofu show -no-color plan.tfplan');
+  });
+
+  it('uploads the plan and fails if there is none', () => {
+    expect(plan()).toContain('if-no-files-found: error');
+  });
+
+  it('gives the plan artifact a stated retention', () => {
+    expect(plan()).toMatch(/retention-days: \d+/);
   });
 });
 
@@ -206,44 +288,51 @@ describe('infra.yml apply job (push to main)', () => {
     expect(apply()).toMatch(/\n {4}needs: plan\n/);
   });
 
-  it('waits for the infra-apply environment, where reviewers approve', () => {
-    expect(apply()).toMatch(/\n {4}environment: infra-apply\n/);
+  it('waits in the environment the deployer is bound to', () => {
+    const env = /\n {4}environment: (\S+)\n/.exec(apply())?.[1];
+    expect(env).toBe(/default\s*=\s*"([^"]+)"/.exec(variableBlock('deploy_environment'))?.[1]);
   });
 
-  it('takes the provider from a variable', () => {
-    expect(apply()).toContain('workload_identity_provider: ${{ vars.INFRA_WIF_PROVIDER }}');
-  });
-
-  it('authenticates as the deployer, from a variable', () => {
+  it('authenticates as the deployer', () => {
     expect(apply()).toContain('service_account: ${{ vars.INFRA_DEPLOYER_SA }}');
   });
 
-  it('saves its plan', () => {
-    expect(apply()).toContain('tofu plan -input=false -out=tfplan');
+  it('never holds the planner', () => {
+    expect(apply()).not.toContain('INFRA_PLANNER_SA');
+  });
+
+  it('downloads the saved plan', () => {
+    expect(apply()).toContain('actions/download-artifact@');
   });
 
   it('applies the saved plan and nothing else', () => {
-    expect(apply()).toContain('tofu apply -input=false tfplan');
+    expect(apply()).toContain('tofu apply -input=false plan.tfplan');
+  });
+
+  it('does not plan again', () => {
+    expect(apply()).not.toContain('tofu plan');
   });
 
   it('does not auto-approve', () => {
     expect(apply()).not.toContain('-auto-approve');
   });
 
-  it('uses no secrets', () => {
-    expect(apply()).not.toContain('secrets.');
+  it('serialises applies without cancelling a running one', () => {
+    expect(apply()).toMatch(/concurrency:\n {6}group: \S+\n {6}cancel-in-progress: false/);
   });
 
-  it('serialises applies', () => {
-    expect(apply()).toMatch(/concurrency:\n {6}group: \S+\n {6}cancel-in-progress: false/);
+  it('says GitHub keeps one pending run, so a newer push replaces it', () => {
+    expect(apply()).toContain('ONE pending run per group');
   });
 });
 
 describe('infra.yml drift job (schedule and dispatch)', () => {
   const drift = (): string => job('drift');
+  const script = (): string =>
+    runBodies(drift()).find((b) => b.includes('-detailed-exitcode')) ?? '';
 
   it('runs weekly', () => {
-    expect(workflow).toMatch(/schedule:\n\s+- cron: '\d+ \d+ \* \* [0-6]'/);
+    expect(workflow).toMatch(/schedule:\n\s+(?:#.*\n\s+)?- cron: '\d+ \d+ \* \* [0-6]'/);
   });
 
   it('can be run on demand', () => {
@@ -256,18 +345,6 @@ describe('infra.yml drift job (schedule and dispatch)', () => {
     );
   });
 
-  it('fails on drift: plan with -detailed-exitcode', () => {
-    expect(drift()).toContain('tofu plan -input=false -lock=false -detailed-exitcode');
-  });
-
-  it('never applies', () => {
-    expect(drift()).not.toContain('tofu apply');
-  });
-
-  it('never auto-approves', () => {
-    expect(drift()).not.toContain('-auto-approve');
-  });
-
   it('authenticates as the read-only planner', () => {
     expect(drift()).toContain('service_account: ${{ vars.INFRA_PLANNER_SA }}');
   });
@@ -275,12 +352,30 @@ describe('infra.yml drift job (schedule and dispatch)', () => {
   it('never holds the deployer', () => {
     expect(drift()).not.toContain('INFRA_DEPLOYER_SA');
   });
+
+  it('never applies', () => {
+    expect(drift()).not.toContain('tofu apply');
+  });
+
+  it.each([
+    { exit: 0, status: 0, title: '' },
+    { exit: 1, status: 1, title: 'Plan failed' },
+    { exit: 2, status: 2, title: 'Drift' },
+  ])('exits $status with "$title" when tofu plan exits $exit', ({ exit, status, title }) => {
+    const r = execute(script(), {}, exit);
+    expect(r.status).toBe(status);
+    expect(r.out).toContain(title === '' ? '' : `::error title=${title}::`);
+  });
+
+  it('does not call an error drift', () => {
+    expect(execute(script(), {}, 1).out).not.toContain('title=Drift');
+  });
 });
 
-describe('infra.yml remote state', () => {
-  const stateVars = ['TF_STATE_BUCKET', 'TF_STATE_PREFIX'];
+describe('infra.yml remote state: the fail-closed step, executed', () => {
   const requireBody = (name: string): string =>
-    runBodies(job(name)).find((b) => b.includes('TF_STATE_BUCKET}')) ?? '';
+    runBodies(job(name)).find((b) => b.includes('[ -z')) ?? '';
+  const both = { TF_STATE_BUCKET: 'bucket', TF_STATE_PREFIX: 'prefix' };
 
   it.each(pairs(cloudJobs, stateVars))(
     '$name reads $token from a repository variable',
@@ -289,94 +384,379 @@ describe('infra.yml remote state', () => {
     },
   );
 
-  it.each(pairs(cloudJobs, stateVars))(
-    '$name fails closed when $token is unset',
-    ({ name, token }) => {
-      expect(requireBody(name)).toContain(`[ -z "\${${token}}" ]`);
-    },
-  );
-
-  it.each(cloudJobs)('%s exits non-zero when the state location is unset', (name) => {
-    expect(requireBody(name)).toContain('exit 1');
+  it.each(cloudJobs)('%s passes when both variables are set', (name) => {
+    expect(execute(requireBody(name), both).status).toBe(0);
   });
 
-  it.each(cloudJobs)('%s has the Require remote state step', (name) => {
-    expect(job(name)).toContain('- name: Require remote state');
+  it.each(pairs(cloudJobs, stateVars))('$name fails when $token is unset', ({ name, token }) => {
+    const env: Record<string, string> = { ...both };
+    delete env[token];
+    expect(execute(requireBody(name), env).status).toBe(1);
   });
 
-  it.each(cloudJobs)('checks the state location before %s authenticates', (name) => {
+  it.each(pairs(cloudJobs, stateVars))('$name fails when $token is empty', ({ name, token }) => {
+    expect(execute(requireBody(name), { ...both, [token]: '' }).status).toBe(1);
+  });
+
+  it.each(cloudJobs)('%s checks the state location before it authenticates', (name) => {
     const text = job(name);
+    expect(text.indexOf('Require remote state')).toBeGreaterThan(-1);
     expect(text.indexOf('Require remote state')).toBeLessThan(
       text.indexOf('google-github-actions/auth'),
     );
   });
 
-  it.each(cloudJobs)('passes the bucket and prefix to tofu init in %s', (name) => {
+  it.each(cloudJobs)('%s passes the bucket and prefix to tofu init', (name) => {
     expect(job(name)).toContain(
       'tofu init -input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}"',
     );
   });
 });
 
-describe('review-corpus module: files and naming', () => {
-  it('has the module files', () => {
-    expect(moduleFiles.length).toBeGreaterThanOrEqual(5);
-  });
+// ------------------------------------------------------------------ module
 
-  it.each(['verevoir', 'ai-gency'])('contains no hard-coded %s, comments included', (word) => {
-    expect(moduleText.toLowerCase()).not.toContain(word);
-  });
-});
+type Resource = { type: string; name: string; body: string };
+type Grant = {
+  target: string;
+  role: string;
+  member: string;
+  condition?: string | undefined;
+  gated: boolean;
+};
 
-describe('review-corpus module: versions', () => {
-  it('pins OpenTofu ~> 1.12', () => {
-    expect(moduleText).toContain('required_version = "~> 1.12"');
-  });
+const resources: Resource[] = [
+  ...moduleCode.matchAll(/^resource "([a-z_]+)" "(\w+)" \{\n([\s\S]*?)\n\}$/gm),
+].map((m) => ({ type: m[1] as string, name: m[2] as string, body: m[3] as string }));
 
-  it('uses the hashicorp google provider', () => {
-    expect(moduleText).toMatch(/source\s*=\s*"hashicorp\/google"/);
-  });
+const locals = new Map<string, string>();
+for (const block of moduleCode.matchAll(/^locals \{\n([\s\S]*?)\n\}$/gm)) {
+  for (const l of (block[1] as string).matchAll(/^ {2}(\w+) = "(.*)"$/gm)) {
+    locals.set(l[1] as string, l[2] as string);
+  }
+}
 
-  it('pins a specific google provider minor', () => {
-    expect(moduleText).toMatch(/version\s*=\s*"~> \d+\.\d+\.0"/);
-  });
-});
+const resolve = (s: string): string => {
+  let out = s;
+  for (let i = 0; i < 5; i++) {
+    out = out.replace(/\$\{local\.(\w+)\}/g, (_, n: string) => locals.get(n) ?? `<?${n}>`);
+  }
+  return out;
+};
+const norm = (s: string): string => s.replace(/\$\{var\.(\w+)\}/g, '<$1>');
 
-describe('review-corpus module: buckets', () => {
-  it.each([
-    { name: 'uniform bucket-level access', re: /uniform_bucket_level_access = true/g },
-    { name: 'public access prevention enforced', re: /public_access_prevention = "enforced"/g },
-    { name: 'versioning', re: /versioning \{\n\s+enabled = true/g },
-  ])('sets $name on both buckets', ({ re }) => {
-    expect(moduleText.match(re)).toHaveLength(2);
-  });
+/** A resource's identity independent of its Terraform name. */
+function tagOf(type: string, name: string): string {
+  const r = resources.find((x) => x.type === type && x.name === name);
+  if (r === undefined) return `?${type}.${name}`;
+  if (type === 'google_service_account') {
+    return /account_id = "\$\{var\.name_prefix\}-(\w+)"/.exec(r.body)?.[1] ?? name;
+  }
+  if (type === 'google_storage_bucket')
+    return /name = local\.(\w+)_bucket/.exec(r.body)?.[1] ?? name;
+  return /role_id = ".*\}_(\w+)"/.exec(r.body)?.[1] ?? name;
+}
 
-  it('deletes noncurrent versions after 30 days', () => {
-    expect(moduleText).toContain('days_since_noncurrent_time = 30');
-  });
+const refs = (s: string): string =>
+  s
+    .replace(
+      /google_service_account\.(\w+)(?:\[0\])?\.(?:email|name)/g,
+      (_, n: string) => `sa:${tagOf('google_service_account', n)}`,
+    )
+    .replace(
+      /google_storage_bucket\.(\w+)\.name/g,
+      (_, n: string) => `bucket:${tagOf('google_storage_bucket', n)}`,
+    )
+    .replace(
+      /google_project_iam_custom_role\.(\w+)(?:\[0\])?\.name/g,
+      (_, n: string) => `role:${tagOf('google_project_iam_custom_role', n)}`,
+    )
+    .replace(/\$\{((?:sa|bucket|role):\w+)\}/g, '$1');
 
-  it('protects the state bucket from destroy', () => {
-    expect(moduleText).toContain('prevent_destroy = true');
-  });
-});
-
-describe('review-corpus module: roles and APIs', () => {
-  it('uses no owner or editor role', () => {
-    expect(moduleText).not.toMatch(/roles\/(owner|editor)/);
-  });
-
-  it('uses no project IAM admin, IAM admin or security admin role', () => {
-    expect(moduleText).not.toMatch(
-      /roles\/(resourcemanager\.projectIamAdmin|iam\.securityAdmin|iam\.admin)"/,
+const grants: Grant[] = resources
+  .filter((r) => r.type.endsWith('_iam_member'))
+  .flatMap((r) => {
+    const lines = r.body.split('\n');
+    const memberLine = lines.find((l) => /^\s*member = /.test(l)) ?? '';
+    const memberRaw = /member = "(.*)"$/.exec(memberLine)?.[1] ?? '';
+    const pool = /^\$\{local\.pool_principal\}\/attribute\.(\w+)\/(.*)$/.exec(memberRaw);
+    const member = pool
+      ? `wif:${pool[1]}=${norm(resolve(pool[2] as string))}`
+      : refs(memberRaw).replace(/^serviceAccount:/, '');
+    const rest = lines.filter((l) => l !== memberLine).join('\n');
+    const resolved = refs(rest);
+    const targets =
+      r.type === 'google_project_iam_member'
+        ? ['project']
+        : [...resolved.matchAll(/(?:bucket|sa):\w+/g)].map((m) => m[0]);
+    const roles = [...rest.matchAll(/"(roles\/[\w.]+)"/g), ...resolved.matchAll(/(role:\w+)/g)].map(
+      (m) => m[1] as string,
+    );
+    const expression = /expression = "(.*)"$/m.exec(rest)?.[1];
+    const condition = expression === undefined ? undefined : refs(resolve(expression));
+    const gated = r.body.includes('var.create_deployer');
+    return targets.flatMap((target) =>
+      roles.map((role) => ({ target, role, member, condition, gated })),
     );
   });
 
+const to = (member: string): string[] =>
+  grants
+    .filter((g) => g.member === member)
+    .map((g) => `${g.target} ${g.role}`)
+    .sort();
+
+const variableBlock = (name: string): string =>
+  moduleText
+    .split(/^variable "/m)
+    .slice(1)
+    .find((b) => b.startsWith(`${name}"`)) ?? '';
+const defaultOf = (name: string): string | undefined =>
+  /default\s*=\s*"?([^"\n]+)"?/.exec(variableBlock(name))?.[1];
+const ruleOf = (name: string): RegExp =>
+  new RegExp(/regex\("([^"]+)"/.exec(variableBlock(name))?.[1] ?? '(?!)');
+
+describe('module: what is granted, and to whom', () => {
+  it('parses the grants it asserts on', () => {
+    expect(grants.length).toBeGreaterThanOrEqual(15);
+  });
+
+  it('gives the publisher only create and overwrite on the corpus bucket', () => {
+    expect(to('sa:publisher')).toEqual([
+      'bucket:corpus roles/storage.objectCreator',
+      'bucket:corpus roles/storage.objectUser',
+    ]);
+  });
+
+  const publisher = (role: string): Grant | undefined =>
+    grants.find((g) => g.member === 'sa:publisher' && g.role === role);
+
+  it.each(['corpus/', 'manifests/', 'refs/main'])('lets the publisher create under %s', (path) => {
+    expect(publisher('roles/storage.objectCreator')?.condition).toContain(
+      `bucket:corpus/objects/${path}`,
+    );
+  });
+
+  it('lets the publisher overwrite the refs/main object by exact name, and nothing else', () => {
+    expect(publisher('roles/storage.objectUser')?.condition).toBe(
+      "resource.name == 'projects/_/buckets/bucket:corpus/objects/refs/main'",
+    );
+  });
+
+  it('gives the reader only objectViewer on the corpus bucket', () => {
+    expect(to('sa:reader')).toEqual(['bucket:corpus roles/storage.objectViewer']);
+  });
+
+  it('gives the deployer exactly its stated reach', () => {
+    expect(to('sa:deployer')).toEqual(
+      [
+        'project role:deployer_project',
+        'project roles/iam.workloadIdentityPoolAdmin',
+        'project roles/serviceusage.serviceUsageAdmin',
+        'bucket:corpus roles/storage.admin',
+        'bucket:state roles/storage.admin',
+        'sa:publisher roles/iam.serviceAccountAdmin',
+        'sa:reader roles/iam.serviceAccountAdmin',
+        'sa:deployer roles/iam.serviceAccountAdmin',
+        'sa:planner roles/iam.serviceAccountAdmin',
+      ].sort(),
+    );
+  });
+
+  it('gives the planner only read roles, custom roles included', () => {
+    expect(to('sa:planner')).toEqual([
+      'bucket:corpus role:planner_bucket',
+      'bucket:state role:planner_bucket',
+      'bucket:state roles/storage.objectViewer',
+      'project role:planner',
+    ]);
+  });
+
+  it.each([
+    'sa:publisher <- wif:repo_id_workflow=<corpus_repo_id>@refs/heads/main|<corpus_repo>/<publish_workflow_path>@refs/heads/main',
+    'sa:reader <- wif:repository_owner_id=<github_owner_id>',
+    'sa:planner <- wif:repo_id_workflow=<governance_repo_id>@refs/heads/main|<governance_repo>/<deploy_workflow_path>@refs/heads/main',
+    'sa:deployer <- wif:repo_id_workflow_env=<governance_repo_id>@refs/heads/main|<governance_repo>/<deploy_workflow_path>@refs/heads/main|<deploy_environment>',
+  ])('binds impersonation: %s', (binding) => {
+    const bindings = grants
+      .filter((g) => g.role === 'roles/iam.workloadIdentityUser')
+      .map((g) => `${g.target} <- ${g.member}`);
+    expect(bindings).toContain(binding);
+  });
+
+  it('binds no other impersonation', () => {
+    expect(grants.filter((g) => g.role === 'roles/iam.workloadIdentityUser')).toHaveLength(4);
+  });
+
+  it('keeps the planner out of the deployer principal: they use different attributes', () => {
+    const attr = (target: string): string | undefined =>
+      /wif:(\w+)=/.exec(
+        grants.find((g) => g.role === 'roles/iam.workloadIdentityUser' && g.target === target)
+          ?.member ?? '',
+      )?.[1];
+    expect(attr('sa:deployer')).not.toBe(attr('sa:planner'));
+  });
+
+  it.each(['repo_id_workflow', 'repo_id_workflow_env', 'repository_owner_id'])(
+    'maps attribute.%s in the provider',
+    (attribute) => {
+      expect(moduleText).toContain(`"attribute.${attribute}" =`);
+    },
+  );
+
+  it.each([
+    'assertion.repository_id',
+    'assertion.ref',
+    'assertion.job_workflow_ref',
+    'assertion.environment',
+  ])('builds repo_id_workflow_env from %s', (claim) => {
+    const line =
+      moduleText.split('\n').find((l) => l.includes('"attribute.repo_id_workflow_env" =')) ?? '';
+    expect(line).toContain(claim);
+  });
+
+  it('tolerates a job with no environment claim', () => {
+    expect(moduleText).toContain('has(assertion.environment)');
+  });
+
+  it('always requires the owner id in the provider condition', () => {
+    expect(moduleText).toContain("assertion.repository_owner_id == '${var.github_owner_id}'");
+  });
+
+  it('only narrows the provider condition with a custom one', () => {
+    expect(moduleText).toContain(
+      '"(${local.owner_id_condition}) && (${var.allowed_owner_condition})"',
+    );
+  });
+
+  it('never trusts the owner name', () => {
+    expect(moduleText).not.toContain('var.github_owner}');
+  });
+
+  it.each(['corpus_repo', 'governance_repo'])(
+    'uses the %s name only after its numeric id',
+    (name) => {
+      const uses = [...locals.values()].filter((v) => v.includes(`var.${name}}`));
+      const after = new RegExp(
+        `^\\$\\{var\\.${name}_id\\}@refs/heads/main\\|\\$\\{var\\.${name}\\}/`,
+      );
+      expect(uses.filter((v) => !after.test(v))).toEqual([]);
+    },
+  );
+});
+
+describe('module: additive IAM and no keys', () => {
+  it('declares no iam_binding, iam_policy or audit config resource', () => {
+    expect(
+      resources.map((r) => r.type).filter((t) => /_iam_(binding|policy|audit_config)$/.test(t)),
+    ).toEqual([]);
+  });
+
+  it('creates no service account key', () => {
+    expect(moduleText).not.toContain('google_service_account_key');
+  });
+
+  it('uses no owner, editor, project IAM admin, IAM admin or security admin role', () => {
+    expect(moduleCode).not.toMatch(
+      /roles\/(owner|editor|resourcemanager\.projectIamAdmin|iam\.securityAdmin|iam\.admin)"/,
+    );
+  });
+
+  it('never grants objectAdmin', () => {
+    expect(moduleCode).not.toContain('roles/storage.objectAdmin');
+  });
+
+  it('gates every grant that involves the deployer or planner on create_deployer', () => {
+    const involved = grants.filter((g) => /sa:(deployer|planner)/.test(`${g.member} ${g.target}`));
+    expect(involved.length).toBeGreaterThan(0);
+    expect(involved.filter((g) => !g.gated)).toEqual([]);
+  });
+
+  it('gates every project-level grant on create_deployer', () => {
+    expect(grants.filter((g) => g.target === 'project' && !g.gated)).toEqual([]);
+  });
+
+  it('gates the deployer and planner accounts and every custom role on create_deployer', () => {
+    const subjects = resources.filter(
+      (r) =>
+        r.type === 'google_project_iam_custom_role' ||
+        (r.type === 'google_service_account' && /deployer|planner/.test(tagOf(r.type, r.name))),
+    );
+    expect(
+      subjects.filter((r) => !r.body.includes('var.create_deployer')).map((r) => r.name),
+    ).toEqual([]);
+  });
+
+  const customRoles = resources.filter((r) => r.type === 'google_project_iam_custom_role');
+  const permissionsOf = (r: Resource): string[] =>
+    [...(/permissions = \[([\s\S]*?)\]/.exec(r.body)?.[1] ?? '').matchAll(/"([^"]+)"/g)].map(
+      (m) => m[1] as string,
+    );
+
+  it('has three custom roles', () => {
+    expect(customRoles).toHaveLength(3);
+  });
+
+  it('gives no custom role a permission that sets a policy', () => {
+    expect(customRoles.flatMap(permissionsOf).filter((p) => /\.set\w*Policy$/.test(p))).toEqual([]);
+  });
+
+  it('gives the planner roles read permissions only', () => {
+    const planner = customRoles.filter((r) => tagOf(r.type, r.name).startsWith('planner'));
+    expect(planner).toHaveLength(2);
+    expect(
+      planner.flatMap(permissionsOf).filter((p) => !/\.(get|list|getIamPolicy)$/.test(p)),
+    ).toEqual([]);
+  });
+});
+
+describe('module: buckets, APIs and versions', () => {
+  const buckets = resources.filter((r) => r.type === 'google_storage_bucket');
+
+  it('has the corpus and state buckets', () => {
+    expect(buckets.map((b) => tagOf(b.type, b.name)).sort()).toEqual(['corpus', 'state']);
+  });
+
+  it.each([
+    { setting: 'uniform bucket-level access', re: /uniform_bucket_level_access = true/ },
+    { setting: 'public access prevention', re: /public_access_prevention = "enforced"/ },
+    { setting: 'versioning', re: /versioning \{\n\s+enabled = true/ },
+  ])('sets $setting on every bucket', ({ re }) => {
+    expect(buckets.filter((b) => !re.test(b.body)).map((b) => tagOf(b.type, b.name))).toEqual([]);
+  });
+
+  it('protects the state bucket from destroy', () => {
+    const state = buckets.find((b) => tagOf(b.type, b.name) === 'state');
+    expect(state?.body).toContain('prevent_destroy = true');
+  });
+
+  it('keeps old corpus versions for a configurable number of days', () => {
+    const corpus = buckets.find((b) => tagOf(b.type, b.name) === 'corpus');
+    expect(corpus?.body).toContain('days_since_noncurrent_time = var.noncurrent_retention_days');
+  });
+
+  it('defaults the retention to 30 days', () => {
+    expect(defaultOf('noncurrent_retention_days')).toBe('30');
+  });
+
+  it.each(['Too short', 'too long'])(
+    'states the failure direction of the retention: "%s"',
+    (phrase) => {
+      expect(variableBlock('noncurrent_retention_days')).toContain(phrase);
+    },
+  );
+
+  it('fits the longest pool id in the 32 characters GCP allows', () => {
+    const prefix = Number(/\{1,(\d+)\}/.exec(variableBlock('name_prefix'))?.[1]) + 1;
+    const suffix = Number(/\{0,(\d+)\}/.exec(variableBlock('pool_suffix'))?.[1]);
+    expect(prefix + '-github-'.length + suffix).toBeLessThanOrEqual(32);
+  });
+
   it('never disables an API on destroy', () => {
-    expect(moduleText).toMatch(/disable_on_destroy = false/);
+    expect(moduleCode).toContain('disable_on_destroy = false');
   });
 
   it('enables exactly the five APIs it needs', () => {
-    const services = [...moduleText.matchAll(/"([a-z]+\.googleapis\.com)"/g)].map((m) => m[1]);
+    const services = [...moduleCode.matchAll(/"([a-z]+\.googleapis\.com)"/g)].map((m) => m[1]);
     expect(services.sort()).toEqual([
       'cloudresourcemanager.googleapis.com',
       'iam.googleapis.com',
@@ -386,14 +766,8 @@ describe('review-corpus module: roles and APIs', () => {
     ]);
   });
 
-  it('binds the deployer only through the governance repo workflow identity', () => {
-    expect(moduleText).toContain(
-      '${local.pool_principal}/attribute.repo_id_workflow/${local.deployer_identity}"',
-    );
-  });
-
   it('exposes exactly the seven outputs', () => {
-    const outputs = [...moduleText.matchAll(/^output "([a-z_]+)"/gm)].map((m) => m[1]);
+    const outputs = [...moduleCode.matchAll(/^output "(\w+)"/gm)].map((m) => m[1]);
     expect(outputs.sort()).toEqual([
       'corpus_bucket',
       'deployer_sa',
@@ -404,46 +778,91 @@ describe('review-corpus module: roles and APIs', () => {
       'wif_provider',
     ]);
   });
+
+  it('pins OpenTofu ~> 1.12', () => {
+    expect(moduleText).toContain('required_version = "~> 1.12"');
+  });
+
+  it('pins a specific google provider minor', () => {
+    expect(moduleText).toMatch(/version = "~> \d+\.\d+\.0"/);
+  });
+
+  it.each(['verevoir', 'ai-gency'])('contains no hard-coded %s, comments included', (word) => {
+    expect(moduleText.toLowerCase()).not.toContain(word);
+  });
 });
 
-describe('verevoir installation: inputs', () => {
-  const variableNames = (): string[] =>
-    moduleText
-      .split(/^variable "/m)
-      .slice(1)
-      .map((b) => /^([a-z_]+)"/.exec(b)?.[1] as string);
+describe('module: input rules', () => {
+  const rules = [
+    {
+      vars: ['github_owner_id', 'corpus_repo_id', 'governance_repo_id'],
+      ok: ['266172281'],
+      bad: ['', 'verevoir', '12a', '-1', '1 2'],
+    },
+    {
+      vars: ['corpus_repo', 'governance_repo'],
+      ok: ['verevoir/aigency-governance'],
+      bad: ['', 'noslash', 'a/b/c', 'a b/c', '/x'],
+    },
+    {
+      vars: ['name_prefix'],
+      ok: ['review', 'rvw-corp', 'abcdefghij'],
+      bad: ['', 'a', 'Review', '1abc', 'a_b', 'abcdefghijk'],
+    },
+    { vars: ['pool_suffix'], ok: ['', 'r2', 'abc-123'], bad: ['R2', 'a_b', 'abcdefghijklm'] },
+    {
+      vars: ['publish_workflow_path', 'deploy_workflow_path'],
+      ok: ['.github/workflows/infra.yml'],
+      bad: ['', 'a b', 'x?y', 'a;b'],
+    },
+    { vars: ['deploy_environment'], ok: ['infra-apply'], bad: ['', 'a b', 'x;y'] },
+  ];
+  const cases = rules.flatMap((r) =>
+    r.vars.flatMap((v) => [
+      ...r.ok.map((s) => ({ v, s, accepted: true })),
+      ...r.bad.map((s) => ({ v, s, accepted: false })),
+    ]),
+  );
+
+  it.each(cases)('$v accepted=$accepted for "$s"', ({ v, s, accepted }) => {
+    expect(ruleOf(v).test(s)).toBe(accepted);
+  });
+
+  it.each(['publish_workflow_path', 'deploy_workflow_path'])(
+    '%s rejects an absolute path',
+    (name) => {
+      expect(variableBlock(name)).toContain(`!startswith(var.${name}, "/")`);
+    },
+  );
+
+  it('defaults the deploy environment to the one the workflow waits in', () => {
+    expect(defaultOf('deploy_environment')).toBe('infra-apply');
+  });
+});
+
+// ------------------------------------------------------------ installation
+
+describe('verevoir installation', () => {
+  const call = /module "review_corpus" \{\n([\s\S]*?)\n\}/.exec(installation)?.[1] ?? '';
+  const passed = [...code(call).matchAll(/^\s*(\w+)\s*=/gm)].map((m) => m[1] as string);
   const required = moduleText
     .split(/^variable "/m)
     .slice(1)
     .filter((b) => !/^ {2}default\b/m.test(b))
-    .map((b) => /^([a-z_]+)"/.exec(b)?.[1] as string);
-  const call = /module "review_corpus" \{\n([\s\S]*?)\n\}/.exec(installation)?.[1] ?? '';
-  const passed = [...code(call).matchAll(/^\s*([a-z_]+)\s*=/gm)].map((m) => m[1] as string);
-
-  it('requires exactly the eight installation inputs', () => {
-    expect([...required].sort()).toEqual([
-      'corpus_repo',
-      'corpus_repo_id',
-      'github_owner',
-      'github_owner_id',
-      'governance_repo',
-      'governance_repo_id',
-      'project_id',
-      'region',
-    ]);
-  });
+    .map((b) => /^(\w+)"/.exec(b)?.[1] as string);
 
   it.each(required)('passes the required input %s', (name) => {
     expect(passed).toContain(name);
   });
 
   it('passes no input the module does not declare', () => {
-    const unknown = passed.filter((n) => n !== 'source' && !variableNames().includes(n));
-    expect(unknown).toEqual([]);
+    const declared = moduleText
+      .split(/^variable "/m)
+      .slice(1)
+      .map((b) => /^(\w+)"/.exec(b)?.[1]);
+    expect(passed.filter((n) => n !== 'source' && !declared.includes(n))).toEqual([]);
   });
-});
 
-describe('verevoir installation: values', () => {
   it.each([
     'project_id = "ai-gency"',
     'region = "europe-west2"',
@@ -456,559 +875,31 @@ describe('verevoir installation: values', () => {
   ])('sets %s', (line) => {
     expect(installation).toContain(line);
   });
-});
 
-describe('verevoir installation: remote state backend', () => {
   it('declares a partial gcs backend', () => {
     expect(code(installation)).toMatch(/backend "gcs" \{\s*\}/);
   });
 
-  it('bakes no bucket or prefix into the backend or anywhere else in code', () => {
+  it('bakes no bucket or prefix into the code', () => {
     expect(code(installation)).not.toMatch(/\b(bucket|prefix)\s*=/);
   });
 
+  it.each(['-migrate-state', 'BOOTSTRAP'])(
+    'no longer carries the local-bootstrap marker %s',
+    (marker) => {
+      expect(installation).not.toContain(marker);
+    },
+  );
+
   it.each(['-backend-config', 'TF_STATE_BUCKET', 'TF_STATE_PREFIX'])(
-    'explains, in a comment, how %s reaches init',
+    'explains in a comment how %s reaches init',
     (token) => {
       expect(installation).toContain(token);
     },
   );
-
-  it('no longer asks for the backend block to be commented out or migrated', () => {
-    expect(installation).not.toContain('-migrate-state');
-    expect(installation).not.toContain('BOOTSTRAP');
-  });
 });
 
-describe('review-corpus module: input rules', () => {
-  const variableBlock = (name: string): string =>
-    moduleText
-      .split(/^variable "/m)
-      .slice(1)
-      .find((b) => b.startsWith(`${name}"`)) ?? '';
-  /** The first regex() of a variable's validation, as a JS RegExp (a never-match if absent). */
-  const ruleOf = (name: string): RegExp =>
-    new RegExp(/regex\("([^"]+)"/.exec(variableBlock(name))?.[1] ?? '(?!)');
-  const idVars = ['github_owner_id', 'corpus_repo_id', 'governance_repo_id'];
-  const repoVars = ['corpus_repo', 'governance_repo'];
-  const pathVars = ['publish_workflow_path', 'deploy_workflow_path'];
-
-  it.each(idVars)('%s accepts a numeric id', (name) => {
-    expect(ruleOf(name).test('266172281')).toBe(true);
-  });
-
-  it.each(pairs(idVars, ['', 'verevoir', '12a', '-1', '1 2']))(
-    '$name rejects "$token"',
-    ({ name, token }) => {
-      expect(ruleOf(name).test(token)).toBe(false);
-    },
-  );
-
-  it.each(repoVars)('%s accepts owner/name', (name) => {
-    expect(ruleOf(name).test('verevoir/aigency-governance')).toBe(true);
-  });
-
-  it.each(pairs(repoVars, ['', 'noslash', 'a/b/c', 'a b/c', '/x']))(
-    '$name rejects "$token"',
-    ({ name, token }) => {
-      expect(ruleOf(name).test(token)).toBe(false);
-    },
-  );
-
-  it.each(['review', 'rvw-corp', 'abcdefghij'])('name_prefix accepts "%s"', (ok) => {
-    expect(ruleOf('name_prefix').test(ok)).toBe(true);
-  });
-
-  it.each(['', 'a', 'Review', '1abc', 'a_b', 'abcdefghijk'])('name_prefix rejects "%s"', (bad) => {
-    expect(ruleOf('name_prefix').test(bad)).toBe(false);
-  });
-
-  it.each(['', 'r2', 'abc-123'])('pool_suffix accepts "%s"', (ok) => {
-    expect(ruleOf('pool_suffix').test(ok)).toBe(true);
-  });
-
-  it.each(['R2', 'a_b', 'abcdefghijklm'])('pool_suffix rejects "%s"', (bad) => {
-    expect(ruleOf('pool_suffix').test(bad)).toBe(false);
-  });
-
-  it.each(pathVars)('%s accepts a workflow file path', (name) => {
-    expect(ruleOf(name).test('.github/workflows/infra.yml')).toBe(true);
-  });
-
-  it.each(pairs(pathVars, ['', 'a b', 'x?y', 'a;b']))(
-    '$name rejects "$token"',
-    ({ name, token }) => {
-      expect(ruleOf(name).test(token)).toBe(false);
-    },
-  );
-
-  it.each(pathVars)('%s rejects an absolute path', (name) => {
-    expect(variableBlock(name)).toContain(`!startswith(var.${name}, "/")`);
-  });
-});
-
-describe('shared-project guards', () => {
-  const moduleCode = code(moduleText);
-  const blocks = moduleCode.split(/^resource "/m).slice(1);
-  const header = (b: string): string => b.split('{')[0] as string;
-  /** One resource block by its name, optionally by its type prefix (names repeat across types). */
-  const block = (name: string, type = ''): string =>
-    blocks.find((b) => b.startsWith(type) && b.includes(`" "${name}" {`)) ?? '';
-  const firstLines = (b: string): string => b.split('\n').slice(0, 2).join('\n');
-  const gate = /(count|for_each)\s*=\s*var\.create_deployer \?/;
-  const grantsOnly = (b: string): string[] =>
-    [...b.matchAll(/role\s*=\s*"([^"]+)"/g)].map((m) => m[1] as string);
-
-  describe('additive IAM', () => {
-    it('uses no iam_binding anywhere in the module', () => {
-      expect(moduleText).not.toContain('_iam_binding');
-    });
-
-    it('uses no iam_policy anywhere in the module', () => {
-      expect(moduleText).not.toContain('_iam_policy');
-    });
-
-    it('declares no iam_binding or iam_policy resource', () => {
-      const bad = blocks.map(header).filter((h) => /_iam_(binding|policy)"/.test(h));
-      expect(bad).toEqual([]);
-    });
-
-    it('makes every IAM grant a single-member or custom-role resource', () => {
-      const grants = blocks.filter((b) =>
-        /^google_(project|storage_bucket|service_account)_iam_\w+"/.test(header(b)),
-      );
-      expect(grants.length).toBeGreaterThan(0);
-      const bad = grants.map(header).filter((h) => !/_iam_(member|custom_role)"/.test(h));
-      expect(bad).toEqual([]);
-    });
-  });
-
-  describe('manage_apis', () => {
-    const api = (): string => blocks.find((b) => b.startsWith('google_project_service')) as string;
-
-    it('creates no project service when false', () => {
-      expect(api()).toMatch(/for_each\s*=\s*var\.manage_apis \?/);
-    });
-
-    it('never disables the API on destroy', () => {
-      expect(api()).toContain('disable_on_destroy = false');
-    });
-
-    it('never disables dependent services', () => {
-      expect(api()).toContain('disable_dependent_services = false');
-    });
-
-    it('defaults to true', () => {
-      expect(moduleText).toMatch(/variable "manage_apis" \{[\s\S]*?default\s+= true/);
-    });
-  });
-
-  describe('create_deployer', () => {
-    const family = blocks.filter(
-      (b) => /deployer|planner/.test(header(b)) || /^google_project_iam/.test(b),
-    );
-
-    it('defaults to true', () => {
-      expect(moduleText).toMatch(/variable "create_deployer" \{[\s\S]*?default\s+= true/);
-    });
-
-    it('covers the deployer, planner and project IAM resources', () => {
-      expect(family.length).toBeGreaterThanOrEqual(10);
-    });
-
-    it('gates every deployer, planner and project IAM resource on create_deployer', () => {
-      const ungated = family.filter((b) => !gate.test(firstLines(b))).map(header);
-      expect(ungated).toEqual([]);
-    });
-
-    it('makes every project-level IAM resource a deployer or planner one', () => {
-      const others = blocks
-        .filter((b) => /^google_project_iam/.test(b))
-        .map(header)
-        .filter((h) => !/deployer|planner/.test(h));
-      expect(others).toEqual([]);
-    });
-  });
-
-  describe('publisher binding', () => {
-    it('binds the publisher through the corpus repo workflow identity', () => {
-      expect(moduleText).toContain(
-        '${local.pool_principal}/attribute.repo_id_workflow/${local.publisher_identity}"',
-      );
-    });
-
-    it.each(['attribute.repository/', 'attribute.repo_ref', 'attribute.repo_id_ref'])(
-      'never uses the weaker %s',
-      (weaker) => {
-        expect(moduleText).not.toContain(weaker);
-      },
-    );
-  });
-
-  describe('exact repo id, ref and workflow file', () => {
-    const defaults = (name: string): string | undefined =>
-      new RegExp(`variable "${name}" \\{[\\s\\S]*?default\\s+= "([^"]+)"`).exec(moduleText)?.[1];
-    const members = [
-      ...moduleCode.matchAll(/^\s*member\s*=\s*"(\$\{local\.pool_principal\}[^"]*)"/gm),
-    ].map((m) => m[1] as string);
-    const wf = members.filter((p) => p.includes('attribute.repo_id_workflow/'));
-    const identities = [
-      ...moduleCode.matchAll(/^\s*(publisher|deployer)_identity\s*=\s*"([^"]*)"/gm),
-    ].map((m) => m[2] as string);
-
-    it('builds the publisher identity from the corpus repo id, name and publish workflow', () => {
-      expect(moduleText).toContain(
-        'publisher_identity = "${var.corpus_repo_id}@refs/heads/main|${var.corpus_repo}/${var.publish_workflow_path}@refs/heads/main"',
-      );
-    });
-
-    it('builds the deployer identity from the governance repo id, name and deploy workflow', () => {
-      expect(moduleText).toContain(
-        'deployer_identity = "${var.governance_repo_id}@refs/heads/main|${var.governance_repo}/${var.deploy_workflow_path}@refs/heads/main"',
-      );
-    });
-
-    it('maps repo_id_workflow to repository id, ref and workflow ref', () => {
-      expect(moduleText).toContain(
-        '"attribute.repo_id_workflow" = "assertion.repository_id + \'@\' + assertion.ref + \'|\' + assertion.job_workflow_ref"',
-      );
-    });
-
-    it('maps job_workflow_ref', () => {
-      expect(moduleText).toContain('"attribute.job_workflow_ref" = "assertion.job_workflow_ref"');
-    });
-
-    it('defaults the publish workflow path', () => {
-      expect(defaults('publish_workflow_path')).toBe('.github/workflows/publish-corpus.yml');
-    });
-
-    it('defaults the deploy workflow path', () => {
-      expect(defaults('deploy_workflow_path')).toBe('.github/workflows/infra.yml');
-    });
-
-    it('binds only the publisher and the deployer workflow identities', () => {
-      expect([...new Set(wf)].sort()).toEqual([
-        '${local.pool_principal}/attribute.repo_id_workflow/${local.deployer_identity}',
-        '${local.pool_principal}/attribute.repo_id_workflow/${local.publisher_identity}',
-      ]);
-    });
-
-    it('binds the publisher once', () => {
-      expect(wf.filter((p) => p.endsWith('${local.publisher_identity}'))).toHaveLength(1);
-    });
-
-    it('binds the deployer identity to the deployer and to the read-only planner', () => {
-      expect(wf.filter((p) => p.endsWith('${local.deployer_identity}'))).toHaveLength(2);
-    });
-
-    it.each(['*', 'startsWith'])('has no %s in any workflow principal', (bad) => {
-      expect(wf.filter((p) => p.includes(bad))).toEqual([]);
-    });
-
-    it('has exactly two identities', () => {
-      expect(identities).toHaveLength(2);
-    });
-
-    it('ends every identity exactly in @refs/heads/main', () => {
-      expect(identities.filter((v) => !v.endsWith('@refs/heads/main'))).toEqual([]);
-    });
-
-    it('has a ref and a workflow in every identity', () => {
-      expect(identities.filter((v) => !v.includes('@refs/heads/main|'))).toEqual([]);
-    });
-
-    it.each(['*', 'startsWith'])('has no %s in any identity', (bad) => {
-      expect(identities.filter((v) => v.includes(bad))).toEqual([]);
-    });
-
-    it('puts the corpus repo id first in the publisher identity', () => {
-      expect(identities[0]).toContain('${var.corpus_repo_id}@');
-    });
-
-    it('puts the governance repo id first in the deployer identity', () => {
-      expect(identities[1]).toContain('${var.governance_repo_id}@');
-    });
-
-    it('has no binding on a repo and ref without the workflow file', () => {
-      expect(moduleText).not.toMatch(/attribute\.repo_id_ref|attribute\.ref\//);
-    });
-  });
-
-  describe('numeric ids', () => {
-    it('requires the owner id in the provider condition', () => {
-      expect(moduleText).toContain("assertion.repository_owner_id == '${var.github_owner_id}'");
-    });
-
-    it('maps the repository id', () => {
-      expect(moduleText).toContain('"attribute.repository_id" = "assertion.repository_id"');
-    });
-
-    it('maps the owner id', () => {
-      expect(moduleText).toContain('= "assertion.repository_owner_id"');
-    });
-
-    it('scopes the reader to the owner id', () => {
-      expect(moduleText).toContain(
-        '${local.pool_principal}/attribute.repository_owner_id/${var.github_owner_id}"',
-      );
-    });
-
-    it('never trusts the owner name', () => {
-      expect(moduleText).not.toContain('var.github_owner}');
-    });
-
-    it.each(['corpus_repo', 'governance_repo'])(
-      'uses the %s name only inside the identity, after its numeric id',
-      (name) => {
-        const after = new RegExp(
-          `_identity\\s+= "\\$\\{var\\.${name}_id\\}@refs/heads/main\\|\\$\\{var\\.${name}\\}/`,
-        );
-        const uses = moduleCode.split('\n').filter((l) => l.includes(`var.${name}}`));
-        expect(uses.filter((l) => !after.test(l))).toEqual([]);
-      },
-    );
-
-    it.each(['corpus_repo', 'governance_repo'])(
-      'still uses the %s name in its identity',
-      (name) => {
-        expect(moduleCode).toContain(`var.${name}}/`);
-      },
-    );
-
-    it('builds the provider condition from the owner id local', () => {
-      expect(moduleCode).toMatch(/attribute_condition\s+=.*local\.owner_id_condition/);
-    });
-  });
-
-  describe('the deployer reach (it can widen access, so the module says so)', () => {
-    const projectGrant = (): string => block('deployer', 'google_project_iam_member');
-    const customRoles = blocks.filter((b) =>
-      header(b).startsWith('google_project_iam_custom_role'),
-    );
-
-    it('holds exactly two project-wide predefined roles', () => {
-      expect([...projectGrant().matchAll(/"(roles\/[^"]+)"/g)].map((m) => m[1]).sort()).toEqual([
-        'roles/iam.workloadIdentityPoolAdmin',
-        'roles/serviceusage.serviceUsageAdmin',
-      ]);
-    });
-
-    it('never grants serviceAccountAdmin at project level', () => {
-      const projectLevel = blocks.filter((b) => /^google_project_iam_member/.test(b));
-      const bad = projectLevel.filter((b) => b.includes('serviceAccountAdmin')).map(header);
-      expect(bad).toEqual([]);
-    });
-
-    it('grants serviceAccountAdmin', () => {
-      expect(block('deployer_sa_admin')).toContain('role = "roles/iam.serviceAccountAdmin"');
-    });
-
-    it('grants serviceAccountAdmin on service accounts, not the project', () => {
-      expect(header(block('deployer_sa_admin'))).toContain('google_service_account_iam_member');
-    });
-
-    it.each(['publisher', 'reader', 'deployer', 'planner'])(
-      'scopes serviceAccountAdmin to the module %s account',
-      (name) => {
-        expect(block('deployer_sa_admin')).toMatch(
-          new RegExp(`${name} = google_service_account\\.${name}`),
-        );
-      },
-    );
-
-    it('has three custom roles', () => {
-      expect(customRoles).toHaveLength(3);
-    });
-
-    it('gives no custom role a permission that sets a policy', () => {
-      expect(customRoles.filter((b) => b.includes('setIamPolicy')).map(header)).toEqual([]);
-    });
-
-    it('lets the deployer create service accounts through a custom role only', () => {
-      const role = block('deployer_project', 'google_project_iam_custom_role');
-      expect(role).toContain('"iam.serviceAccounts.create"');
-    });
-
-    it('states the residual risk in iam.tf', () => {
-      expect(iamSource).toMatch(/accepted residual risk/);
-    });
-
-    it('requires a dedicated project in iam.tf', () => {
-      expect(iamSource).toContain('DEDICATED project');
-    });
-
-    it('no longer claims in iam.tf that the deployer cannot grant roles', () => {
-      expect(iamSource).not.toContain('no role that can grant roles');
-    });
-  });
-
-  describe('the planner is read-only', () => {
-    const plannerBlocks = blocks.filter((b) => /planner/.test(header(b)));
-    const plannerRoles = blocks.filter(
-      (b) => /planner/.test(header(b)) && header(b).startsWith('google_project_iam_custom_role'),
-    );
-    const permissions = plannerRoles.flatMap((b) =>
-      [...(/permissions = \[([\s\S]*?)\]/.exec(b)?.[1] ?? '').matchAll(/"([^"]+)"/g)].map(
-        (m) => m[1] as string,
-      ),
-    );
-
-    it('has two custom roles', () => {
-      expect(plannerRoles).toHaveLength(2);
-    });
-
-    it('has permissions to check', () => {
-      expect(permissions.length).toBeGreaterThan(0);
-    });
-
-    it('holds only get, list and getIamPolicy permissions', () => {
-      expect(permissions.filter((p) => !/\.(get|list|getIamPolicy)$/.test(p))).toEqual([]);
-    });
-
-    it('is granted no role but object viewing on state and impersonation of itself', () => {
-      const roles = plannerBlocks.flatMap(grantsOnly);
-      const bad = roles.filter(
-        (r) => !['roles/storage.objectViewer', 'roles/iam.workloadIdentityUser'].includes(r),
-      );
-      expect(bad).toEqual([]);
-    });
-
-    it('is bound to the same workflow identity as the deployer', () => {
-      expect(block('planner_wif')).toContain('${local.deployer_identity}');
-    });
-  });
-
-  describe('the reader', () => {
-    const reader = blocks.filter((b) => /^google_[a-z_]+"\s*"reader(_wif)?"/.test(b));
-    const grants = blocks.filter((b) => /^google_storage_bucket_iam_member"\s*"reader"/.test(b));
-
-    it('has exactly three resources', () => {
-      expect(reader.length).toBe(3);
-    });
-
-    it('has one bucket grant', () => {
-      expect(grants).toHaveLength(1);
-    });
-
-    it('is given objectViewer on the corpus bucket', () => {
-      expect(grants[0]).toContain('role = "roles/storage.objectViewer"');
-    });
-
-    it('is granted only objectViewer or workloadIdentityUser on its own account', () => {
-      const roles = reader.flatMap(grantsOnly);
-      const bad = roles.filter(
-        (r) => !['roles/storage.objectViewer', 'roles/iam.workloadIdentityUser'].includes(r),
-      );
-      expect(bad).toEqual([]);
-    });
-
-    it('is granted no write-capable storage role anywhere', () => {
-      const mine = blocks.filter((x) => x.includes('google_service_account.reader.email'));
-      const bad = mine.filter((b) =>
-        /roles\/storage\.(objectCreator|objectUser|objectAdmin|admin|legacy\w*)/.test(b),
-      );
-      expect(bad).toEqual([]);
-    });
-
-    it('is granted no owner or editor role anywhere', () => {
-      const mine = blocks.filter((x) => x.includes('google_service_account.reader.email'));
-      expect(mine.filter((b) => /roles\/(owner|editor)/.test(b))).toEqual([]);
-    });
-  });
-
-  describe('the publisher', () => {
-    it('is never granted objectAdmin', () => {
-      expect(moduleText).not.toContain('roles/storage.objectAdmin');
-    });
-
-    it('creates objects with objectCreator', () => {
-      expect(block('publisher_create')).toContain('role = "roles/storage.objectCreator"');
-    });
-
-    it.each(['corpus/', 'manifests/'])('may create under %s', (prefix) => {
-      expect(block('publisher_create')).toContain(`startsWith('\${local.object_prefix}${prefix}')`);
-    });
-
-    it('may create refs/main', () => {
-      expect(block('publisher_create')).toContain(
-        "resource.name == '${local.object_prefix}refs/main'",
-      );
-    });
-
-    it('overwrites with objectUser', () => {
-      expect(block('publisher_overwrite_ref')).toContain('role = "roles/storage.objectUser"');
-    });
-
-    it('may overwrite refs/main only', () => {
-      expect(block('publisher_overwrite_ref')).toMatch(
-        /expression\s+= "resource\.name == '\$\{local\.object_prefix\}refs\/main'"/,
-      );
-    });
-
-    it('may overwrite by exact name, never by prefix', () => {
-      expect(block('publisher_overwrite_ref')).not.toContain('startsWith');
-    });
-
-    it('names objects by the corpus bucket path', () => {
-      expect(moduleText).toContain(
-        'object_prefix = "projects/_/buckets/${google_storage_bucket.corpus.name}/objects/"',
-      );
-    });
-  });
-
-  describe('the provider condition', () => {
-    it('never replaces the owner-id check with a custom condition', () => {
-      expect(moduleText).not.toContain('coalesce(var.allowed_owner_condition');
-    });
-
-    it('defines the owner-id condition', () => {
-      expect(moduleText).toContain(
-        'owner_id_condition = "assertion.repository_owner_id == \'${var.github_owner_id}\'"',
-      );
-    });
-
-    it('ANDs a custom condition with the owner-id check', () => {
-      expect(moduleText).toContain(
-        'attribute_condition = var.allowed_owner_condition == null ? local.owner_id_condition : "(${local.owner_id_condition}) && (${var.allowed_owner_condition})"',
-      );
-    });
-
-    it('applies the combined condition to the provider', () => {
-      expect(moduleText).toMatch(/attribute_condition\s+= local\.attribute_condition/);
-    });
-  });
-
-  describe('name prefix on every id', () => {
-    const ids = [
-      ...moduleCode.matchAll(
-        /^\s*(account_id|role_id|workload_identity_pool_id|workload_identity_pool_provider_id)\s*=\s*(.+)$/gm,
-      ),
-    ];
-
-    it('has enough ids to check', () => {
-      expect(ids.length).toBeGreaterThanOrEqual(6);
-    });
-
-    it('has no fixed id', () => {
-      const fixed = ids.filter(
-        (m) => !/var\.name_prefix|local\.pool_id|google_/.test(m[2] as string),
-      );
-      expect(fixed.map((m) => m[0])).toEqual([]);
-    });
-
-    it('prefixes the corpus bucket', () => {
-      expect(moduleCode).toMatch(/corpus_bucket = "\$\{var\.name_prefix\}-/);
-    });
-
-    it('prefixes the state bucket', () => {
-      expect(moduleCode).toMatch(/state_bucket = "\$\{var\.name_prefix\}-/);
-    });
-
-    it('prefixes the pool', () => {
-      expect(moduleCode).toMatch(/pool_id = var\.pool_suffix == "" \? "\$\{var\.name_prefix\}-/);
-    });
-  });
-});
+// ----------------------------------------------------------------- INSTALL
 
 describe('INSTALL.md matches the code', () => {
   it.each([
@@ -1018,21 +909,18 @@ describe('INSTALL.md matches the code', () => {
     'infra-apply',
     '-backend-config',
     'tofu import',
+    'repo_id_workflow_env',
+    'deploy_environment',
+    'noncurrent_retention_days',
+    'INSTALLATION',
   ])('documents %s', (token) => {
     expect(install).toContain(token);
   });
 
-  it.each(['--versioning', '--uniform-bucket-level-access'])(
+  it.each(['--versioning', '--uniform-bucket-level-access', '--public-access-prevention'])(
     'documents creating the state bucket with %s',
     (flag) => {
       expect(install).toContain(flag);
-    },
-  );
-
-  it.each(['migrate-state', 'Uncomment the `backend'])(
-    'no longer tells the operator: %s',
-    (old) => {
-      expect(install).not.toContain(old);
     },
   );
 
@@ -1042,26 +930,75 @@ describe('INSTALL.md matches the code', () => {
     expect(enable).toBeLessThan(install.indexOf('gcloud storage buckets create'));
   });
 
-  it('states the residual risk of the deployer', () => {
-    expect(install).toMatch(/accepted\s+residual\s+risk/);
+  it.each([
+    'migrate-state',
+    'Uncomment the `backend',
+    'cannot widen its own access',
+    'no role that can grant roles',
+    'plans again',
+    'two `infra/installations/verevoir` paths',
+  ])('no longer says: %s', (stale) => {
+    expect(flat).not.toContain(stale);
+  });
+
+  it('lists the provider variable as used by plan, apply and drift', () => {
+    expect(flat).toMatch(
+      /INFRA_WIF_PROVIDER[^|]*\|[^|]*\|[^|]*\|\s*`infra.yml`, the plan, apply and drift jobs/,
+    );
+  });
+
+  it('says the publisher can read refs/main only', () => {
+    expect(flat).toContain('can read only `refs/main`');
+  });
+
+  it('states the deployer residual risk', () => {
+    expect(flat).toMatch(/accepted\s+residual\s+risk/);
   });
 
   it('requires a dedicated project', () => {
-    expect(install).toContain('**dedicated project**');
+    expect(flat).toContain('**dedicated project**');
   });
 
-  it.each(['cannot widen its own access', 'no role that can grant roles'])(
-    'no longer claims: %s',
-    (claim) => {
-      expect(install).not.toContain(claim);
-    },
-  );
+  it('says the environment does not enforce the reviewers', () => {
+    expect(flat).toContain('does NOT enforce is the reviewers');
+  });
 
-  it('says the applied plan can differ from the printed one', () => {
-    expect(install).toContain('the approval covers the printed plan, not');
+  it('says there is no owned drift alert channel', () => {
+    expect(flat).toContain('no owned alert channel');
+  });
+
+  it('says the scan image is pulled by tag', () => {
+    expect(flat).toContain('docker image by tag');
+  });
+
+  it('names the plan artifact retention', () => {
+    expect(flat).toContain('kept 7 days');
+  });
+
+  it('keeps the first-apply caveat for the custom roles and the mapping', () => {
+    expect(flat).toContain('first evaluated by a real apply');
+  });
+
+  it('says the custom roles are three', () => {
+    expect(flat).not.toMatch(/the custom role\b/);
   });
 
   it('puts the ordering guard for refs/main on the publish workflow', () => {
-    expect(install).toContain('`refs/main` has no ordering guard');
+    expect(flat).toContain('`refs/main` has no ordering guard');
   });
+
+  it('states the residual risk in iam.tf', () => {
+    expect(iamSource).toContain('accepted residual risk');
+  });
+
+  it('requires a dedicated project in iam.tf', () => {
+    expect(iamSource).toContain('DEDICATED project');
+  });
+
+  it.each(['cannot widen its own access', 'no role that can grant roles'])(
+    'iam.tf no longer claims: %s',
+    (claim) => {
+      expect(iamSource).not.toContain(claim);
+    },
+  );
 });

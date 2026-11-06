@@ -86,7 +86,7 @@ variable "deploy_workflow_path" {
 }
 
 variable "name_prefix" {
-  description = "Prefix for every named resource, so several installations can live in one project."
+  description = "Prefix for every named resource, so several installations can live in one project. At most 10 characters so the longest derived name fits: the pool id is <prefix>-github-<pool_suffix>, at most 10 + 8 + 12 = 30 of the 32 characters GCP allows."
   type        = string
   default     = "review"
 
@@ -97,7 +97,7 @@ variable "name_prefix" {
 }
 
 variable "pool_suffix" {
-  description = "Appended to the identity pool id. GCP soft-deletes pools for 30 days and a deleted id cannot be reused, so change this on a reinstall."
+  description = "Appended to the identity pool id. GCP soft-deletes pools for 30 days and a deleted id cannot be reused, so change this on a reinstall. At most 12 characters: see name_prefix for the pool id length budget."
   type        = string
   default     = ""
 
@@ -117,6 +117,28 @@ variable "create_deployer" {
   description = "Whether to create the deployer and planner service accounts, their custom roles and their project-level grants. The deployer holds project-wide service usage and identity pool admin roles that cannot be narrowed, so it belongs in a DEDICATED project. Set false in a shared project: the module's only grants are then bucket-level and service-account-level."
   type        = bool
   default     = true
+}
+
+variable "deploy_environment" {
+  description = "Name of the GitHub environment the deployer's job must run in. The deployer can be assumed only by a token whose environment claim is this name, so the planner's jobs, which name no environment, cannot assume it. The environment's required reviewers are what gate an apply, and are set in GitHub, not here."
+  type        = string
+  default     = "infra-apply"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+$", var.deploy_environment))
+    error_message = "deploy_environment must be letters, digits, dots, dashes or underscores."
+  }
+}
+
+variable "noncurrent_retention_days" {
+  description = "Days an overwritten or deleted corpus object version is kept before it is removed. The default 30 is a judgement, not a measurement: a month to notice a bad refs/main overwrite (the only object the publisher overwrites) and restore it. Too short and a bad publish cannot be recovered after a long absence; too long and old versions cost storage, which is small here. Corpus bucket only: the state bucket keeps every version."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.noncurrent_retention_days >= 1 && var.noncurrent_retention_days == floor(var.noncurrent_retention_days)
+    error_message = "noncurrent_retention_days must be a whole number of days, at least 1."
+  }
 }
 
 variable "allowed_owner_condition" {

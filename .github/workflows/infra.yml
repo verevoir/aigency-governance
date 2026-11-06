@@ -1,14 +1,18 @@
 # Infrastructure for the keyless review corpus (see infra/INSTALL.md).
 #
-# Pull requests: format and validate only, with NO cloud credentials.
-# Push to main: PLAN as the read-only planner and print it; then, behind the
-# `infra-apply` environment (operator-configured required reviewers), authenticate
-# keylessly (GitHub OIDC -> Workload Identity Federation) as the deployer and
-# apply exactly the plan it just made.
+# Pull requests: scan, format and validate, with NO cloud credentials.
+# Push to main: scan; PLAN as the read-only planner and keep that plan; then,
+# behind the `infra-apply` environment (operator-configured required reviewers),
+# authenticate as the deployer and apply exactly the plan that was kept.
 # Weekly and on demand: plan as the planner and FAIL on drift. Never applies.
 # Remote state is required: the bucket and prefix come from repository
 # VARIABLES and every job that touches cloud state fails if they are unset.
 # Nothing here is a secret.
+#
+# Timeouts (timeout-minutes) are ceilings, not measurements: no run has been
+# timed yet. A job that hangs costs at most its ceiling in runner minutes. Too
+# LOW is the worse direction, because it would kill an apply part-way; so the
+# cloud jobs get 20 and the credential-free ones 10. Revise from real run times.
 name: infra
 
 on:
@@ -22,13 +26,43 @@ on:
       - 'infra/**'
       - '.github/workflows/infra.yml'
   schedule:
+    # Mondays, at an off-peak minute rather than the top of the hour.
     - cron: '17 5 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  # The one place the installation directory is named. Copying the installation
+  # (INSTALL.md step 3) means changing only this line.
+  INSTALLATION: infra/installations/verevoir
+
 jobs:
+  # Misconfiguration scan of the OpenTofu code. It cannot be run locally here,
+  # so the first CI run is what shows what it finds; any skip_check added later
+  # must carry a cited reason per ID, and none is added now.
+  # RESIDUAL RISK: the SHA pins the action's own code, but the action pulls its
+  # docker image by TAG (ghcr.io/bridgecrewio/checkov:3.4.3), which a registry
+  # can move. The pin does not cover the image.
+  scan:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: bridgecrewio/checkov-action@45edc9d8856b664db2ec251f5f8632361f0a67aa # v12.3139.0
+        with:
+          directory: infra
+          framework: terraform
+          soft_fail: false
+          quiet: true
+          download_external_modules: false
+
   check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -41,19 +75,21 @@ jobs:
           persist-credentials: false
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
+          # Matches required_version "~> 1.12" in the module.
           tofu_version: 1.12.x
       - name: Check formatting
         working-directory: infra
         run: tofu fmt -check -recursive
       - name: Initialise without a backend
-        working-directory: infra/installations/verevoir
+        working-directory: ${{ env.INSTALLATION }}
         run: tofu init -backend=false -input=false
       - name: Validate
-        working-directory: infra/installations/verevoir
+        working-directory: ${{ env.INSTALLATION }}
         run: tofu validate
 
   plan:
     if: github.event_name == 'push'
+    needs: scan
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -80,17 +116,30 @@ jobs:
         with:
           tofu_version: 1.12.x
       - name: Initialise
-        working-directory: infra/installations/verevoir
+        working-directory: ${{ env.INSTALLATION }}
         run: tofu init -input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}"
-      - name: Plan
-        working-directory: infra/installations/verevoir
-        run: tofu plan -input=false -lock=false
+      - name: Plan, and keep the plan
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu plan -input=false -lock=false -out=plan.tfplan
+      - name: Print the plan
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu show -no-color plan.tfplan
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: plan
+          path: ${{ env.INSTALLATION }}/plan.tfplan
+          if-no-files-found: error
+          # A plan older than this is stale anyway (tofu also refuses one whose
+          # state has moved); after expiry the apply fails closed, no download.
+          retention-days: 7
 
   apply:
     if: github.event_name == 'push'
     needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # The deployer's principal requires this exact environment name (the
+    # module's deploy_environment), so only a job that waits here can assume it.
     environment: infra-apply
     permissions:
       contents: read
@@ -98,7 +147,9 @@ jobs:
     env:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
-    # Two applies must never overlap; a queued one waits, it is not cancelled.
+    # One apply runs at a time. GitHub keeps ONE pending run per group, so a
+    # newer push replaces (cancels) an older pending run rather than queueing
+    # behind it. That is safe: the older plan is never applied late.
     concurrency:
       group: infra-apply
       cancel-in-progress: false
@@ -112,6 +163,10 @@ jobs:
             echo "TF_STATE_BUCKET and TF_STATE_PREFIX must be set as repository variables." >&2
             exit 1
           fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: plan
+          path: ${{ env.INSTALLATION }}
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.INFRA_WIF_PROVIDER }}
@@ -120,14 +175,11 @@ jobs:
         with:
           tofu_version: 1.12.x
       - name: Initialise
-        working-directory: infra/installations/verevoir
+        working-directory: ${{ env.INSTALLATION }}
         run: tofu init -input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}"
-      - name: Plan
-        working-directory: infra/installations/verevoir
-        run: tofu plan -input=false -out=tfplan
-      - name: Apply the plan above, and only that
-        working-directory: infra/installations/verevoir
-        run: tofu apply -input=false tfplan
+      - name: Apply the plan the reviewers saw, and only that
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu apply -input=false plan.tfplan
 
   drift:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -157,10 +209,20 @@ jobs:
         with:
           tofu_version: 1.12.x
       - name: Initialise
-        working-directory: infra/installations/verevoir
+        working-directory: ${{ env.INSTALLATION }}
         run: tofu init -input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}"
-      # Exit 0: no drift. Exit 1: error. Exit 2: the plan is not empty, i.e. the
-      # real estate and the code have diverged. Both 1 and 2 fail this job.
+      # tofu plan -detailed-exitcode: 0 no changes, 1 error, 2 changes (drift).
+      # Both 1 and 2 fail the job, but under different titles.
       - name: Plan, failing on drift
-        working-directory: infra/installations/verevoir
-        run: tofu plan -input=false -lock=false -detailed-exitcode
+        working-directory: ${{ env.INSTALLATION }}
+        run: |
+          status=0
+          tofu plan -input=false -lock=false -detailed-exitcode || status=$?
+          if [ "${status}" -eq 2 ]; then
+            echo "::error title=Drift::The estate and the code differ: apply, or revert the out-of-band change." >&2
+            exit 2
+          fi
+          if [ "${status}" -ne 0 ]; then
+            echo "::error title=Plan failed::tofu plan exited ${status}: an error, not drift." >&2
+            exit "${status}"
+          fi
