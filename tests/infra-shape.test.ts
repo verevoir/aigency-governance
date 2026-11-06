@@ -334,8 +334,20 @@ describe('shared-project guards', () => {
       '${local.pool_principal}/attribute.repository_owner_id/${var.github_owner_id}"',
     );
     expect(moduleText).not.toContain('var.github_owner}');
-    expect(moduleText).not.toContain('var.corpus_repo}');
-    expect(moduleText).not.toContain('var.governance_repo}');
+    // A repo NAME may appear only inside the workflow identity, and there the
+    // numeric id comes first, so a name never appears without its id.
+    for (const name of ['corpus_repo', 'governance_repo']) {
+      const uses = moduleCode.split('\n').filter((l) => l.includes(`var.${name}}`));
+      expect(uses.length, name).toBeGreaterThan(0);
+      for (const l of uses) {
+        expect(l, l).toMatch(
+          new RegExp(
+            `_identity\\s+= "\\$\\{var\\.${name}_id\\}@refs/heads/main\\|\\$\\{var\\.${name}\\}/`,
+          ),
+        );
+      }
+    }
+    expect(moduleCode).toMatch(/attribute_condition\s+=.*local\.owner_id_condition/);
   });
 
   it('gives the reader objectViewer on the corpus bucket and nothing that writes', () => {
