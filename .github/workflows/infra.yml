@@ -1,0 +1,75 @@
+# Infrastructure for the keyless review corpus (see infra/INSTALL.md).
+#
+# Pull requests: format and validate only, with NO cloud credentials.
+# Push to main: authenticate keylessly (GitHub OIDC -> Workload Identity
+# Federation) as the deployer service account and apply. Nothing here is a
+# secret: the provider and service account names come from repository
+# VARIABLES.
+name: infra
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.x
+      - name: Check formatting
+        working-directory: infra
+        run: tofu fmt -check -recursive
+      - name: Initialise without a backend
+        working-directory: infra/installations/verevoir
+        run: tofu init -backend=false -input=false
+      - name: Validate
+        working-directory: infra/installations/verevoir
+        run: tofu validate
+
+  apply:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    # Two applies must never overlap; a queued one waits, it is not cancelled.
+    concurrency:
+      group: infra-apply
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.INFRA_WIF_PROVIDER }}
+          service_account: ${{ vars.INFRA_DEPLOYER_SA }}
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.x
+      - name: Initialise
+        working-directory: infra/installations/verevoir
+        run: tofu init -input=false
+      - name: Apply
+        working-directory: infra/installations/verevoir
+        run: tofu apply -input=false -auto-approve
