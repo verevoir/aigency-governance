@@ -659,12 +659,18 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
   });
 
   it('exits 2 for an extra binding for another identity in the module pool', () => {
-    const live = { ...clean, sa: { bindings: [{ ...impersonation, members: [principalSet, other] }] } };
+    const live = {
+      ...clean,
+      sa: { bindings: [{ ...impersonation, members: [principalSet, other] }] },
+    };
     expect(run(live).status).toBe(2);
   });
 
   it('names the extra pool binding as unexpected', () => {
-    const live = { ...clean, sa: { bindings: [{ ...impersonation, members: [principalSet, other] }] } };
+    const live = {
+      ...clean,
+      sa: { bindings: [{ ...impersonation, members: [principalSet, other] }] },
+    };
     expect(run(live).out).toContain(`unexpected: sa:${sa}`);
   });
 
@@ -726,12 +732,20 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
   });
 
   it('exits 2 when the live grant has a condition and state has none', () => {
-    const bucket = bucketWith({ ...viewer, condition: { expression: "resource.name == 'z'" } }, creator, legacyOwner);
+    const bucket = bucketWith(
+      { ...viewer, condition: { expression: "resource.name == 'z'" } },
+      creator,
+      legacyOwner,
+    );
     expect(run({ ...clean, bucket }).status).toBe(2);
   });
 
   it('names a condition only the live grant has as unexpected', () => {
-    const bucket = bucketWith({ ...viewer, condition: { expression: "resource.name == 'z'" } }, creator, legacyOwner);
+    const bucket = bucketWith(
+      { ...viewer, condition: { expression: "resource.name == 'z'" } },
+      creator,
+      legacyOwner,
+    );
     expect(run({ ...clean, bucket }).out).toContain(
       `unexpected: bucket:b ${viewer.role} serviceAccount:${sa} if resource.name == 'z'`,
     );
@@ -850,7 +864,10 @@ describe('scripts/iam-live-check.sh: the drift job step, executed with fake tofu
 
   it.each([
     { place: 'bucket', call: 'storage buckets get-iam-policy gs://b --format=json' },
-    { place: 'service account', call: `iam service-accounts get-iam-policy ${account} --format=json` },
+    {
+      place: 'service account',
+      call: `iam service-accounts get-iam-policy ${account} --format=json`,
+    },
     { place: 'project', call: 'projects get-iam-policy p --format=json' },
   ])('reads the $place policy with gcloud', ({ call }) => {
     expect(run({}).log).toContain(call);
@@ -1298,11 +1315,12 @@ describe('module: buckets, APIs and versions', () => {
     expect(Object.keys(designs)).toContain(id);
   });
 
-  it.each(
-    skips.flatMap(({ id, reason }) => (designs[id] ?? []).map((re) => ({ id, reason, re }))),
-  )('has the $id skip state the design it relies on: $re', ({ reason, re }) => {
-    expect(reason).toMatch(re);
-  });
+  it.each(skips.flatMap(({ id, reason }) => (designs[id] ?? []).map((re) => ({ id, reason, re }))))(
+    'has the $id skip state the design it relies on: $re',
+    ({ reason, re }) => {
+      expect(reason).toMatch(re);
+    },
+  );
 
   it('protects the state bucket from destroy', () => {
     const state = buckets.find((b) => tagOf(b.type, b.name) === 'state');
