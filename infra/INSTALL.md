@@ -3,8 +3,8 @@
 This installs, into a GCP project, everything needed for GitHub Actions to read
 a private practices corpus **with no stored secret**: a private bucket for the
 corpus, a Workload Identity Federation (WIF) pool that trusts GitHub's OIDC
-tokens, three least-privilege service accounts, and a bucket for OpenTofu's own
-state. It is one reusable module, `infra/modules/review-corpus/`, plus one
+tokens, four service accounts (publisher, reader, deployer and a read-only
+planner), and a bucket for OpenTofu's own state. It is one reusable module, `infra/modules/review-corpus/`, plus one
 small root per installation under `infra/installations/`.
 
 It uses **OpenTofu** (`tofu`), not Terraform.
@@ -36,7 +36,9 @@ export CORPUS_REPO=my-org/my-guardrails # the repository holding the corpus
 
 ## 2. Create or choose a project
 
-Create one, or use an existing project and skip to the grants:
+Create a **dedicated** project: the deployer's reach (section 7) is too broad to
+share a project with other workloads. Or, if you accept the residual risk there,
+use an existing project and skip to the grants:
 
 ```sh
 gcloud projects create "$PROJECT_ID"
@@ -67,7 +69,7 @@ In `infra/installations/$NAME/main.tf` change, and only change:
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `provider "google"`                | `project` and `region`                                                                                                              |
 | `module "review_corpus"` arguments | `project_id`, `region`, `github_owner`, `github_owner_id`, `corpus_repo`, `corpus_repo_id`, `governance_repo`, `governance_repo_id` |
-| commented `backend "gcs"`          | `bucket` = `review-tfstate-<project_id>` (or `<name_prefix>-tfstate-<id>`)                                                          |
+| `backend "gcs" {}`                 | nothing: it is partial, the bucket and prefix are passed at init (steps 5 and 6)                                                    |
 
 The three `*_id` values are the **numeric GitHub ids**, as quoted strings. Trust
 is pinned on them, not on the names, because a name can be re-registered by
@@ -91,39 +93,48 @@ value and is not edited.
 If you also want the workflow in `.github/workflows/infra.yml` to deploy your
 copy, change its two `infra/installations/verevoir` paths to your directory.
 
-## 4. Bootstrap: first apply, on local state
+## 4. Create the state bucket (once, by an operator)
 
-The state bucket does not exist yet, so the first apply runs with the
-`backend "gcs"` block **commented out** (as shipped).
+OpenTofu's state lives in a bucket (remote, with locking), and a bucket cannot
+hold the state that creates it, so an operator creates this one bucket by hand,
+in the same project, **versioned**, with **uniform bucket-level access** and
+public access prevention enforced, and in the same location as the module's
+`region`:
+
+```sh
+export STATE_BUCKET="review-tfstate-$PROJECT_ID"   # <name_prefix>-tfstate-<project_id>
+export REGION=europe-west2                        # the module's region
+# A new project has the Storage API off. The module manages it later (step 5).
+gcloud services enable storage.googleapis.com --project="$PROJECT_ID"
+gcloud storage buckets create "gs://$STATE_BUCKET" --project="$PROJECT_ID" \
+  --location="$REGION" --uniform-bucket-level-access --public-access-prevention
+gcloud storage buckets update "gs://$STATE_BUCKET" --versioning
+gcloud storage buckets describe "gs://$STATE_BUCKET"   # check all three settings
+```
+
+The name must be the one the module computes (`<name_prefix>-tfstate-<project_id>`),
+because the module manages this same bucket and step 5 imports it.
+
+## 5. Bootstrap: first apply, on remote state
+
+The `backend "gcs" {}` block is partial: pass the bucket and prefix at init.
+There is no local state and nothing to migrate.
 
 ```sh
 cd "infra/installations/$NAME"
-tofu init
+export TF_STATE_BUCKET="$STATE_BUCKET" TF_STATE_PREFIX=review-corpus
+tofu init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="prefix=$TF_STATE_PREFIX"
+tofu import module.review_corpus.google_storage_bucket.state "$TF_STATE_BUCKET"
+tofu plan
 tofu apply
 ```
 
-Review the plan, answer `yes`. This creates everything, including the state
-bucket. Local state is written to `terraform.tfstate` in that directory; it is
-git-ignored and must never be committed.
-
-## 5. Move the state into its bucket
-
-Uncomment the `backend "gcs"` block in `main.tf` (remove the leading `# ` from
-its four lines, keep the bucket name you set in step 3), then:
-
-```sh
-tofu init -migrate-state
-```
-
-Answer `yes` to copy the state. Check, then remove the local copy:
-
-```sh
-tofu plan
-rm -f terraform.tfstate terraform.tfstate.backup
-```
-
-`tofu plan` should report no changes. Commit the `.terraform.lock.hcl` that
-`tofu init` wrote, and the edited `main.tf`, through a pull request.
+The import brings the hand-made bucket under the module. In the plan, the state
+bucket should show no change; if it does, the bucket was not made as step 4
+says, so fix the bucket rather than apply. Review the whole plan, answer `yes`.
+Commit the `.terraform.lock.hcl` that `tofu init` wrote through a pull request.
+The first apply is local and by a person: it is the only way the project-level
+grants, the custom roles and each new service account are made (section 7).
 
 ## 6. Put the outputs into repository variables
 
@@ -151,6 +162,9 @@ gh variable set CORPUS_BUCKET       --repo "$CORPUS_REPO" --body "$(tofu output 
 | --------------------- | --------------- | ---------------------------------------------------- | -------------------------------------- |
 | `INFRA_WIF_PROVIDER`  | `wif_provider`  | the governance repo (`$GOV_REPO`)                    | `infra.yml`, the apply job             |
 | `INFRA_DEPLOYER_SA`   | `deployer_sa`   | the governance repo                                  | `infra.yml`, the apply job             |
+| `INFRA_PLANNER_SA`    | `planner_sa`    | the governance repo                                  | `infra.yml`, the plan and drift jobs   |
+| `TF_STATE_BUCKET`     | `state_bucket`  | the governance repo                                  | `infra.yml`, every job with state      |
+| `TF_STATE_PREFIX`     | your prefix     | the governance repo                                  | `infra.yml`, every job with state      |
 | `CORPUS_WIF_PROVIDER` | `wif_provider`  | the corpus repo (`$CORPUS_REPO`)                     | the corpus repo's publish workflow     |
 | `CORPUS_PUBLISHER_SA` | `publisher_sa`  | the corpus repo                                      | the corpus repo's publish workflow     |
 | `CORPUS_BUCKET`       | `corpus_bucket` | the corpus repo, and every repo that runs the review | publish, and the review's corpus fetch |
@@ -167,7 +181,24 @@ gh variable set CORPUS_BUCKET       --repo OWNER/REPO --body "$(tofu output -raw
 
 Organisation variables (`gh variable set ... --org YOUR-ORG --visibility all`)
 save repeating this, but on GitHub Free they do not reach private repositories:
-set repository variables there. `state_bucket` is not needed by any workflow.
+set repository variables there.
+
+The governance repository also needs the planner and the remote-state location.
+The `infra` workflow **fails**, before it authenticates, if `TF_STATE_BUCKET` or
+`TF_STATE_PREFIX` is unset, so it can never apply or plan from empty state:
+
+```sh
+gh variable set INFRA_PLANNER_SA --repo "$GOV_REPO" --body "$(tofu output -raw planner_sa)"
+gh variable set TF_STATE_BUCKET  --repo "$GOV_REPO" --body "$(tofu output -raw state_bucket)"
+gh variable set TF_STATE_PREFIX  --repo "$GOV_REPO" --body "$TF_STATE_PREFIX"
+```
+
+Then, in the governance repository, create the environment `infra-apply`
+(**Settings → Environments**) and add **required reviewers**. The apply job
+waits there, after the plan job has printed the plan. The apply job then plans
+again and applies that second plan, so the approval covers the printed plan, not
+the second one; if state or `main` changed in between, read the apply job's own
+plan output, which is in its log, before approving a long-queued run.
 
 The corpus repository's own CI publishes to the bucket as the publisher
 service account; that workflow lives in that repository and uses
@@ -243,35 +274,96 @@ A reader reads `refs/main`, then `manifests/<sha>.json`, then `corpus/<sha>/…`
 The reader never lists or trusts anything under `corpus/` to decide what is
 current.
 
+**`refs/main` has no ordering guard in the bucket.** It is a last-written
+pointer, and the publisher's grants cannot tell an older publish from a newer
+one. The guard belongs to the corpus repository's publish workflow, which is
+part of this contract: it must run under a `concurrency` group with
+`cancel-in-progress: false` (so publishes are serialised), and it must write
+`refs/main` last, only for the commit that `main` currently is. This module
+cannot enforce that; a publish workflow without it can leave readers on an
+older sha without anyone noticing.
+
 ## 7. From then on, every change deploys on merge
 
 Change anything under `infra/` through a pull request. The `infra` workflow:
 
 - on the pull request runs `tofu fmt -check -recursive`, `tofu init
 -backend=false` and `tofu validate`, with **no cloud credentials**;
-- on merge to `main` authenticates as the deployer through OIDC, then runs
-  `tofu init` and `tofu apply`. Applies are serialised by a concurrency group.
+- on merge to `main` runs a **plan job** as the read-only planner (prints the
+  plan), then an **apply job** that waits for the `infra-apply` environment's
+  required reviewers, authenticates as the deployer through OIDC, re-plans and
+  applies exactly that saved plan. Applies are serialised by a concurrency group;
+- every Monday, and on demand, runs a **drift job** as the planner:
+  `tofu plan -detailed-exitcode` fails the job when the real estate and the
+  code differ (exit 2) or the plan errors (exit 1). It never applies;
+- in every job that uses state, fails before authenticating if `TF_STATE_BUCKET`
+  or `TF_STATE_PREFIX` is unset.
 
-The deployer can only be assumed by `$GOV_REPO` on `refs/heads/main`. Protect
-`main` accordingly: a merge to it is a deploy.
+The deployer and the planner can only be assumed by the `infra.yml` workflow of
+`$GOV_REPO` on `refs/heads/main`. Protect `main` accordingly: a merge to it is a
+deploy, gated by the `infra-apply` approval.
 
-Changes the deployer cannot make (it holds no role that can grant roles): the
-module's project-level grants and its custom role. Changing those means a local
-`tofu apply` by a person with the bootstrap rights from step 2. This is
-deliberate: the deployer cannot widen its own access.
+Changes the deployer cannot make: the module's project-level grants and its
+custom roles (it holds no role that sets a project IAM policy), and a service
+account that is new (its resource-level administrator grant does not exist
+yet). Those need a local `tofu apply` by a person with the bootstrap rights
+from step 2.
+
+### The deployer's reach, and the residual risk
+
+The deployer is **not** unable to widen access. It can:
+
+- rewrite the identity provider's trust condition, or any other pool or
+  provider in the project (`roles/iam.workloadIdentityPoolAdmin`, project-wide);
+- enable or disable any API in the project (`roles/serviceusage.serviceUsageAdmin`,
+  project-wide);
+- change who can impersonate this module's four service accounts, and so write
+  the corpus (`roles/iam.serviceAccountAdmin` on those accounts);
+- change who can read or write either bucket, and read or write the state
+  (`roles/storage.admin` on those two buckets).
+
+It cannot set the project's own IAM policy and holds no owner, editor, project
+IAM admin or security admin role, and it cannot touch service accounts that are
+not this module's. The two project-wide roles are **predefined roles that GCP
+offers no narrower form of**; they are not scoped by an IAM condition because
+this document does not claim support for one that it has not verified. That
+is an **accepted residual risk**, and the reason the installation needs a
+**dedicated project** (section 2) and the reason a shared project sets
+`create_deployer = false`. The mitigation is the control on merge: `main` is
+protected and the apply job waits for the `infra-apply` reviewers.
 
 ### The deployer's roles
 
-Granted by the module. No `roles/owner`, no `roles/editor`, no role that can
-set a project IAM policy.
+Granted by the module. No `roles/owner`, no `roles/editor`, no project IAM admin.
 
-| Role                                   | Scope                | Why                                                                                                                                                             |
-| -------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `roles/serviceusage.serviceUsageAdmin` | project              | Manage the five `google_project_service` resources (read and enable the APIs).                                                                                  |
-| `roles/iam.workloadIdentityPoolAdmin`  | project              | Manage the identity pool and its OIDC provider.                                                                                                                 |
-| `roles/iam.serviceAccountAdmin`        | project              | Manage the three service accounts and the identity bindings on them.                                                                                            |
-| `roles/storage.admin`                  | the two buckets only | Manage each bucket's settings and IAM, and (for the state bucket) read and write the OpenTofu state objects.                                                    |
-| custom `<prefix>_deployer_refresh`     | project              | Read-only: `resourcemanager.projects.get`, `resourcemanager.projects.getIamPolicy`, `iam.roles.get`, so a plan can refresh the project grants it cannot change. |
+| Role                                   | Scope                                   | Why                                                                                                                                   |
+| -------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `roles/serviceusage.serviceUsageAdmin` | project (not narrowable)                | Manage the five `google_project_service` resources.                                                                                   |
+| `roles/iam.workloadIdentityPoolAdmin`  | project (not narrowable)                | Manage the identity pool and its OIDC provider. Can rewrite the trust condition: residual risk above.                                 |
+| `roles/iam.serviceAccountAdmin`        | the module's four service accounts only | Manage them and the identity bindings on them. Granted per account, not project-wide.                                                 |
+| `roles/storage.admin`                  | the two buckets only                    | Manage each bucket's settings and IAM, and (for the state bucket) read and write the OpenTofu state objects.                          |
+| custom `<prefix>_deployer_project`     | project                                 | `resourcemanager.projects.get`, `resourcemanager.projects.getIamPolicy`, `iam.roles.get` (refresh), and `iam.serviceAccounts.create`. |
+
+### The planner's roles (read-only)
+
+The planner is the deployer's read-only twin, used by the plan and drift jobs.
+It can write nothing: plans run with `-lock=false`, and it has no grant that
+changes anything.
+
+| Role                             | Scope                 | Why                                                                                                  |
+| -------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------- |
+| custom `<prefix>_planner`        | project               | Read the project IAM policy, service accounts and their policies, pools, providers and enabled APIs. |
+| custom `<prefix>_planner_bucket` | the two buckets only  | `storage.buckets.get` and `storage.buckets.getIamPolicy`: a bucket's settings and IAM. No object.    |
+| `roles/storage.objectViewer`     | the state bucket only | Read the state objects.                                                                              |
+
+A failed drift job is the alert: GitHub notifies the person who last edited the
+schedule, and the run stays red until the code and the estate agree again. Fix
+it by applying (merge a change, or a local apply for project-level grants), or
+by reverting the out-of-band change.
+
+The permission lists of the three custom roles are written from the GCP
+permission names and have not been exercised against a real project: the first
+local apply (step 5) is where an invalid name would be reported.
 
 ## 8. Teardown
 
@@ -332,11 +424,11 @@ workload-identity-pools undelete <pool-id> --location=global`, then
 After a teardown, into the same or a new project:
 
 1. Choose a `pool_suffix` you have not used (step 8) and add it to the module
-   block. If the state bucket was deleted, the backend block must be commented
-   out again for the bootstrap.
-2. Repeat steps 4 to 6: `tofu init`, `tofu apply` on local state, uncomment the
-   backend, `tofu init -migrate-state`, and set the variables again. The
-   variables change, because the identity pool name changed.
+   block. If the state bucket was deleted, create it again (step 4).
+2. Repeat steps 4 to 6: create the state bucket if it is gone, `tofu init` with
+   the backend config, `tofu import` the state bucket, `tofu apply`, and set the
+   variables again. The variables change, because the identity pool name
+   changed.
 3. Pass B workflows read the new values from the variables; nothing else needs
    editing.
 4. Re-run the corpus repository's publish workflow to repopulate the new corpus
@@ -358,7 +450,7 @@ module "review_corpus" {
   # ... project_id, region, github_owner(_id), corpus_repo(_id), governance_repo(_id) ...
 
   manage_apis     = false      # no google_project_service at all
-  create_deployer = false      # no deployer SA, no custom role, no project-level grants
+  create_deployer = false      # no deployer or planner SA, no custom role, no project-level grants
   name_prefix     = "rvw-corp" # unique in the project: every id carries it
 }
 ```
@@ -369,18 +461,19 @@ module "review_corpus" {
   service, on destroy or otherwise.
 - `create_deployer = false`: the module's only grants are bucket-level and
   service-account-level. Nothing is granted at project level. Without a
-  deployer there is no deploy-on-merge: apply by hand (steps 4 and 5), and
-  `deployer_sa` is null.
+  deployer there is no deploy-on-merge and no planner: apply by hand
+  (steps 4 and 5), and `deployer_sa` and `planner_sa` are null. The drift
+  job needs the planner, so it cannot run either.
 - All IAM is additive (single-member grants); the module never replaces a
   policy or a role's member list.
 - Every id carries `name_prefix` (buckets, pool, provider, service accounts,
   the custom role) and the pool also `pool_suffix`. Choose a prefix no other
   installation or pool in the project uses.
 
-**The deployer's project-level roles (service usage admin, workload identity
-pool admin, service account admin) are broad across a project. The deployer
-belongs in a DEDICATED project.** In a shared project, leave `create_deployer`
-false.
+**The deployer's two project-wide roles (service usage admin, workload identity
+pool admin) reach every API and every identity pool in the project, and cannot
+be narrowed (section 7). The deployer belongs in a DEDICATED project.** In a
+shared project, set `create_deployer` false.
 
 ## Later
 

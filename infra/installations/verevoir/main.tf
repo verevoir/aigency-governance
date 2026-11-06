@@ -8,16 +8,14 @@ terraform {
     }
   }
 
-  # BOOTSTRAP: the state bucket this block points at is created by this very
-  # configuration, so the first apply must run on LOCAL state with this block
-  # commented out. Once that apply succeeds, uncomment the block and run
-  #   tofu init -migrate-state
-  # to move the state into the bucket. See infra/INSTALL.md steps 4 and 5.
-  #
-  # backend "gcs" {
-  #   bucket = "review-tfstate-ai-gency"
-  #   prefix = "review-corpus"
-  # }
+  # Remote state, with locking. The block is PARTIAL on purpose: the bucket and
+  # prefix are passed at init, so no installation value is baked in here:
+  #   tofu init -backend-config="bucket=$TF_STATE_BUCKET" \
+  #             -backend-config="prefix=$TF_STATE_PREFIX"
+  # CI reads them from the repository variables TF_STATE_BUCKET and
+  # TF_STATE_PREFIX and fails if either is unset. The bucket is created once, by
+  # an operator, before the first init: see infra/INSTALL.md step 4.
+  backend "gcs" {}
 }
 
 provider "google" {
@@ -52,6 +50,10 @@ output "reader_sa" {
 
 output "deployer_sa" {
   value = module.review_corpus.deployer_sa
+}
+
+output "planner_sa" {
+  value = module.review_corpus.planner_sa
 }
 
 output "corpus_bucket" {

@@ -18,6 +18,11 @@ output "deployer_sa" {
   value       = one(google_service_account.deployer[*].email)
 }
 
+output "planner_sa" {
+  description = "Email of the read-only service account that plans this module and detects drift, or null when create_deployer is false."
+  value       = one(google_service_account.planner[*].email)
+}
+
 output "corpus_bucket" {
   description = "Name of the bucket holding the corpus."
   value       = google_storage_bucket.corpus.name

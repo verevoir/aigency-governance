@@ -87,6 +87,25 @@ resource "google_service_account_iam_member" "reader_wif" {
 # --- deployer: applies this module, from the governance repo's main only ----
 # Everything below exists only when create_deployer is true. With it false the
 # module makes no project-level grant at all (for a shared project).
+#
+# WHAT THE DEPLOYER CAN DO, stated plainly (infra/INSTALL.md has the table):
+#   - Project level, two PREDEFINED roles that cannot be narrowed to this
+#     module's resources: roles/serviceusage.serviceUsageAdmin (enable and
+#     disable ANY API in the project) and roles/iam.workloadIdentityPoolAdmin
+#     (change ANY identity pool or provider in the project, including this
+#     module's provider condition, which is the trust boundary).
+#   - Project level, one CUSTOM role (deployer_project): read the project's IAM
+#     policy, and create service accounts. Creating a service account is a
+#     project-level permission; it cannot be scoped to a name.
+#   - Resource level: roles/iam.serviceAccountAdmin on this module's own service
+#     accounts only (so it can manage them and change who may impersonate
+#     them), and roles/storage.admin on this module's two buckets only.
+# It holds no owner, editor, project IAM admin or security admin role, so the
+# project's own IAM policy changes only through a local apply by a person. It
+# CAN widen access to the module's own resources and rewrite the provider's
+# trust condition: that is an accepted residual risk. It is why the shipped
+# installation uses a DEDICATED project and why a shared project sets
+# create_deployer = false.
 
 resource "google_service_account" "deployer" {
   count = var.create_deployer ? 1 : 0
@@ -107,13 +126,11 @@ resource "google_service_account_iam_member" "deployer_wif" {
   member             = "${local.pool_principal}/attribute.repo_id_workflow/${local.deployer_identity}"
 }
 
-# The deployer's roles are listed, with a reason each, in infra/INSTALL.md.
-# No owner, no editor, and no role that can grant roles.
+# Predefined project roles that GCP offers no narrower form of (see above).
 resource "google_project_iam_member" "deployer" {
   for_each = var.create_deployer ? toset([
     "roles/serviceusage.serviceUsageAdmin",
     "roles/iam.workloadIdentityPoolAdmin",
-    "roles/iam.serviceAccountAdmin",
   ]) : toset([])
 
   project = var.project_id
@@ -121,33 +138,53 @@ resource "google_project_iam_member" "deployer" {
   member  = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
-# Refreshing the project grants above means reading the project's IAM policy,
-# which none of the roles above allows. This role adds that read and nothing else.
-resource "google_project_iam_custom_role" "deployer_refresh" {
+# The two project-level permissions that are not available per resource:
+# reading the project IAM policy (so a plan can refresh the project grants it
+# cannot change) and creating a service account. It cannot set any policy.
+resource "google_project_iam_custom_role" "deployer_project" {
   count = var.create_deployer ? 1 : 0
 
   project     = var.project_id
-  role_id     = "${replace(var.name_prefix, "-", "_")}_deployer_refresh"
-  title       = "Deployer state refresh"
-  description = "Read-only: lets the deployer refresh the project IAM grants it manages."
+  role_id     = "${replace(var.name_prefix, "-", "_")}_deployer_project"
+  title       = "Deployer project permissions"
+  description = "Read the project IAM policy, and create service accounts. Nothing that sets a policy."
 
   permissions = [
     "resourcemanager.projects.get",
     "resourcemanager.projects.getIamPolicy",
     "iam.roles.get",
+    "iam.serviceAccounts.create",
   ]
 }
 
-resource "google_project_iam_member" "deployer_refresh" {
+resource "google_project_iam_member" "deployer_project" {
   count = var.create_deployer ? 1 : 0
 
   project = var.project_id
-  role    = google_project_iam_custom_role.deployer_refresh[0].name
+  role    = google_project_iam_custom_role.deployer_project[0].name
   member  = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
+# Service account administration on THIS module's accounts only, not
+# project-wide: the deployer cannot touch, or impersonate through, any other
+# service account in the project. (A service account created later, outside
+# this module, is not in this list; adding one is a local apply.)
+resource "google_service_account_iam_member" "deployer_sa_admin" {
+  for_each = var.create_deployer ? {
+    publisher = google_service_account.publisher.name
+    reader    = google_service_account.reader.name
+    deployer  = google_service_account.deployer[0].name
+    planner   = google_service_account.planner[0].name
+  } : {}
+
+  service_account_id = each.value
+  role               = "roles/iam.serviceAccountAdmin"
+  member             = "serviceAccount:${google_service_account.deployer[0].email}"
+}
+
 # Bucket-level, not project-level: the deployer administers these two buckets
-# (settings, their IAM, and the state objects) and no others.
+# (settings, their IAM, and the state objects) and no others. On the corpus
+# bucket that includes changing who can read or write the corpus.
 resource "google_storage_bucket_iam_member" "deployer" {
   for_each = var.create_deployer ? {
     corpus = google_storage_bucket.corpus.name
@@ -157,4 +194,94 @@ resource "google_storage_bucket_iam_member" "deployer" {
   bucket = each.value
   role   = "roles/storage.admin"
   member = "serviceAccount:${google_service_account.deployer[0].email}"
+}
+
+# --- planner: the READ-ONLY twin of the deployer, for plans and drift checks ---
+# Same workflow identity, a different service account: the workflow picks which
+# one it authenticates as. It can read what a plan refreshes and nothing else:
+# no write to the state bucket (plans run with -lock=false), no grant of any
+# kind. It exists so the scheduled drift check never holds write credentials.
+
+resource "google_service_account" "planner" {
+  count = var.create_deployer ? 1 : 0
+
+  project      = var.project_id
+  account_id   = "${var.name_prefix}-planner"
+  display_name = "Infrastructure planner (read-only)"
+  description  = "Plans this module and detects drift. Cannot change anything."
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_service_account_iam_member" "planner_wif" {
+  count = var.create_deployer ? 1 : 0
+
+  service_account_id = google_service_account.planner[0].name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "${local.pool_principal}/attribute.repo_id_workflow/${local.deployer_identity}"
+}
+
+# Project-level, read-only: everything a plan refreshes that is not a bucket.
+resource "google_project_iam_custom_role" "planner" {
+  count = var.create_deployer ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "${replace(var.name_prefix, "-", "_")}_planner"
+  title       = "Planner (read-only)"
+  description = "Read-only: project IAM policy, service accounts and their policies, identity pools, enabled APIs."
+
+  permissions = [
+    "resourcemanager.projects.get",
+    "resourcemanager.projects.getIamPolicy",
+    "iam.roles.get",
+    "iam.serviceAccounts.get",
+    "iam.serviceAccounts.getIamPolicy",
+    "iam.workloadIdentityPools.get",
+    "iam.workloadIdentityPoolProviders.get",
+    "serviceusage.services.get",
+    "serviceusage.services.list",
+  ]
+}
+
+resource "google_project_iam_member" "planner" {
+  count = var.create_deployer ? 1 : 0
+
+  project = var.project_id
+  role    = google_project_iam_custom_role.planner[0].name
+  member  = "serviceAccount:${google_service_account.planner[0].email}"
+}
+
+# Bucket-level, read-only: the settings and IAM policy of the two buckets.
+resource "google_project_iam_custom_role" "planner_bucket" {
+  count = var.create_deployer ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "${replace(var.name_prefix, "-", "_")}_planner_bucket"
+  title       = "Planner bucket read (read-only)"
+  description = "Read a bucket's settings and IAM policy. Reads no object."
+
+  permissions = [
+    "storage.buckets.get",
+    "storage.buckets.getIamPolicy",
+  ]
+}
+
+resource "google_storage_bucket_iam_member" "planner" {
+  for_each = var.create_deployer ? {
+    corpus = google_storage_bucket.corpus.name
+    state  = google_storage_bucket.state.name
+  } : {}
+
+  bucket = each.value
+  role   = google_project_iam_custom_role.planner_bucket[0].name
+  member = "serviceAccount:${google_service_account.planner[0].email}"
+}
+
+# The state objects, read-only: a plan reads state and never locks it.
+resource "google_storage_bucket_iam_member" "planner_state_read" {
+  count = var.create_deployer ? 1 : 0
+
+  bucket = google_storage_bucket.state.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.planner[0].email}"
 }
