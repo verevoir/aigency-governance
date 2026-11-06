@@ -7,8 +7,10 @@
 # Weekly and on demand, as the planner: plan (a MANAGED resource differs from
 # the code) and compare live IAM policies with state for the module's own
 # principals. Either finding is drift: the job opens or comments on a GitHub
-# issue, then fails. Never applies. Grants to principals OUTSIDE the module are
-# not looked at (INSTALL.md section 7).
+# issue, then fails. An ERROR (a check, or a step such as authentication,
+# failed) opens a separate issue with a different title, so the two can be told
+# apart. Never applies. Grants to principals OUTSIDE the module are not looked
+# at (INSTALL.md section 7).
 # The plan and drift jobs run only while INFRA_PLANNER_SA is set: a shared
 # install with create_deployer = false has no planner. When it is unset the
 # planner-missing job says so in a warning annotation.
@@ -99,7 +101,8 @@ jobs:
     # Plans are NOT serialised (only apply is): pushes in quick succession run
     # plan jobs side by side, and with -lock=false a plan can read state while
     # an apply is writing it, so it may describe a half-applied estate. That is
-    # safe, not harmless: tofu refuses to apply a saved plan whose state has
+    # safe as far as the author knows (not exercised here), not harmless: tofu
+    # is understood to refuse to apply a saved plan whose state has
     # moved since, so a stale plan fails the apply and a re-run of the workflow
     # makes a fresh one. Each run uploads its own artifact.
     # Skipped while INFRA_PLANNER_SA is unset (the planner-missing job warns).
@@ -164,7 +167,8 @@ jobs:
     env:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
-    # One apply at a time. While an apply runs, GitHub keeps at most ONE other
+    # One apply at a time. While an apply runs, GitHub (as remembered from its
+    # documentation; unverified here) keeps at most ONE other
     # pending run per group, and a newer one replaces (cancels) an older pending
     # one; a running apply is never cancelled. A cancelled run's change is not
     # lost: the newer run is made from the newer main, which contains it. Its
@@ -219,8 +223,15 @@ jobs:
     env:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+    # Runs are serialised so the issue notification's check-then-create cannot
+    # race with another drift run and open a duplicate. A run is never cancelled;
+    # GitHub keeps one pending run, which is enough for a weekly schedule.
+    concurrency:
+      group: infra-drift
+      cancel-in-progress: false
     steps:
       - name: Require main
+        id: main
         run: |
           if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
             echo "::error title=Run drift from main::The planner can be assumed only from refs/heads/main, and this run is on ${GITHUB_REF}. Run it again with main selected." >&2
@@ -271,48 +282,29 @@ jobs:
         id: iam
         continue-on-error: true
         working-directory: ${{ env.INSTALLATION }}
-        run: |
-          script="${GITHUB_WORKSPACE}/scripts/iam-drift.mjs"
-          out="${GITHUB_OUTPUT:-/dev/null}"
-          fail() {
-            echo "status=1" >> "${out}"
-            echo "::error title=IAM check failed::$1" >&2
-            exit 1
-          }
-          mkdir -p live
-          tofu show -json > state.json || fail "tofu show failed"
-          node "${script}" scopes state.json > scopes.tsv || fail "could not list the places to read"
-          while IFS=$'\t' read -r scope file; do
-            case "${scope}" in
-              bucket:*) gcloud storage buckets get-iam-policy "gs://${scope#bucket:}" --format=json > "live/${file}" || fail "could not read ${scope}" ;;
-              sa:*) gcloud iam service-accounts get-iam-policy "${scope#sa:}" --format=json > "live/${file}" || fail "could not read ${scope}" ;;
-              project:*) gcloud projects get-iam-policy "${scope#project:}" --format=json > "live/${file}" || fail "could not read ${scope}" ;;
-              *) fail "unknown place ${scope}" ;;
-            esac
-          done < scopes.tsv
-          status=0
-          node "${script}" compare state.json live || status=$?
-          echo "status=${status}" >> "${out}"
-          if [ "${status}" -eq 2 ]; then
-            echo "::error title=IAM drift::A live IAM binding for the module's principals differs from state (see the lines above)." >&2
-            exit 2
-          fi
-          if [ "${status}" -ne 0 ]; then
-            echo "::error title=IAM check failed::the comparison exited ${status}." >&2
-            exit "${status}"
-          fi
-      # One open issue at a time: a repeat run comments on it. If this step
+        run: bash "${GITHUB_WORKSPACE}/scripts/iam-live-check.sh"
+      # One open issue per kind at a time: a repeat run comments on it. Drift and
+      # an ERROR (the plan or the live IAM check failed, or an earlier step such
+      # as authentication did) are told apart by the issue title. If this step
       # fails (for example Issues is disabled) the job fails visibly.
-      - name: Report drift as a GitHub issue
-        if: steps.plan.outputs.status == '2' || steps.iam.outputs.status == '2'
+      - name: Report drift or an error as a GitHub issue
+        if: ${{ !cancelled() && steps.main.outcome == 'success' && (failure() || steps.plan.outputs.status != '0' || steps.iam.outputs.status != '0') }}
         env:
           GH_TOKEN: ${{ github.token }}
+          PLAN_STATUS: ${{ steps.plan.outputs.status }}
+          IAM_STATUS: ${{ steps.iam.outputs.status }}
         run: |
           set -o pipefail
-          title="Infrastructure drift"
           url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          body="The scheduled drift check found drift: ${url}. The details are in that run's log. Fix it by applying a change or reverting the out-of-band edit, then close this issue."
-          number=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "${title} in:title" --json number,title --jq '.[] | select(.title == "Infrastructure drift") | .number' | head -n 1)
+          detail="plan exit '${PLAN_STATUS}', live IAM exit '${IAM_STATUS}'; empty means that step never ran"
+          if [ "${PLAN_STATUS}" = "2" ] || [ "${IAM_STATUS}" = "2" ]; then
+            title="Infrastructure drift"
+            body="The scheduled drift check found drift (${detail}): ${url}. The details are in that run's log. Fix it by applying a change or reverting the out-of-band edit, then close this issue."
+          else
+            title="Infrastructure drift check failed"
+            body="The scheduled drift check did not complete (${detail}): ${url}. This is an ERROR, not drift: nothing is known about the estate until the cause is fixed. Read that run's log, fix it, then close this issue."
+          fi
+          number=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" --json number,title --jq ".[] | select(.title == \"${title}\") | .number" | head -n 1)
           if [ -n "${number}" ]; then
             gh issue comment "${number}" --repo "${GITHUB_REPOSITORY}" --body "${body}"
           else

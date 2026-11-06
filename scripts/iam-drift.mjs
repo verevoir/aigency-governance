@@ -11,6 +11,12 @@
 // "unexpected"; one state has and the live policy lacks is "missing". Either is
 // drift. Grants to anyone else are not looked at.
 //
+// Conditions: a grant with an IAM condition is compared on its expression with
+// whitespace collapsed (title and description are not compared). Whether gcloud
+// returns conditions at all is UNVERIFIED, so for a place where state has a
+// conditional grant, a live policy that does not say "version": 3 is an error:
+// it must not be read as "no conditions".
+//
 // Exit 0 clean, 2 drift, 1 error. A policy that is missing or unreadable is an
 // error, never a clean pass.
 import { readFileSync } from 'node:fs';
@@ -88,8 +94,14 @@ if (command === 'scopes') {
   for (const scope of scopes) process.stdout.write(`${scope}\t${fileFor(scope)}\n`);
 } else {
   if (liveDir === undefined) fail('compare needs <live-dir>');
+  const conditional = new Set(expected.filter((b) => b.condition !== '').map((b) => b.scope));
   const live = scopes.flatMap((scope) => {
     const policy = readJson(`${liveDir}/${fileFor(scope)}`);
+    if (conditional.has(scope) && !(Number(policy.version) >= 3)) {
+      fail(
+        `${scope}: state has conditional grants but the live policy is version ${policy.version ?? 'absent'}, so its conditions may not have been returned: not comparing`,
+      );
+    }
     return (policy.bindings ?? []).flatMap((b) =>
       (b.members ?? []).filter(ours).map((member) => ({
         scope,

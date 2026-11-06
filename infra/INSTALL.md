@@ -107,7 +107,9 @@ public access prevention enforced, and in the same location as the module's
 ```sh
 export STATE_BUCKET="review-tfstate-$PROJECT_ID"   # <name_prefix>-tfstate-<project_id>
 export REGION=europe-west2                        # the module's region
-# A new project has the Storage API off. The module manages it later (step 5).
+# UNVERIFIED: whether a new project has the Storage API off (from memory, not
+# checked against GCP's documentation). Enabling it is harmless if it is already
+# on. The module manages it later (step 5).
 gcloud services enable storage.googleapis.com --project="$PROJECT_ID"
 gcloud storage buckets create "gs://$STATE_BUCKET" --project="$PROJECT_ID" \
   --location="$REGION" --uniform-bucket-level-access --public-access-prevention
@@ -205,7 +207,8 @@ deployment branches to `main`. The name must equal the module's
 the plan job has printed the plan and saved it as an artifact. The apply job
 downloads that same plan file and applies it without planning again, so what
 the reviewers approve is what is applied. If the state moved since, tofu
-refuses the stale plan and the apply fails; it never applies something else.
+refuses the stale plan (OpenTofu is understood to; not exercised here) and the
+apply fails rather than applying something else.
 
 The environment is enforced by the identity, not only by the workflow: the
 deployer can be assumed only by a token whose `environment` claim is this name
@@ -319,9 +322,10 @@ Change anything under `infra/` through a pull request. The `infra` workflow:
   CI run shows what it finds. Two checks are skipped, each inline with its reason. CKV_GCP_62 (bucket
   access logging), inline in `main.tf` on both buckets with its reason: the
   module has no log bucket, which would be new cost and scope. GCP's Admin
-  Activity audit logs are always on, and Data Access audit logs for Cloud
-  Storage (off by default, a project setting this module does not manage) are
-  the alternative. CKV_GCP_125 (OIDC trust) is skipped on the provider in
+  Activity audit logs are on and Data Access audit logs for Cloud Storage are
+  off by default (both from memory of GCP's documentation, not verified here;
+  Data Access is a project setting this module does not manage). They are the
+  alternative. CKV_GCP_125 (OIDC trust) is skipped on the provider in
   `wif.tf`: owner-wide reader trust, pinned on the numeric owner id, is the
   operator's deliberate design. Both skips are the operator's decision to
   overturn. The action is
@@ -343,7 +347,7 @@ Change anything under `infra/` through a pull request. The `infra` workflow:
   newer `main`. **Plans are not serialised**: two quick pushes run two plan jobs
   side by side, each uploading its own run's artifact. Plans take no lock
   (`-lock=false`), so a plan can read state while an apply is writing it and
-  describe a half-applied estate. That is safe, not harmless: tofu refuses to
+  describe a half-applied estate. That is, as far as the author knows (not exercised here), safe but not harmless: tofu refuses to
   apply a saved plan whose state has moved since, so such a plan fails the
   apply, and re-running the workflow makes a fresh plan;
 - every Monday, and on demand (from `main` only: the job refuses another ref
@@ -395,9 +399,11 @@ The deployer is **not** unable to widen access. It can:
 
 It cannot set the project's own IAM policy and holds no owner, editor, project
 IAM admin or security admin role, and it cannot touch service accounts that are
-not this module's. The two project-wide roles are **predefined roles that GCP
-offers no narrower form of**; they are not scoped by an IAM condition because
-this document does not claim support for one that it has not verified. That
+not this module's. For the two project-wide roles **no narrower form was
+verified, and none was ruled out**: the provider schema and GCP's role
+documentation were not checked for a pool-level IAM resource or for an IAM
+condition on the grant, so a narrower form may exist. They are project-wide
+because nothing narrower was verified. That
 is an **accepted residual risk**, and the reason the installation needs a
 **dedicated project** (section 2) and the reason a shared project sets
 `create_deployer = false`. The mitigation is the control on merge: `main` is
@@ -409,8 +415,8 @@ Granted by the module. No `roles/owner`, no `roles/editor`, no project IAM admin
 
 | Role                                   | Scope                                   | Why                                                                                                                                   |
 | -------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `roles/serviceusage.serviceUsageAdmin` | project (not narrowable)                | Manage the five `google_project_service` resources.                                                                                   |
-| `roles/iam.workloadIdentityPoolAdmin`  | project (not narrowable)                | Manage the identity pool and its OIDC provider. Can rewrite the trust condition: residual risk above.                                 |
+| `roles/serviceusage.serviceUsageAdmin` | project (narrower form not verified)    | Manage the five `google_project_service` resources.                                                                                   |
+| `roles/iam.workloadIdentityPoolAdmin`  | project (narrower form not verified)    | Manage the identity pool and its OIDC provider. Can rewrite the trust condition: residual risk above.                                 |
 | `roles/iam.serviceAccountAdmin`        | the module's four service accounts only | Manage them and the identity bindings on them. Granted per account, not project-wide.                                                 |
 | `roles/storage.admin`                  | the two buckets only                    | Manage each bucket's settings and IAM, and (for the state bucket) read and write the OpenTofu state objects.                          |
 | custom `<prefix>_deployer_project`     | project                                 | `resourcemanager.projects.get`, `resourcemanager.projects.getIamPolicy`, `iam.roles.get` (refresh), and `iam.serviceAccounts.create`. |
@@ -455,13 +461,29 @@ here; the trust condition is a managed attribute, so the plan covers it.
 another service account added to the module's buckets, service accounts or
 project are not looked at); anything the module does not manage; policy levels
 other than these three (folders, the organisation, deny policies); and any
-project but this one. Whether `gcloud` returns the policies in the shape the
-script expects, and returns condition expressions as they were set (they are
-compared with whitespace collapsed), has not been tried against GCP: the script
-is tested against fixtures only.
+project but this one.
+
+**Unverified assumption about conditions.** The publisher's two bucket grants
+carry IAM conditions. The job reads each policy with `gcloud ... get-iam-policy
+--format=json`, and whether that returns conditions (which needs a version 3
+policy) is **not verified**: no GCP documentation for these gcloud commands was
+read here, and nothing has run against GCP. So a missing condition cannot pass
+quietly: where state has conditional grants, the script compares a place only if
+the live policy says `"version": 3`; otherwise it exits 1 (an error) and says
+why. If the first run reports that, the fix is in the gcloud call, not in the
+comparison. Conditions are compared on their expression with whitespace
+collapsed (title and description are ignored). The comparison script is tested
+against fixtures only (matching, differing, whitespace variants, a condition on
+one side only), and the step around it (`scripts/iam-live-check.sh`) against
+fake `tofu`, `gcloud` and `node`.
 
 **Notification.** On drift the job opens a GitHub issue titled `Infrastructure
-drift`, or comments on the one already open so weekly repeats do not pile up.
+drift`, or comments on the one already open so weekly repeats do not pile up. An
+**error** (the plan or the live IAM check failed, or an earlier step such as
+authentication did) opens or comments on a separate issue titled
+`Infrastructure drift check failed`, worded as an error, so an erroring job is
+not silent and the two are told apart by title. Drift runs are serialised by a
+concurrency group, so two overlapping runs cannot both open an issue.
 The issue holds a link to the run, no plan output. Only this job holds
 `issues: write`. The notification goes where GitHub sends issue notifications
 (watchers of the repository); there is no paging or chat integration. If the
@@ -471,6 +493,14 @@ new one. The run's error titles tell the cases apart: `Drift` and `IAM drift`,
 and `Plan failed` or `IAM check failed` (errors, which are not drift). Fix drift
 by applying (merge a change, or a local apply for project-level grants), or by
 reverting the out-of-band change.
+
+**Scheduled runs can stop.** GitHub is understood to disable scheduled
+workflows in a public repository after 60 days without repository activity.
+This is from memory of GitHub's documentation and **not verified here**. If it
+holds, the weekly drift job stops without any run, red or green, so no issue is
+opened for it. What to watch for is the absence of a recent `infra` run from the
+schedule in the Actions tab, or the workflow shown as disabled there; re-enable
+it and run it once by hand (from `main`). No keepalive is added.
 
 The permission lists of the three custom roles are written from the GCP
 permission names and have not been exercised against a real project: the first
@@ -594,8 +624,8 @@ module "review_corpus" {
   installation or pool in the project uses.
 
 **The deployer's two project-wide roles (service usage admin, workload identity
-pool admin) reach every API and every identity pool in the project, and cannot
-be narrowed (section 7). The deployer belongs in a DEDICATED project.** In a
+pool admin) reach every API and every identity pool in the project, and no
+narrower form was verified (section 7). The deployer belongs in a DEDICATED project.** In a
 shared project, set `create_deployer` false.
 
 ## Later

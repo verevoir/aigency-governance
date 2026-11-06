@@ -20,7 +20,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -114,7 +114,7 @@ function execute(
       chmodSync(join(dir, name), 0o755);
     }
     const r = spawnSync('/bin/bash', ['-e', '-c', body], {
-      env: { PATH: `${dir}:/usr/bin:/bin`, FAKES_DIR: dir, ...env },
+      env: { PATH: `${dir}:${dirname(process.execPath)}:/usr/bin:/bin`, FAKES_DIR: dir, ...env },
       encoding: 'utf8',
     });
     const logPath = join(dir, 'log');
@@ -229,7 +229,7 @@ describe('infra.yml scan job', () => {
     expect(scan()).not.toContain('id-token');
   });
 
-  it('skips no check without a reason', () => {
+  it('passes no skip_check input to checkov', () => {
     expect(code(workflow)).not.toContain('skip_check');
   });
 
@@ -381,16 +381,20 @@ describe('infra.yml drift job (schedule and dispatch)', () => {
     expect({ status: r.status, out: r.out }).toEqual({ status: 0, out: '' });
   });
 
-  it('exits 1 titled "Plan failed" when tofu plan errors', () => {
-    const r = execute(script(), {}, 1);
-    expect(r.status).toBe(1);
-    expect(r.out).toContain('::error title=Plan failed::');
+  it('exits 1 when tofu plan errors', () => {
+    expect(execute(script(), {}, 1).status).toBe(1);
   });
 
-  it('exits 2 titled "Drift" when tofu plan finds changes', () => {
-    const r = execute(script(), {}, 2);
-    expect(r.status).toBe(2);
-    expect(r.out).toContain('::error title=Drift::');
+  it('titles a plan error "Plan failed"', () => {
+    expect(execute(script(), {}, 1).out).toContain('::error title=Plan failed::');
+  });
+
+  it('exits 2 when tofu plan finds changes', () => {
+    expect(execute(script(), {}, 2).status).toBe(2);
+  });
+
+  it('titles plan changes "Drift"', () => {
+    expect(execute(script(), {}, 2).out).toContain('::error title=Drift::');
   });
 
   it('does not call an error drift', () => {
@@ -435,12 +439,13 @@ describe('infra.yml drift job: ref guard, live IAM check, notification', () => {
   const notify = (env: Record<string, string>): ReturnType<typeof execute> =>
     execute(body('gh issue'), { ...repo, ...env }, 0, { gh: fakeGh });
 
-  it('refuses to run from another ref, with a named error', () => {
+  it('refuses to run from another ref', () => {
+    expect(execute(body('GITHUB_REF'), { GITHUB_REF: 'refs/heads/topic' }).status).toBe(1);
+  });
+
+  it('names the error when it refuses another ref', () => {
     const r = execute(body('GITHUB_REF'), { GITHUB_REF: 'refs/heads/topic' });
-    expect({
-      status: r.status,
-      named: r.out.includes('::error title=Run drift from main::'),
-    }).toEqual({ status: 1, named: true });
+    expect(r.out).toContain('::error title=Run drift from main::');
   });
 
   it('runs from main', () => {
@@ -453,34 +458,76 @@ describe('infra.yml drift job: ref guard, live IAM check, notification', () => {
     );
   });
 
-  it.each(['scopes', 'compare', 'get-iam-policy'])('runs the live IAM check with %s', (token) => {
-    expect(body('iam-drift.mjs')).toContain(token);
+  it('runs the live IAM check from the script the tests execute', () => {
+    expect(body('iam-live-check.sh')).toContain('scripts/iam-live-check.sh');
   });
 
-  it('notifies on drift from either check', () => {
-    expect(drift()).toContain(
-      "if: steps.plan.outputs.status == '2' || steps.iam.outputs.status == '2'",
-    );
+  it('serialises drift runs without cancelling a running one', () => {
+    expect(drift()).toMatch(/concurrency:\n {6}group: \S+\n {6}cancel-in-progress: false/);
   });
 
-  it('opens an issue when none is open', () => {
-    const r = notify({});
-    expect({
-      created: r.log.includes('issue create'),
-      commented: r.log.includes('issue comment'),
-    }).toEqual({ created: true, commented: false });
+  const notifyIf = (): string =>
+    /\n {8}if: (.*)\n/.exec(drift().split('- name: Report drift or an error')[1] ?? '')?.[1] ?? '';
+
+  it.each(["steps.plan.outputs.status != '0'", "steps.iam.outputs.status != '0'", 'failure()'])(
+    'notifies when %s',
+    (condition) => {
+      expect(notifyIf()).toContain(condition);
+    },
+  );
+
+  const driftEnv = { PLAN_STATUS: '2', IAM_STATUS: '0' };
+  const errorEnv = { PLAN_STATUS: '1', IAM_STATUS: '0' };
+  const neverRan = { PLAN_STATUS: '', IAM_STATUS: '' };
+
+  it('opens an issue for drift when none is open', () => {
+    expect(notify(driftEnv).log).toContain('issue create');
+  });
+
+  it('titles a drift issue "Infrastructure drift"', () => {
+    expect(notify(driftEnv).log).toContain('--title Infrastructure drift --body');
   });
 
   it('comments on the open issue instead of opening another', () => {
-    const r = notify({ OPEN: '7' });
-    expect({
-      commented: r.log.includes('issue comment 7'),
-      created: r.log.includes('issue create'),
-    }).toEqual({ commented: true, created: false });
+    expect(notify({ ...driftEnv, OPEN: '7' }).log).toContain('issue comment 7');
+  });
+
+  it('opens no second issue while one is open', () => {
+    expect(notify({ ...driftEnv, OPEN: '7' }).log).not.toContain('issue create');
+  });
+
+  it('opens an issue when the live IAM check found the drift', () => {
+    expect(notify({ PLAN_STATUS: '0', IAM_STATUS: '2' }).log).toContain(
+      '--title Infrastructure drift --body',
+    );
+  });
+
+  it('opens an issue for an error too', () => {
+    expect(notify(errorEnv).log).toContain('issue create');
+  });
+
+  it('titles an error issue "Infrastructure drift check failed"', () => {
+    expect(notify(errorEnv).log).toContain('--title Infrastructure drift check failed --body');
+  });
+
+  it('does not title an error issue as drift', () => {
+    expect(notify(errorEnv).log).not.toContain('--title Infrastructure drift --body');
+  });
+
+  it('words an error issue as an error, not drift', () => {
+    expect(notify(errorEnv).log).toContain('This is an ERROR, not drift');
+  });
+
+  it('opens an error issue when an earlier step failed and no check ran', () => {
+    expect(notify(neverRan).log).toContain('--title Infrastructure drift check failed --body');
+  });
+
+  it('comments on the open error issue instead of opening another', () => {
+    expect(notify({ ...errorEnv, OPEN: '8' }).log).toContain('issue comment 8');
   });
 
   it('fails the step when gh fails, so the job fails visibly', () => {
-    expect(notify({ GH_FAIL: '1' }).status).not.toBe(0);
+    expect(notify({ ...driftEnv, GH_FAIL: '1' }).status).not.toBe(0);
   });
 
   it('uses the workflow token for gh', () => {
@@ -508,7 +555,18 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
   const sa = 'review-publisher@p.iam.gserviceaccount.com';
   const pool = 'projects/1/locations/global/workloadIdentityPools/review-github';
   const principalSet = `principalSet://iam.googleapis.com/${pool}/attribute.repository_owner_id/1`;
-  type Policy = { bindings: { role: string; members: string[] }[] };
+  type Condition = { title?: string; expression: string };
+  type Policy = {
+    version?: number;
+    bindings: { role: string; members: string[]; condition?: Condition | undefined }[];
+  };
+  const expression = "resource.name.startsWith('x') || resource.name == 'y'";
+  const creator = {
+    role: 'roles/storage.objectCreator',
+    members: [`serviceAccount:${sa}`],
+    condition: { title: 'create', expression },
+  };
+  const legacyOwner = { role: 'roles/storage.legacyBucketOwner', members: ['projectOwner:p'] };
   const viewer = { role: 'roles/storage.objectViewer', members: [`serviceAccount:${sa}`] };
   const impersonation = { role: 'roles/iam.workloadIdentityUser', members: [principalSet] };
   const state = {
@@ -530,6 +588,15 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
                 },
               },
               {
+                type: 'google_storage_bucket_iam_member',
+                values: {
+                  bucket: 'b',
+                  role: creator.role,
+                  member: `serviceAccount:${sa}`,
+                  condition: [{ title: 'create', description: 'd', expression }],
+                },
+              },
+              {
                 type: 'google_service_account_iam_member',
                 values: {
                   service_account_id: `projects/p/serviceAccounts/${sa}`,
@@ -545,9 +612,7 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
   };
   type Live = { bucket?: Policy; sa?: Policy; project?: Policy };
   const clean: Required<Live> = {
-    bucket: {
-      bindings: [viewer, { role: 'roles/storage.legacyBucketOwner', members: ['projectOwner:p'] }],
-    },
+    bucket: { version: 3, bindings: [viewer, creator, legacyOwner] },
     sa: { bindings: [impersonation] },
     project: { bindings: [{ role: 'roles/owner', members: ['user:someone@example.com'] }] },
   };
@@ -576,54 +641,109 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
     expect(run(clean).status).toBe(0);
   });
 
-  it('flags an extra grant to a module service account', () => {
-    const bucket = {
-      bindings: [
-        ...clean.bucket.bindings,
-        { role: 'roles/storage.admin', members: viewer.members },
-      ],
-    };
-    const r = run({ ...clean, bucket });
-    expect({
-      status: r.status,
-      line: r.out.includes('unexpected: bucket:b roles/storage.admin'),
-    }).toEqual({
-      status: 2,
-      line: true,
-    });
+  const bucketWith = (...bindings: Policy['bindings']): Policy => ({ version: 3, bindings });
+  /** The corpus bucket policy with the publisher's creator grant carrying `condition`. */
+  const withCondition = (condition?: Condition): Policy =>
+    bucketWith(viewer, { ...creator, condition }, legacyOwner);
+  const extraAdmin = { role: 'roles/storage.admin', members: viewer.members };
+  const other = `principalSet://iam.googleapis.com/${pool}/attribute.repository/evil/x`;
+
+  it('exits 2 for an extra grant to a module service account', () => {
+    const bucket = bucketWith(...clean.bucket.bindings, extraAdmin);
+    expect(run({ ...clean, bucket }).status).toBe(2);
   });
 
-  it('flags an extra binding for another identity in the module pool', () => {
-    const other = `principalSet://iam.googleapis.com/${pool}/attribute.repository/evil/x`;
-    const r = run({
-      ...clean,
-      sa: { bindings: [{ ...impersonation, members: [principalSet, other] }] },
-    });
-    expect({ status: r.status, line: r.out.includes(`unexpected: sa:${sa}`) }).toEqual({
-      status: 2,
-      line: true,
-    });
+  it('names an extra grant as unexpected', () => {
+    const bucket = bucketWith(...clean.bucket.bindings, extraAdmin);
+    expect(run({ ...clean, bucket }).out).toContain('unexpected: bucket:b roles/storage.admin');
   });
 
-  it('flags a grant that state has and the live policy lacks', () => {
-    const r = run({ ...clean, bucket: { bindings: [] } });
-    expect({
-      status: r.status,
-      line: r.out.includes('missing: bucket:b roles/storage.objectViewer'),
-    }).toEqual({
-      status: 2,
-      line: true,
-    });
+  it('exits 2 for an extra binding for another identity in the module pool', () => {
+    const live = { ...clean, sa: { bindings: [{ ...impersonation, members: [principalSet, other] }] } };
+    expect(run(live).status).toBe(2);
+  });
+
+  it('names the extra pool binding as unexpected', () => {
+    const live = { ...clean, sa: { bindings: [{ ...impersonation, members: [principalSet, other] }] } };
+    expect(run(live).out).toContain(`unexpected: sa:${sa}`);
+  });
+
+  it('exits 2 for a grant that state has and the live policy lacks', () => {
+    expect(run({ ...clean, bucket: bucketWith() }).status).toBe(2);
+  });
+
+  it('names a grant the live policy lacks as missing', () => {
+    expect(run({ ...clean, bucket: bucketWith() }).out).toContain(
+      'missing: bucket:b roles/storage.objectViewer',
+    );
   });
 
   it('does not look at grants to principals outside the module', () => {
-    const bucket = {
-      bindings: [
-        ...clean.bucket.bindings,
-        { role: 'roles/storage.admin', members: ['user:x@example.com'] },
-      ],
-    };
+    const bucket = bucketWith(...clean.bucket.bindings, {
+      role: 'roles/storage.admin',
+      members: ['user:x@example.com'],
+    });
     expect(run({ ...clean, bucket }).status).toBe(0);
+  });
+
+  // Conditional grants: the publisher's two grants carry IAM conditions. State
+  // holds them as condition[0].expression, the live policy as condition.expression.
+  it('ignores a differing title on a conditional grant', () => {
+    const bucket = withCondition({ title: 'renamed', expression });
+    expect(run({ ...clean, bucket }).status).toBe(0);
+  });
+
+  it.each([
+    { name: 'extra spaces', live: "resource.name.startsWith('x')   ||   resource.name == 'y'" },
+    { name: 'a line break', live: "resource.name.startsWith('x') ||\n  resource.name == 'y'" },
+    { name: 'tabs', live: "resource.name.startsWith('x')\t||\tresource.name == 'y'" },
+    { name: 'leading and trailing space', live: ` ${expression} ` },
+  ])('treats a live condition with $name as the same grant', ({ live }) => {
+    const bucket = withCondition({ title: 'create', expression: live });
+    expect(run({ ...clean, bucket }).status).toBe(0);
+  });
+
+  it('exits 2 when the live condition expression differs', () => {
+    const bucket = withCondition({ title: 'create', expression: "resource.name == 'z'" });
+    expect(run({ ...clean, bucket }).status).toBe(2);
+  });
+
+  it('names the differing live condition as unexpected', () => {
+    const bucket = withCondition({ title: 'create', expression: "resource.name == 'z'" });
+    expect(run({ ...clean, bucket }).out).toContain(
+      `unexpected: bucket:b ${creator.role} serviceAccount:${sa} if resource.name == 'z'`,
+    );
+  });
+
+  it('exits 2 when state has a condition and the live grant has none', () => {
+    expect(run({ ...clean, bucket: withCondition(undefined) }).status).toBe(2);
+  });
+
+  it('names the conditional grant as missing when the live grant has none', () => {
+    expect(run({ ...clean, bucket: withCondition(undefined) }).out).toContain(
+      `missing: bucket:b ${creator.role} serviceAccount:${sa} if ${expression}`,
+    );
+  });
+
+  it('exits 2 when the live grant has a condition and state has none', () => {
+    const bucket = bucketWith({ ...viewer, condition: { expression: "resource.name == 'z'" } }, creator, legacyOwner);
+    expect(run({ ...clean, bucket }).status).toBe(2);
+  });
+
+  it('names a condition only the live grant has as unexpected', () => {
+    const bucket = bucketWith({ ...viewer, condition: { expression: "resource.name == 'z'" } }, creator, legacyOwner);
+    expect(run({ ...clean, bucket }).out).toContain(
+      `unexpected: bucket:b ${viewer.role} serviceAccount:${sa} if resource.name == 'z'`,
+    );
+  });
+
+  it('errors, not a pass, when conditions are in state and the live policy has no version', () => {
+    expect(run({ ...clean, bucket: { bindings: clean.bucket.bindings } }).status).toBe(1);
+  });
+
+  it('errors, not a pass, when conditions are in state and the live policy is version 1', () => {
+    const bucket = { version: 1, bindings: clean.bucket.bindings };
+    expect(run({ ...clean, bucket }).out).toContain('is version 1');
   });
 
   it('errors, not a clean pass, when a policy cannot be read', () => {
@@ -637,6 +757,103 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
       `project:p\tproject_p.json`,
       `sa:${sa}\tsa_${sa}.json`,
     ]);
+  });
+});
+
+describe('scripts/iam-live-check.sh: the drift job step, executed with fake tofu, gcloud and node', () => {
+  const checkScript = fileURLToPath(new URL('scripts/iam-live-check.sh', root));
+  const account = 'a@p.iam.gserviceaccount.com';
+  const stateJson = JSON.stringify({
+    values: {
+      root_module: {
+        resources: [
+          { type: 'google_service_account', values: { email: account, project: 'p' } },
+          { type: 'google_storage_bucket', values: { name: 'b' } },
+        ],
+      },
+    },
+  });
+  const fakeTofu = 'if [ -n "$TOFU_FAIL" ]; then exit 1; fi\nprintf \'%s\' "$STATE_JSON"';
+  // Logs its arguments; fails when they contain $GCLOUD_FAIL; prints $GCLOUD_OUT or an empty v3 policy.
+  const fakeGcloud = [
+    'echo "$@" >> "$FAKES_DIR/log"',
+    'case "$*" in *"$GCLOUD_FAIL"*) [ -n "$GCLOUD_FAIL" ] && exit 1 ;; esac',
+    'if [ -n "$GCLOUD_OUT" ]; then printf \'%s\' "$GCLOUD_OUT"; else printf \'%s\' \'{"version":3,"bindings":[]}\'; fi',
+  ].join('\n');
+  // Stands in for node and lists a place the script has no case for.
+  const unknownPlace = 'case "$2" in scopes) printf \'weird:x\\tx.json\\n\' ;; esac';
+  const extraBinding = JSON.stringify({
+    version: 3,
+    bindings: [{ role: 'roles/owner', members: [`serviceAccount:${account}`] }],
+  });
+
+  const run = (
+    env: Record<string, string>,
+    fakes: Record<string, string> = {},
+  ): ReturnType<typeof execute> =>
+    execute(
+      `cd "$FAKES_DIR"; export GITHUB_OUTPUT="$FAKES_DIR/gh_output"; : > "$GITHUB_OUTPUT"; rc=0; bash "${checkScript}" || rc=$?; cat "$GITHUB_OUTPUT"; exit $rc`,
+      { STATE_JSON: stateJson, ...env },
+      0,
+      { tofu: fakeTofu, gcloud: fakeGcloud, ...fakes },
+    );
+
+  it('exits 0 when every live policy matches state', () => {
+    expect(run({}).status).toBe(0);
+  });
+
+  it('writes status=0 for the reporting step when clean', () => {
+    expect(run({}).out).toContain('status=0');
+  });
+
+  it('exits 2 when a live policy has a binding state lacks', () => {
+    expect(run({ GCLOUD_OUT: extraBinding }).status).toBe(2);
+  });
+
+  it('writes status=2 for the reporting step on drift', () => {
+    expect(run({ GCLOUD_OUT: extraBinding }).out).toContain('status=2');
+  });
+
+  it('exits 1 when gcloud fails', () => {
+    expect(run({ GCLOUD_FAIL: 'get-iam-policy' }).status).toBe(1);
+  });
+
+  it('writes status=1 when gcloud fails', () => {
+    expect(run({ GCLOUD_FAIL: 'get-iam-policy' }).out).toContain('status=1');
+  });
+
+  it('names the place gcloud could not read', () => {
+    expect(run({ GCLOUD_FAIL: 'get-iam-policy' }).out).toContain(
+      '::error title=IAM check failed::could not read',
+    );
+  });
+
+  it('exits 1 when tofu show fails', () => {
+    expect(run({ TOFU_FAIL: '1' }).status).toBe(1);
+  });
+
+  it('exits 1, not a clean pass, when a policy is not JSON', () => {
+    expect(run({ GCLOUD_OUT: 'not json' }).status).toBe(1);
+  });
+
+  it('writes status=1 when the comparison errors', () => {
+    expect(run({ GCLOUD_OUT: 'not json' }).out).toContain('status=1');
+  });
+
+  it('exits 1 for a place it has no case for', () => {
+    expect(run({}, { node: unknownPlace }).status).toBe(1);
+  });
+
+  it('names the place it has no case for', () => {
+    expect(run({}, { node: unknownPlace }).out).toContain('unknown place weird:x');
+  });
+
+  it.each([
+    { place: 'bucket', call: 'storage buckets get-iam-policy gs://b --format=json' },
+    { place: 'service account', call: `iam service-accounts get-iam-policy ${account} --format=json` },
+    { place: 'project', call: 'projects get-iam-policy p --format=json' },
+  ])('reads the $place policy with gcloud', ({ call }) => {
+    expect(run({}).log).toContain(call);
   });
 });
 
@@ -666,9 +883,12 @@ describe('infra.yml remote state: the fail-closed step, executed', () => {
     expect(execute(requireBody(name), { ...both, [token]: '' }).status).toBe(1);
   });
 
+  it.each(cloudJobs)('%s has a Require remote state step', (name) => {
+    expect(job(name)).toContain('- name: Require remote state');
+  });
+
   it.each(cloudJobs)('%s checks the state location before it authenticates', (name) => {
     const text = job(name);
-    expect(text.indexOf('Require remote state')).toBeGreaterThan(-1);
     expect(text.indexOf('Require remote state')).toBeLessThan(
       text.indexOf('google-github-actions/auth'),
     );
@@ -907,8 +1127,11 @@ describe('module: what is granted, and to whom', () => {
     );
   });
 
-  it('only ANDs a custom condition onto the owner id check', () => {
+  it('ANDs a custom condition onto the owner id check', () => {
     expect(conditionLine()).toContain('&& (${var.allowed_owner_condition})');
+  });
+
+  it('never ORs anything into the provider condition', () => {
     expect(conditionLine()).not.toContain('||');
   });
 
@@ -1064,8 +1287,21 @@ describe('module: buckets, APIs and versions', () => {
     expect(skips.map((s) => s.id).sort()).toEqual(['CKV_GCP_125', 'CKV_GCP_62', 'CKV_GCP_62']);
   });
 
-  it.each(skips)('gives the $id skip a reason of at least 40 characters', ({ reason }) => {
-    expect(reason.length).toBeGreaterThanOrEqual(40);
+  // What each skip must say it relies on: the design that makes the finding
+  // deliberate, not merely some text.
+  const designs: Record<string, RegExp[]> = {
+    CKV_GCP_62: [/no log bucket/i, /operator's decision/i, /Audit Logs/],
+    CKV_GCP_125: [/owner-wide/i, /repository_owner_id/, /operator's/i],
+  };
+
+  it.each(skips)('skips only a check the module has a stated design for: $id', ({ id }) => {
+    expect(Object.keys(designs)).toContain(id);
+  });
+
+  it.each(
+    skips.flatMap(({ id, reason }) => (designs[id] ?? []).map((re) => ({ id, reason, re }))),
+  )('has the $id skip state the design it relies on: $re', ({ reason, re }) => {
+    expect(reason).toMatch(re);
   });
 
   it('protects the state bucket from destroy', () => {

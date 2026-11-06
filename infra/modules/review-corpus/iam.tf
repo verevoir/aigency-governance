@@ -85,7 +85,8 @@ resource "google_service_account_iam_member" "reader_wif" {
 # Everything from here on exists only when create_deployer is true.
 #
 # The deployer CAN widen access (full table: infra/INSTALL.md section 7). Two
-# project-wide predefined roles have no narrower form: workloadIdentityPoolAdmin
+# project-wide predefined roles, for which no narrower form was VERIFIED (the
+# provider schema and GCP docs were not checked; one may exist): workloadIdentityPoolAdmin
 # can rewrite the provider's trust condition, and serviceUsageAdmin reaches any
 # API. It also administers this module's service accounts and buckets. That is an
 # accepted residual risk, which is why the shipped installation uses a DEDICATED

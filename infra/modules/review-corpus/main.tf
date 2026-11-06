@@ -26,7 +26,7 @@ resource "google_project_service" "apis" {
 
 # The practices corpus, published by the corpus repository's CI.
 resource "google_storage_bucket" "corpus" {
-  #checkov:skip=CKV_GCP_62:No log bucket in this module; a log bucket is new cost and scope, left for the operator's decision. The alternative is GCP Cloud Audit Logs (Admin Activity is always on; Data Access logs for Cloud Storage are off by default and are a project setting this module does not manage).
+  #checkov:skip=CKV_GCP_62:No log bucket in this module; a log bucket is new cost and scope, left for the operator's decision. The alternative is GCP Cloud Audit Logs (Admin Activity logs are on and Data Access logs for Cloud Storage are off by default, from memory of GCP's documentation and unverified here; Data Access is a project setting this module does not manage).
   name                        = local.corpus_bucket
   project                     = var.project_id
   location                    = var.region
@@ -52,7 +52,7 @@ resource "google_storage_bucket" "corpus" {
 
 # Remote state for this installation. It outlives a teardown on purpose.
 resource "google_storage_bucket" "state" {
-  #checkov:skip=CKV_GCP_62:No log bucket in this module; a log bucket is new cost and scope, left for the operator's decision. The alternative is GCP Cloud Audit Logs (Admin Activity is always on; Data Access logs for Cloud Storage are off by default and are a project setting this module does not manage).
+  #checkov:skip=CKV_GCP_62:No log bucket in this module; a log bucket is new cost and scope, left for the operator's decision. The alternative is GCP Cloud Audit Logs (Admin Activity logs are on and Data Access logs for Cloud Storage are off by default, from memory of GCP's documentation and unverified here; Data Access is a project setting this module does not manage).
   name                        = local.state_bucket
   project                     = var.project_id
   location                    = var.region

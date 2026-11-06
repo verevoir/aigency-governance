@@ -114,7 +114,7 @@ variable "manage_apis" {
 }
 
 variable "create_deployer" {
-  description = "Whether to create the deployer and planner service accounts, their custom roles and their project-level grants. The deployer holds project-wide service usage and identity pool admin roles that cannot be narrowed, so it belongs in a DEDICATED project. Set false in a shared project: the module's only grants are then bucket-level and service-account-level."
+  description = "Whether to create the deployer and planner service accounts, their custom roles and their project-level grants. The deployer holds project-wide service usage and identity pool admin roles for which no narrower form was verified, so it belongs in a DEDICATED project. Set false in a shared project: the module's only grants are then bucket-level and service-account-level."
   type        = bool
   default     = true
 }
