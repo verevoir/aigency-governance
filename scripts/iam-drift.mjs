@@ -33,7 +33,10 @@ const walk = (module) => [
   ...(module.resources ?? []),
   ...(module.child_modules ?? []).flatMap(walk),
 ];
-const collapse = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
+const collapse = (text) =>
+  String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
 const fileFor = (scope) => `${scope.replace(/[^A-Za-z0-9._@-]/g, '_')}.json`;
 const keyOf = (b) => JSON.stringify([b.scope, b.role, b.member, b.condition]);
 const describe = (kind, b) =>

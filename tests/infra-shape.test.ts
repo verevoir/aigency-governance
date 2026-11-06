@@ -420,8 +420,7 @@ describe('infra.yml jobs that need the planner', () => {
 
 describe('infra.yml drift job: ref guard, live IAM check, notification', () => {
   const drift = (): string => job('drift');
-  const body = (marker: string): string =>
-    runBodies(drift()).find((b) => b.includes(marker)) ?? '';
+  const body = (marker: string): string => runBodies(drift()).find((b) => b.includes(marker)) ?? '';
   const repo = {
     GITHUB_REPOSITORY: 'o/r',
     GITHUB_SERVER_URL: 'https://github.com',
@@ -438,9 +437,10 @@ describe('infra.yml drift job: ref guard, live IAM check, notification', () => {
 
   it('refuses to run from another ref, with a named error', () => {
     const r = execute(body('GITHUB_REF'), { GITHUB_REF: 'refs/heads/topic' });
-    expect({ status: r.status, named: r.out.includes('::error title=Run drift from main::') }).toEqual(
-      { status: 1, named: true },
-    );
+    expect({
+      status: r.status,
+      named: r.out.includes('::error title=Run drift from main::'),
+    }).toEqual({ status: 1, named: true });
   });
 
   it('runs from main', () => {
@@ -578,10 +578,16 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
 
   it('flags an extra grant to a module service account', () => {
     const bucket = {
-      bindings: [...clean.bucket.bindings, { role: 'roles/storage.admin', members: viewer.members }],
+      bindings: [
+        ...clean.bucket.bindings,
+        { role: 'roles/storage.admin', members: viewer.members },
+      ],
     };
     const r = run({ ...clean, bucket });
-    expect({ status: r.status, line: r.out.includes('unexpected: bucket:b roles/storage.admin') }).toEqual({
+    expect({
+      status: r.status,
+      line: r.out.includes('unexpected: bucket:b roles/storage.admin'),
+    }).toEqual({
       status: 2,
       line: true,
     });
@@ -601,7 +607,10 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
 
   it('flags a grant that state has and the live policy lacks', () => {
     const r = run({ ...clean, bucket: { bindings: [] } });
-    expect({ status: r.status, line: r.out.includes('missing: bucket:b roles/storage.objectViewer') }).toEqual({
+    expect({
+      status: r.status,
+      line: r.out.includes('missing: bucket:b roles/storage.objectViewer'),
+    }).toEqual({
       status: 2,
       line: true,
     });
@@ -609,7 +618,10 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
 
   it('does not look at grants to principals outside the module', () => {
     const bucket = {
-      bindings: [...clean.bucket.bindings, { role: 'roles/storage.admin', members: ['user:x@example.com'] }],
+      bindings: [
+        ...clean.bucket.bindings,
+        { role: 'roles/storage.admin', members: ['user:x@example.com'] },
+      ],
     };
     expect(run({ ...clean, bucket }).status).toBe(0);
   });
@@ -1176,7 +1188,9 @@ describe('module: input rules', () => {
   });
 
   it('lets a null allowed_owner_condition through', () => {
-    expect(variableBlock('allowed_owner_condition')).toContain('var.allowed_owner_condition == null ||');
+    expect(variableBlock('allowed_owner_condition')).toContain(
+      'var.allowed_owner_condition == null ||',
+    );
   });
 });
 
