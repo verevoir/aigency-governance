@@ -535,7 +535,7 @@ describe('infra.yml drift job: ref guard, live IAM check, notification', () => {
   });
 
   const finish = (env: Record<string, string>): number | null =>
-    execute(body('IAM_STATUS'), env).status;
+    execute(body('title=Drift check failed'), env).status;
 
   it('exits 2 at the end when the plan found drift', () => {
     expect(finish({ PLAN_STATUS: '2', IAM_STATUS: '0' })).toBe(2);
