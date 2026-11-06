@@ -1,0 +1,340 @@
+# Infrastructure for the keyless review corpus (see infra/INSTALL.md).
+#
+# Pull requests: scan, format and validate, with NO cloud credentials.
+# Push to main: scan; PLAN as the read-only planner and keep that plan; then,
+# behind the `infra-apply` environment (operator-configured required reviewers),
+# authenticate as the deployer and apply exactly the plan that was kept.
+# Weekly and on demand, as the planner: plan (a MANAGED resource differs from
+# the code) and compare live IAM policies with state for the module's own
+# principals. Either finding is drift: the job opens or comments on a GitHub
+# issue, then fails. An ERROR (a check, or a step such as authentication,
+# failed) opens a separate issue with a different title, so the two can be told
+# apart. Never applies. Grants to principals OUTSIDE the module are not looked
+# at (INSTALL.md section 7).
+# The plan and drift jobs run only while INFRA_PLANNER_SA is set: a shared
+# install with create_deployer = false has no planner. When it is unset the
+# planner-missing job says so in a warning annotation.
+# Remote state is required: the bucket and prefix come from repository
+# VARIABLES and every job that touches cloud state fails if they are unset.
+# Nothing here is a secret.
+#
+# Timeouts (timeout-minutes) are ceilings, not measurements: no run has been
+# timed yet. A job that hangs costs at most its ceiling in runner minutes. Too
+# LOW is the worse direction, because it would kill an apply part-way; so the
+# cloud jobs get 20 and the credential-free ones 10. Revise from real run times.
+name: infra
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  schedule:
+    # Mondays, at an off-peak minute rather than the top of the hour.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The one place the installation directory is named. Copying the installation
+  # (INSTALL.md step 3) means changing only this line.
+  INSTALLATION: infra/installations/verevoir
+
+jobs:
+  # Misconfiguration scan of the OpenTofu code. It cannot be run locally here,
+  # so the first CI run is what shows what it finds. No skip_check input is used
+  # here; the two skips (CKV_GCP_62 on both buckets, CKV_GCP_125 on the provider)
+  # are inline comments in the module, each with its reason.
+  # RESIDUAL RISK: the SHA pins the action's own code, but the action pulls its
+  # docker image by TAG (ghcr.io/bridgecrewio/checkov:3.4.3), which a registry
+  # can move. The pin does not cover the image.
+  scan:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: bridgecrewio/checkov-action@45edc9d8856b664db2ec251f5f8632361f0a67aa # v12.3139.0
+        with:
+          directory: infra
+          framework: terraform
+          soft_fail: false
+          quiet: true
+          download_external_modules: false
+
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          # Matches required_version "~> 1.12" in the module.
+          tofu_version: 1.12.x
+      - name: Check formatting
+        working-directory: infra
+        run: tofu fmt -check -recursive
+      - name: Initialise without a backend
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu init -backend=false -input=false
+      - name: Validate
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu validate
+
+  plan:
+    # Plans are NOT serialised (only apply is): pushes in quick succession run
+    # plan jobs side by side, and with -lock=false a plan can read state while
+    # an apply is writing it, so it may describe a half-applied estate. That is
+    # safe as far as the author knows (not exercised here), not harmless: tofu
+    # is understood to refuse to apply a saved plan whose state has
+    # moved since, so a stale plan fails the apply and a re-run of the workflow
+    # makes a fresh one. Each run uploads its own artifact.
+    # Skipped while INFRA_PLANNER_SA is unset (the planner-missing job warns).
+    if: github.event_name == 'push' && vars.INFRA_PLANNER_SA != ''
+    needs: scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Require remote state
+        run: |
+          if [ -z "${TF_STATE_BUCKET}" ] || [ -z "${TF_STATE_PREFIX}" ]; then
+            echo "TF_STATE_BUCKET and TF_STATE_PREFIX must be set as repository variables." >&2
+            exit 1
+          fi
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.INFRA_WIF_PROVIDER }}
+          service_account: ${{ vars.INFRA_PLANNER_SA }}
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.x
+      - name: Initialise
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu init -input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}"
+      - name: Plan, and keep the plan
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu plan -input=false -lock=false -out=plan.tfplan
+      - name: Print the plan
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu show -no-color plan.tfplan
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: plan
+          path: ${{ env.INSTALLATION }}/plan.tfplan
+          if-no-files-found: error
+          # The binary plan holds resource values in plaintext and is readable by
+          # anyone who can read this repository's Actions artifacts, so it is
+          # kept for the minimum GitHub allows (1 day). The apply consumes it, so
+          # it cannot simply be dropped. After expiry the apply fails closed.
+          retention-days: 1
+
+  apply:
+    if: github.event_name == 'push'
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The deployer's principal requires this exact environment name (the
+    # module's deploy_environment), so only a job that waits here can assume it.
+    environment: infra-apply
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+    # One apply at a time. While an apply runs, GitHub (as remembered from its
+    # documentation; unverified here) keeps at most ONE other
+    # pending run per group, and a newer one replaces (cancels) an older pending
+    # one; a running apply is never cancelled. A cancelled run's change is not
+    # lost: the newer run is made from the newer main, which contains it. Its
+    # plan, though, was made without a lock (see the plan job), so it is applied
+    # only if the state has not moved since; otherwise the apply fails and the
+    # run is re-run.
+    concurrency:
+      group: infra-apply
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Require remote state
+        run: |
+          if [ -z "${TF_STATE_BUCKET}" ] || [ -z "${TF_STATE_PREFIX}" ]; then
+            echo "TF_STATE_BUCKET and TF_STATE_PREFIX must be set as repository variables." >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: plan
+          path: ${{ env.INSTALLATION }}
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.INFRA_WIF_PROVIDER }}
+          service_account: ${{ vars.INFRA_DEPLOYER_SA }}
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.x
+      - name: Initialise
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu init -input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}"
+      - name: Apply the plan the reviewers saw, and only that
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu apply -input=false plan.tfplan
+
+  drift:
+    # Two read-only checks as the planner: tofu plan (managed resources) and a
+    # live-IAM comparison for the module's own principals (scripts/iam-drift.mjs).
+    # Grants to principals outside the module are NOT covered. On drift (exit 2
+    # from either) it opens a GitHub issue, or comments on the open one, then
+    # fails; on an ERROR (exit 1, or an earlier step failing) it opens or
+    # comments on a separate "Infrastructure drift check failed" issue, then
+    # fails. This job alone holds issues: write. Skipped while INFRA_PLANNER_SA
+    # is unset (the planner-missing job warns).
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && vars.INFRA_PLANNER_SA != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    env:
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+    # Runs are serialised so the issue notification's check-then-create cannot
+    # race with another drift run and open a duplicate. A run is never cancelled;
+    # GitHub is understood to keep one pending run (from memory of its
+    # documentation; unverified here), which is enough for a weekly schedule.
+    concurrency:
+      group: infra-drift
+      cancel-in-progress: false
+    steps:
+      - name: Require main
+        id: main
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error title=Run drift from main::The planner can be assumed only from refs/heads/main, and this run is on ${GITHUB_REF}. Run it again with main selected." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Require remote state
+        run: |
+          if [ -z "${TF_STATE_BUCKET}" ] || [ -z "${TF_STATE_PREFIX}" ]; then
+            echo "TF_STATE_BUCKET and TF_STATE_PREFIX must be set as repository variables." >&2
+            exit 1
+          fi
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.INFRA_WIF_PROVIDER }}
+          service_account: ${{ vars.INFRA_PLANNER_SA }}
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.x
+      - name: Initialise
+        working-directory: ${{ env.INSTALLATION }}
+        run: tofu init -input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}"
+      # tofu plan -detailed-exitcode: 0 no changes, 1 error, 2 changes (drift).
+      # Both 1 and 2 fail the check, under different titles. continue-on-error
+      # lets the live IAM check below still run; the last step fails the job.
+      - name: Plan, failing on drift
+        id: plan
+        continue-on-error: true
+        working-directory: ${{ env.INSTALLATION }}
+        run: |
+          status=0
+          tofu plan -input=false -lock=false -detailed-exitcode || status=$?
+          echo "status=${status}" >> "${GITHUB_OUTPUT:-/dev/null}"
+          if [ "${status}" -eq 2 ]; then
+            echo "::error title=Drift::A managed resource differs from the code: apply, or revert the out-of-band change." >&2
+            exit 2
+          fi
+          if [ "${status}" -ne 0 ]; then
+            echo "::error title=Plan failed::tofu plan exited ${status}: an error, not drift." >&2
+            exit "${status}"
+          fi
+      # Read each place the module grants IAM (as the planner, which can already
+      # read all three levels) and compare with state. Any failure to read a
+      # policy is an error, never a clean pass.
+      - name: Compare live IAM with state
+        id: iam
+        continue-on-error: true
+        working-directory: ${{ env.INSTALLATION }}
+        run: bash "${GITHUB_WORKSPACE}/scripts/iam-live-check.sh"
+      # One open issue per kind at a time: a repeat run comments on it. Drift and
+      # an ERROR (the plan or the live IAM check failed, or an earlier step such
+      # as authentication did) are told apart by the issue title. If this step
+      # fails (for example Issues is disabled) the job fails visibly.
+      - name: Report drift or an error as a GitHub issue
+        if: ${{ !cancelled() && steps.main.outcome == 'success' && (failure() || steps.plan.outputs.status != '0' || steps.iam.outputs.status != '0') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_STATUS: ${{ steps.plan.outputs.status }}
+          IAM_STATUS: ${{ steps.iam.outputs.status }}
+        run: |
+          set -o pipefail
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          detail="plan exit '${PLAN_STATUS}', live IAM exit '${IAM_STATUS}'; empty means that step never ran"
+          if [ "${PLAN_STATUS}" = "2" ] || [ "${IAM_STATUS}" = "2" ]; then
+            title="Infrastructure drift"
+            body="The scheduled drift check found drift (${detail}): ${url}. The details are in that run's log. Fix it by applying a change or reverting the out-of-band edit, then close this issue."
+          else
+            title="Infrastructure drift check failed"
+            body="The scheduled drift check did not complete (${detail}): ${url}. This is an ERROR, not drift: nothing is known about the estate until the cause is fixed. Read that run's log, fix it, then close this issue."
+          fi
+          number=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" --json number,title --jq ".[] | select(.title == \"${title}\") | .number" | head -n 1)
+          if [ -n "${number}" ]; then
+            gh issue comment "${number}" --repo "${GITHUB_REPOSITORY}" --body "${body}"
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --body "${body}"
+          fi
+      - name: Fail the job when drift or an error was found
+        if: steps.plan.outputs.status != '0' || steps.iam.outputs.status != '0'
+        env:
+          PLAN_STATUS: ${{ steps.plan.outputs.status }}
+          IAM_STATUS: ${{ steps.iam.outputs.status }}
+        run: |
+          echo "::error title=Drift check failed::plan exit ${PLAN_STATUS}, live IAM exit ${IAM_STATUS}." >&2
+          if [ "${PLAN_STATUS}" = "2" ] || [ "${IAM_STATUS}" = "2" ]; then
+            exit 2
+          fi
+          exit 1
+
+  # A deleted INFRA_PLANNER_SA would otherwise switch plan, apply and drift off
+  # without a word. A warning, not a failure: an install with create_deployer =
+  # false has no planner on purpose and should stay green.
+  planner-missing:
+    if: vars.INFRA_PLANNER_SA == '' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Say that plan, apply and drift are off
+        run: |
+          echo "::warning title=Planner not configured::INFRA_PLANNER_SA is unset, so the plan, apply and drift jobs did not run. That is expected for an install with create_deployer = false; otherwise the variable was deleted or never set (INSTALL.md step 6)." >&2
