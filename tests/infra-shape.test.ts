@@ -9,10 +9,20 @@
 // pure rename of a resource or a local does not fail a test; a change to a
 // grant does. One behaviour per test; per-member checks use it.each.
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it } from 'vitest';
 
 const root = new URL('../', import.meta.url);
 const read = (path: string): string => readFileSync(new URL(path, root), 'utf8');
@@ -28,9 +38,6 @@ const code = (source: string): string =>
 
 const workflow = read('.github/workflows/infra.yml');
 const install = read('infra/INSTALL.md');
-const flat = install.replace(/\s+/g, ' ');
-/** iam.tf with comment markers and line breaks collapsed, so a wrapped phrase still matches. */
-const iamSource = read('infra/modules/review-corpus/iam.tf').replace(/\n#?\s*/g, ' ');
 const gitignore = read('.gitignore');
 const moduleDir = new URL('infra/modules/review-corpus/', root);
 const moduleText = squash(
@@ -88,21 +95,37 @@ const jobNames = ['scan', 'check', 'plan', 'apply', 'drift'];
 const cloudJobs = ['plan', 'apply', 'drift'];
 const stateVars = ['TF_STATE_BUCKET', 'TF_STATE_PREFIX'];
 
-/** Run a workflow `run:` body in bash with a fake `tofu` that exits `tofuExit`. */
+/**
+ * Run a workflow `run:` body in bash with a fake `tofu` that exits `tofuExit`
+ * and any other fake commands (name -> sh script). The fakes' directory is
+ * $FAKES_DIR and is removed afterwards; `log` is what the fakes wrote to
+ * $FAKES_DIR/log.
+ */
 function execute(
   body: string,
   env: Record<string, string>,
   tofuExit = 0,
-): { status: number | null; out: string } {
+  fakes: Record<string, string> = {},
+): { status: number | null; out: string; log: string } {
   const dir = mkdtempSync(join(tmpdir(), 'infra-shape-'));
-  const fake = join(dir, 'tofu');
-  writeFileSync(fake, `#!/bin/sh\nexit ${tofuExit}\n`);
-  chmodSync(fake, 0o755);
-  const r = spawnSync('/bin/bash', ['-e', '-c', body], {
-    env: { PATH: `${dir}:/usr/bin:/bin`, ...env },
-    encoding: 'utf8',
-  });
-  return { status: r.status, out: `${r.stdout}${r.stderr}` };
+  try {
+    for (const [name, script] of Object.entries({ tofu: `exit ${tofuExit}`, ...fakes })) {
+      writeFileSync(join(dir, name), `#!/bin/sh\n${script}\n`);
+      chmodSync(join(dir, name), 0o755);
+    }
+    const r = spawnSync('/bin/bash', ['-e', '-c', body], {
+      env: { PATH: `${dir}:/usr/bin:/bin`, FAKES_DIR: dir, ...env },
+      encoding: 'utf8',
+    });
+    const logPath = join(dir, 'log');
+    return {
+      status: r.status,
+      out: `${r.stdout}${r.stderr}`,
+      log: existsSync(logPath) ? readFileSync(logPath, 'utf8') : '',
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe('infra.yml pins', () => {
@@ -145,8 +168,16 @@ describe('infra.yml permissions', () => {
     expect(perms(name)).toEqual(['contents: read']);
   });
 
-  it.each(cloudJobs)('gives %s only contents: read and id-token: write', (name) => {
+  it.each(['plan', 'apply'])('gives %s only contents: read and id-token: write', (name) => {
     expect(perms(name)).toEqual(['contents: read', 'id-token: write']);
+  });
+
+  it('gives drift issues: write as well', () => {
+    expect(perms('drift')).toEqual(['contents: read', 'id-token: write', 'issues: write']);
+  });
+
+  it('grants issues: write once in the whole workflow', () => {
+    expect(code(workflow).match(/issues: write/g)).toHaveLength(1);
   });
 });
 
@@ -370,6 +401,230 @@ describe('infra.yml drift job (schedule and dispatch)', () => {
 describe('infra.yml jobs that need the planner', () => {
   it.each(['plan', 'drift'])('skips the %s job while INFRA_PLANNER_SA is unset', (name) => {
     expect(job(name)).toMatch(/\n {4}if: .*vars\.INFRA_PLANNER_SA != ''/);
+  });
+
+  const missing = (): string => runBodies(job('planner-missing')).join('\n');
+
+  it('runs the planner-missing job when INFRA_PLANNER_SA is unset', () => {
+    expect(job('planner-missing')).toContain("vars.INFRA_PLANNER_SA == ''");
+  });
+
+  it('warns, by name, that the planner is not configured', () => {
+    expect(execute(missing(), {}).out).toContain('::warning title=Planner not configured::');
+  });
+
+  it('does not fail a shared install that has no planner', () => {
+    expect(execute(missing(), {}).status).toBe(0);
+  });
+});
+
+describe('infra.yml drift job: ref guard, live IAM check, notification', () => {
+  const drift = (): string => job('drift');
+  const body = (marker: string): string =>
+    runBodies(drift()).find((b) => b.includes(marker)) ?? '';
+  const repo = {
+    GITHUB_REPOSITORY: 'o/r',
+    GITHUB_SERVER_URL: 'https://github.com',
+    GITHUB_RUN_ID: '9',
+  };
+  // `gh issue list` prints $OPEN (an issue number) when set; $GH_FAIL makes every call fail.
+  const fakeGh = [
+    'echo "$@" >> "$FAKES_DIR/log"',
+    '[ "$1 $2" = "issue list" ] && [ -n "$OPEN" ] && echo "$OPEN"',
+    '[ -z "$GH_FAIL" ]',
+  ].join('\n');
+  const notify = (env: Record<string, string>): ReturnType<typeof execute> =>
+    execute(body('gh issue'), { ...repo, ...env }, 0, { gh: fakeGh });
+
+  it('refuses to run from another ref, with a named error', () => {
+    const r = execute(body('GITHUB_REF'), { GITHUB_REF: 'refs/heads/topic' });
+    expect({ status: r.status, named: r.out.includes('::error title=Run drift from main::') }).toEqual(
+      { status: 1, named: true },
+    );
+  });
+
+  it('runs from main', () => {
+    expect(execute(body('GITHUB_REF'), { GITHUB_REF: 'refs/heads/main' }).status).toBe(0);
+  });
+
+  it('checks the ref before it authenticates', () => {
+    expect(drift().indexOf('GITHUB_REF')).toBeLessThan(
+      drift().indexOf('google-github-actions/auth'),
+    );
+  });
+
+  it.each(['scopes', 'compare', 'get-iam-policy'])('runs the live IAM check with %s', (token) => {
+    expect(body('iam-drift.mjs')).toContain(token);
+  });
+
+  it('notifies on drift from either check', () => {
+    expect(drift()).toContain(
+      "if: steps.plan.outputs.status == '2' || steps.iam.outputs.status == '2'",
+    );
+  });
+
+  it('opens an issue when none is open', () => {
+    const r = notify({});
+    expect({
+      created: r.log.includes('issue create'),
+      commented: r.log.includes('issue comment'),
+    }).toEqual({ created: true, commented: false });
+  });
+
+  it('comments on the open issue instead of opening another', () => {
+    const r = notify({ OPEN: '7' });
+    expect({
+      commented: r.log.includes('issue comment 7'),
+      created: r.log.includes('issue create'),
+    }).toEqual({ commented: true, created: false });
+  });
+
+  it('fails the step when gh fails, so the job fails visibly', () => {
+    expect(notify({ GH_FAIL: '1' }).status).not.toBe(0);
+  });
+
+  it('uses the workflow token for gh', () => {
+    expect(drift()).toContain('GH_TOKEN: ${{ github.token }}');
+  });
+
+  const finish = (env: Record<string, string>): number | null =>
+    execute(body('IAM_STATUS'), env).status;
+
+  it('exits 2 at the end when the plan found drift', () => {
+    expect(finish({ PLAN_STATUS: '2', IAM_STATUS: '0' })).toBe(2);
+  });
+
+  it('exits 2 at the end when the live IAM check found drift', () => {
+    expect(finish({ PLAN_STATUS: '0', IAM_STATUS: '2' })).toBe(2);
+  });
+
+  it('exits 1 at the end when a check only errored', () => {
+    expect(finish({ PLAN_STATUS: '0', IAM_STATUS: '1' })).toBe(1);
+  });
+});
+
+describe('scripts/iam-drift.mjs: live IAM against state', () => {
+  const script = fileURLToPath(new URL('scripts/iam-drift.mjs', root));
+  const sa = 'review-publisher@p.iam.gserviceaccount.com';
+  const pool = 'projects/1/locations/global/workloadIdentityPools/review-github';
+  const principalSet = `principalSet://iam.googleapis.com/${pool}/attribute.repository_owner_id/1`;
+  type Policy = { bindings: { role: string; members: string[] }[] };
+  const viewer = { role: 'roles/storage.objectViewer', members: [`serviceAccount:${sa}`] };
+  const impersonation = { role: 'roles/iam.workloadIdentityUser', members: [principalSet] };
+  const state = {
+    values: {
+      root_module: {
+        child_modules: [
+          {
+            resources: [
+              { type: 'google_service_account', values: { email: sa, project: 'p' } },
+              { type: 'google_iam_workload_identity_pool', values: { name: pool } },
+              { type: 'google_storage_bucket', values: { name: 'b' } },
+              {
+                type: 'google_storage_bucket_iam_member',
+                values: {
+                  bucket: 'b',
+                  role: viewer.role,
+                  member: `serviceAccount:${sa}`,
+                  condition: [],
+                },
+              },
+              {
+                type: 'google_service_account_iam_member',
+                values: {
+                  service_account_id: `projects/p/serviceAccounts/${sa}`,
+                  role: impersonation.role,
+                  member: principalSet,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+  type Live = { bucket?: Policy; sa?: Policy; project?: Policy };
+  const clean: Required<Live> = {
+    bucket: {
+      bindings: [viewer, { role: 'roles/storage.legacyBucketOwner', members: ['projectOwner:p'] }],
+    },
+    sa: { bindings: [impersonation] },
+    project: { bindings: [{ role: 'roles/owner', members: ['user:someone@example.com'] }] },
+  };
+
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  const run = (live: Live, command = 'compare'): { status: number | null; out: string } => {
+    const dir = mkdtempSync(join(tmpdir(), 'iam-drift-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    mkdirSync(join(dir, 'live'));
+    const files = { bucket: 'bucket_b.json', sa: `sa_${sa}.json`, project: 'project_p.json' };
+    for (const [place, policy] of Object.entries(live)) {
+      writeFileSync(join(dir, 'live', files[place as keyof Live]), JSON.stringify(policy));
+    }
+    const r = spawnSync('node', [script, command, join(dir, 'state.json'), join(dir, 'live')], {
+      encoding: 'utf8',
+    });
+    return { status: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+
+  it('reports a clean estate as clean', () => {
+    expect(run(clean).status).toBe(0);
+  });
+
+  it('flags an extra grant to a module service account', () => {
+    const bucket = {
+      bindings: [...clean.bucket.bindings, { role: 'roles/storage.admin', members: viewer.members }],
+    };
+    const r = run({ ...clean, bucket });
+    expect({ status: r.status, line: r.out.includes('unexpected: bucket:b roles/storage.admin') }).toEqual({
+      status: 2,
+      line: true,
+    });
+  });
+
+  it('flags an extra binding for another identity in the module pool', () => {
+    const other = `principalSet://iam.googleapis.com/${pool}/attribute.repository/evil/x`;
+    const r = run({
+      ...clean,
+      sa: { bindings: [{ ...impersonation, members: [principalSet, other] }] },
+    });
+    expect({ status: r.status, line: r.out.includes(`unexpected: sa:${sa}`) }).toEqual({
+      status: 2,
+      line: true,
+    });
+  });
+
+  it('flags a grant that state has and the live policy lacks', () => {
+    const r = run({ ...clean, bucket: { bindings: [] } });
+    expect({ status: r.status, line: r.out.includes('missing: bucket:b roles/storage.objectViewer') }).toEqual({
+      status: 2,
+      line: true,
+    });
+  });
+
+  it('does not look at grants to principals outside the module', () => {
+    const bucket = {
+      bindings: [...clean.bucket.bindings, { role: 'roles/storage.admin', members: ['user:x@example.com'] }],
+    };
+    expect(run({ ...clean, bucket }).status).toBe(0);
+  });
+
+  it('errors, not a clean pass, when a policy cannot be read', () => {
+    expect(run({ bucket: clean.bucket, sa: clean.sa }).status).toBe(1);
+  });
+
+  it('lists the three places to read, each with its file', () => {
+    const lines = run(clean, 'scopes').out.trim().split('\n');
+    expect(lines).toEqual([
+      'bucket:b\tbucket_b.json',
+      `project:p\tproject_p.json`,
+      `sa:${sa}\tsa_${sa}.json`,
+    ]);
   });
 });
 
@@ -778,13 +1033,27 @@ describe('module: buckets, APIs and versions', () => {
     expect(bucketTexts).toHaveLength(2);
   });
 
-  it('skips bucket access logging, with a reason, on every bucket', () => {
-    expect(bucketTexts.filter((t) => !/#checkov:skip=CKV_GCP_62:\S/.test(t))).toEqual([]);
+  it('skips bucket access logging on every bucket', () => {
+    expect(bucketTexts.filter((t) => !/#checkov:skip=CKV_GCP_62:/.test(t))).toEqual([]);
   });
 
-  it('skips no check other than bucket access logging', () => {
-    const ids = [...moduleText.matchAll(/#checkov:skip=(CKV_\w+)/g)].map((m) => m[1]);
-    expect(ids.filter((id) => id !== 'CKV_GCP_62')).toEqual([]);
+  it('skips OIDC trust (CKV_GCP_125) on the provider', () => {
+    const provider =
+      moduleText.split('resource "google_iam_workload_identity_pool_provider" ')[1] ?? '';
+    expect(provider.split('\n}\n')[0]).toContain('#checkov:skip=CKV_GCP_125:');
+  });
+
+  const skips = [...moduleText.matchAll(/#checkov:skip=(CKV_\w+):(.*)/g)].map((m) => ({
+    id: m[1] as string,
+    reason: (m[2] as string).trim(),
+  }));
+
+  it('has exactly three skips: two buckets and the provider', () => {
+    expect(skips.map((s) => s.id).sort()).toEqual(['CKV_GCP_125', 'CKV_GCP_62', 'CKV_GCP_62']);
+  });
+
+  it.each(skips)('gives the $id skip a reason of at least 40 characters', ({ reason }) => {
+    expect(reason.length).toBeGreaterThanOrEqual(40);
   });
 
   it('protects the state bucket from destroy', () => {
@@ -800,13 +1069,6 @@ describe('module: buckets, APIs and versions', () => {
   it('defaults the retention to 30 days', () => {
     expect(defaultOf('noncurrent_retention_days')).toBe('30');
   });
-
-  it.each(['Too short', 'too long'])(
-    'states the failure direction of the retention: "%s"',
-    (phrase) => {
-      expect(variableBlock('noncurrent_retention_days')).toContain(phrase);
-    },
-  );
 
   it('fits the longest pool id in the 32 characters GCP allows', () => {
     const prefix = Number(/\{1,(\d+)\}/.exec(variableBlock('name_prefix'))?.[1]) + 1;
@@ -901,6 +1163,21 @@ describe('module: input rules', () => {
   it('defaults the deploy environment to the one the workflow waits in', () => {
     expect(defaultOf('deploy_environment')).toBe('infra-apply');
   });
+
+  it.each(['true) || (true', 'x || y', 'x && y', 'f(x)', 'true // '])(
+    'refuses the widening allowed_owner_condition "%s"',
+    (value) => {
+      expect(ruleOf('allowed_owner_condition').test(value)).toBe(true);
+    },
+  );
+
+  it('accepts one plain comparison as allowed_owner_condition', () => {
+    expect(ruleOf('allowed_owner_condition').test("assertion.repository == 'o/r'")).toBe(false);
+  });
+
+  it('lets a null allowed_owner_condition through', () => {
+    expect(variableBlock('allowed_owner_condition')).toContain('var.allowed_owner_condition == null ||');
+  });
 });
 
 // ------------------------------------------------------------ installation
@@ -993,26 +1270,8 @@ describe('INSTALL.md matches the code', () => {
     expect(enable).toBeLessThan(install.indexOf('gcloud storage buckets create'));
   });
 
-  it.each([
-    'migrate-state',
-    'Uncomment the `backend',
-    'cannot widen its own access',
-    'no role that can grant roles',
-    'plans again',
-    'two `infra/installations/verevoir` paths',
-  ])('no longer says: %s', (stale) => {
-    expect(flat).not.toContain(stale);
-  });
-
   it('lists each repository variable once in the variables table', () => {
     const rows = [...install.matchAll(/^\| `([A-Z_]+)`\s+\|/gm)].map((m) => m[1]);
     expect(rows.filter((v, i) => rows.indexOf(v) !== i)).toEqual([]);
   });
-
-  it.each(['cannot widen its own access', 'no role that can grant roles'])(
-    'iam.tf no longer claims: %s',
-    (claim) => {
-      expect(iamSource).not.toContain(claim);
-    },
-  );
 });

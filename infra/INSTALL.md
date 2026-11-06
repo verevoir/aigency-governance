@@ -87,7 +87,7 @@ Optional module arguments: `manage_apis` and `create_deployer` (both default
 second installation in the same project), `pool_suffix` (default empty; see
 step 8) and `allowed_owner_condition` (optional; the owner-id check
 is always applied and a value here is ANDed with it, so it can only narrow
-trust), `deploy_environment` (default `infra-apply`; the GitHub environment the
+trust; it may not contain parentheses, `||`, `&&` or `//`), `deploy_environment` (default `infra-apply`; the GitHub environment the
 deployer is bound to, step 6) and `noncurrent_retention_days` (default 30;
 how long an overwritten corpus object version is kept). The module itself
 holds no project- or organisation-specific value and is not edited.
@@ -186,7 +186,9 @@ Organisation variables (`gh variable set ... --org YOUR-ORG --visibility all`)
 save repeating this, but on GitHub Free they do not reach private repositories:
 set repository variables there.
 
-The governance repository also needs the planner and the remote-state location.
+The governance repository also needs the planner and the remote-state location,
+and **Issues enabled** (Settings → General → Features): the drift job reports
+drift as an issue.
 The `infra` workflow **fails**, before it authenticates, if `TF_STATE_BUCKET` or
 `TF_STATE_PREFIX` is unset, so it can never apply or plan from empty state:
 
@@ -268,7 +270,8 @@ Renaming the workflow file means changing the input and re-applying locally.
 The reader is bound to the whole owner (`attribute.repository_owner_id`), not to
 named repositories: any repository of the owner can read the corpus. That is the
 operator's deliberate design. `allowed_owner_condition` can narrow it, never
-widen it.
+widen it: its validation refuses text that could close the group it is spliced
+into (parentheses, `||`, `&&`, `//`), which is what would let a value widen trust.
 
 Overwriting an object needs delete permission, which is why the second grant
 exists and why it is limited to the one object. The publisher therefore cannot
@@ -313,33 +316,50 @@ Change anything under `infra/` through a pull request. The `infra` workflow:
 -backend=false` and `tofu validate`, with **no cloud credentials**; and, on
   the pull request and on `main`, a Checkov misconfiguration scan of `infra/`
   that blocks (`soft_fail: false`). It cannot be run locally here, so the first
-  CI run shows what it finds. The only check skipped is CKV_GCP_62 (bucket
+  CI run shows what it finds. Two checks are skipped, each inline with its reason. CKV_GCP_62 (bucket
   access logging), inline in `main.tf` on both buckets with its reason: the
   module has no log bucket, which would be new cost and scope. GCP's Admin
   Activity audit logs are always on, and Data Access audit logs for Cloud
   Storage (off by default, a project setting this module does not manage) are
-  the alternative. That is the operator's decision to overturn. The action is
+  the alternative. CKV_GCP_125 (OIDC trust) is skipped on the provider in
+  `wif.tf`: owner-wide reader trust, pinned on the numeric owner id, is the
+  operator's deliberate design. Both skips are the operator's decision to
+  overturn. The action is
   pinned by SHA but pulls its docker image by tag, which the pin does not cover;
 - on merge to `main` runs a **plan job** as the read-only planner (prints the
   plan), then an **apply job** that waits for the `infra-apply` environment's
   required reviewers, authenticates as the deployer through OIDC and applies
-  exactly that saved plan, downloaded as an artifact (kept 7 days; after that
-  the apply fails rather than planning again). Applies are serialised: one runs
-  at a time, and GitHub keeps at most one other pending run, so a newer push
-  replaces (cancels) an older pending one. Nothing is lost: the newer run plans
-  from the newer `main`, which contains the older change. **Plans are not
-  serialised**: two quick pushes run two plan jobs side by side. Each uploads
-  its own run's artifact, so they do not collide, and plans take no lock
-  (`-lock=false`), so they block neither each other nor an apply; a plan made
-  before another apply landed is refused at apply as stale;
-- every Monday, and on demand, runs a **drift job** as the planner:
-  `tofu plan -detailed-exitcode` fails the job when a resource this module
-  manages differs from the code (exit 2) or the plan errors (exit 1). It never
-  applies. It sees **managed resources only**, as the next section explains;
+  exactly that saved plan, downloaded as an artifact (kept 1 day, the minimum;
+  after that the apply fails rather than planning again). **The plan file holds
+  resource values in plaintext, and this repository is public at the time of
+  writing**, so anyone who can read its Actions artifacts can download it during
+  that day. The module holds no key or secret, but project ids, service account
+  emails and IAM bindings are in it (the plan job prints the same to the log).
+  The apply needs the file, so it is kept, not dropped; if that exposure is not
+  acceptable, the alternative is to keep the plan in the state bucket, which is
+  not built. Applies are serialised: one runs at a time, and GitHub keeps at
+  most one other pending run, so a newer push replaces (cancels) an older
+  pending one; its change is not lost, because the newer run is made from the
+  newer `main`. **Plans are not serialised**: two quick pushes run two plan jobs
+  side by side, each uploading its own run's artifact. Plans take no lock
+  (`-lock=false`), so a plan can read state while an apply is writing it and
+  describe a half-applied estate. That is safe, not harmless: tofu refuses to
+  apply a saved plan whose state has moved since, so such a plan fails the
+  apply, and re-running the workflow makes a fresh plan;
+- every Monday, and on demand (from `main` only: the job refuses another ref
+  with a named error), runs a **drift job** as the planner, with two read-only
+  checks (below): `tofu plan -detailed-exitcode` for the managed resources, and
+  a comparison of the live IAM policies with state for the module's own
+  principals. Drift in either (exit 2) opens a GitHub issue, or comments on the
+  one already open; an error (exit 1) fails the job without an issue. It never
+  applies;
 - runs the plan and drift jobs only when the repository variable
   `INFRA_PLANNER_SA` is set. A shared install with `create_deployer = false` has
-  no planner, so the jobs are skipped instead of failing at authentication; the
-  cost is that a forgotten variable skips them silently;
+  no planner, so the jobs are skipped instead of failing at authentication.
+  When the variable is unset a `planner-missing` job runs and writes a warning
+  annotation saying so, because a deleted variable would otherwise switch off
+  plan, apply and drift without a word. It is a warning, not a failure, so a
+  shared install stays green;
 - in every job that uses state, fails before authenticating if `TF_STATE_BUCKET`
   or `TF_STATE_PREFIX` is unset.
 
@@ -349,7 +369,10 @@ that names the `infra-apply` environment. Protect `main` accordingly: a merge to
 it starts a deploy, gated by that environment's reviewers.
 
 Changes the deployer cannot make: the module's project-level grants and its
-custom roles (it holds no role that sets a project IAM policy), and the
+custom roles (it holds no role that sets a project IAM policy, and its project
+role has `iam.roles.get` but not `iam.roles.update`, so even a changed
+permission list in a custom role is applied by a person with the bootstrap
+identity), and the
 per-account grants of a service account that is new. It can create a service
 account (the project-wide `iam.serviceAccounts.create` permission), but cannot
 administer it or bind anything to it until its per-account administrator grant
@@ -404,23 +427,50 @@ changes anything.
 | custom `<prefix>_planner_bucket` | the two buckets only  | `storage.buckets.get` and `storage.buckets.getIamPolicy`: a bucket's settings and IAM. No object.    |
 | `roles/storage.objectViewer`     | the state bucket only | Read the state objects.                                                                              |
 
-**What drift detection does not cover.** The drift job runs `tofu plan`, so it
-sees only the resources this module manages, and only the attributes it sets. It
-is blind to a grant added by hand outside the module: every grant here is a
-single-member `_iam_member`, so an extra member added to the same bucket or
-service-account policy, or a new binding elsewhere in the project, is not in
-state and does not show as drift. **Out-of-band IAM grants are not detected.**
-Comparing the live IAM policies with the expected ones is a follow-up, not built
-here.
+### What the drift job checks
 
-A failed drift job is the only alert, and **there is no owned alert channel in
-this change**: the run shows red in the Actions tab, and GitHub emails whoever
-last edited the cron line, if their notification settings allow it. Nobody is
-paged and no team channel is told. Until a channel is wired (a follow-up), look
-at the Actions tab weekly. The title tells the two failures apart: `Drift` (the
-estate and the code differ) and `Plan failed` (tofu errored, which is not
-drift). Fix drift by applying (merge a change, or a local apply for
-project-level grants), or by reverting the out-of-band change.
+Two checks, both read-only, both as the planner:
+
+1. **`tofu plan -detailed-exitcode`** covers the resources this module manages,
+   and only the attributes it sets (exit 2: they differ from the code).
+2. **A live-IAM comparison** (`scripts/iam-drift.mjs`) covers grants made by
+   hand. It reads every IAM grant the module has in state (`tofu show -json`),
+   fetches the live IAM policy of each place the module grants (the two
+   buckets, the four service accounts and the project), and compares them for
+   the module's own principals only: its four service accounts, and anything in
+   its identity pool. A binding to one of those principals that is live but not
+   in state is **unexpected**; one in state but not live is **missing**. Either
+   is drift (exit 2). A policy it cannot read is an error (exit 1), never a
+   clean pass.
+
+The planner can already read all three levels, and no role was widened for
+this: the bucket policies through `storage.buckets.getIamPolicy` in the
+`<prefix>_planner_bucket` custom role, the service account policies through
+`iam.serviceAccounts.getIamPolicy`, and the project policy through
+`resourcemanager.projects.getIamPolicy`, both in the `<prefix>_planner` custom
+role (`iam.tf`). The identity pool and provider carry no IAM policy of their own
+here; the trust condition is a managed attribute, so the plan covers it.
+
+**Not covered:** grants to principals outside the module (a person, a group or
+another service account added to the module's buckets, service accounts or
+project are not looked at); anything the module does not manage; policy levels
+other than these three (folders, the organisation, deny policies); and any
+project but this one. Whether `gcloud` returns the policies in the shape the
+script expects, and returns condition expressions as they were set (they are
+compared with whitespace collapsed), has not been tried against GCP: the script
+is tested against fixtures only.
+
+**Notification.** On drift the job opens a GitHub issue titled `Infrastructure
+drift`, or comments on the one already open so weekly repeats do not pile up.
+The issue holds a link to the run, no plan output. Only this job holds
+`issues: write`. The notification goes where GitHub sends issue notifications
+(watchers of the repository); there is no paging or chat integration. If the
+notify step fails (for example Issues is disabled on the repository), the job
+fails visibly. Close the issue once the drift is fixed; the next drift opens a
+new one. The run's error titles tell the cases apart: `Drift` and `IAM drift`,
+and `Plan failed` or `IAM check failed` (errors, which are not drift). Fix drift
+by applying (merge a change, or a local apply for project-level grants), or by
+reverting the out-of-band change.
 
 The permission lists of the three custom roles are written from the GCP
 permission names and have not been exercised against a real project: the first
@@ -472,7 +522,9 @@ from losing data or reusing a name too soon.
 ### The 30-day WIF soft-delete
 
 GCP does not delete a Workload Identity pool or provider immediately: it is
-**soft-deleted for 30 days**, and during that time its id is still taken. A
+**soft-deleted for 30 days** (unverified here: this figure is from memory of
+GCP's Workload Identity Federation documentation and has not been re-checked;
+confirm it there), and during that time its id is still taken. A
 reinstall with the same pool id fails with "already exists" (or a pool that is
 in the deleted state). There are two ways round it:
 

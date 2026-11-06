@@ -8,6 +8,7 @@ resource "google_iam_workload_identity_pool" "github" {
 }
 
 resource "google_iam_workload_identity_pool_provider" "github" {
+  #checkov:skip=CKV_GCP_125:Owner-wide trust is the operator's deliberate design: the condition pins the numeric repository_owner_id, and any repository of that owner may read the corpus. Narrowing it to named repositories is the operator's decision, not the scanner's.
   project                            = var.project_id
   workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
   workload_identity_pool_provider_id = local.pool_id
@@ -29,9 +30,10 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repo_id_workflow_env" = "assertion.repository_id + '@' + assertion.ref + '|' + assertion.job_workflow_ref + '|' + (has(assertion.environment) ? assertion.environment : '')"
   }
 
-  # A LITERAL expression, not a local, so a scanner (Checkov CKV_GCP_125) can see
-  # that it pins the numeric owner id. The owner-id check can never be dropped: a
-  # custom allowed_owner_condition is only ANDed on, so it can narrow, never widen.
+  # The owner-id check is a literal here and can never be dropped: a custom
+  # allowed_owner_condition (validated: no parentheses, ||, && or //, so it cannot
+  # close the group it is spliced into) is only ANDed on, so it can narrow trust,
+  # never widen it.
   attribute_condition = "assertion.repository_owner_id == '${var.github_owner_id}'${var.allowed_owner_condition == null ? "" : " && (${var.allowed_owner_condition})"}"
 
   oidc {

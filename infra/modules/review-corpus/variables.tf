@@ -97,7 +97,7 @@ variable "name_prefix" {
 }
 
 variable "pool_suffix" {
-  description = "Appended to the identity pool id. GCP soft-deletes pools for 30 days and a deleted id cannot be reused, so change this on a reinstall. At most 12 characters: see name_prefix for the pool id length budget."
+  description = "Appended to the identity pool id. GCP soft-deletes pools for 30 days (from memory of GCP's documentation; not verified here) and a deleted id cannot be reused, so change this on a reinstall. At most 12 characters: see name_prefix for the pool id length budget."
   type        = string
   default     = ""
 
@@ -142,7 +142,12 @@ variable "noncurrent_retention_days" {
 }
 
 variable "allowed_owner_condition" {
-  description = "The CEL attribute condition on the provider. The owner-id check (assertion.repository_owner_id equals github_owner_id) is always applied; a value here is ANDed with it and can only narrow trust."
+  description = "An extra CEL condition on the provider. The owner-id check (assertion.repository_owner_id equals github_owner_id) is always applied; a value here is ANDed after it and can only narrow trust. It is spliced into the expression as text, so it may not contain parentheses, || or && (or //), which are what would let a value close its group and widen trust: use one plain comparison such as assertion.repository == 'owner/name'."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.allowed_owner_condition == null || !can(regex("[()]|[|][|]|&&|//", var.allowed_owner_condition))
+    error_message = "allowed_owner_condition must not contain parentheses, ||, && or //."
+  }
 }
