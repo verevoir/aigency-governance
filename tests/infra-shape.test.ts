@@ -166,7 +166,7 @@ describe('review-corpus module shape', () => {
 
   it('binds the deployer only to the governance repo on main', () => {
     expect(moduleText).toContain(
-      '${local.pool_principal}/attribute.repo_id_ref/${var.governance_repo_id}@refs/heads/main"',
+      '${local.pool_principal}/attribute.repo_id_workflow/${local.deployer_identity}"',
     );
   });
 
@@ -188,7 +188,10 @@ describe('verevoir installation', () => {
     const variables = moduleText
       .split(/^variable "/m)
       .slice(1)
-      .map((b) => ({ name: /^([a-z_]+)"/.exec(b)?.[1] as string, hasDefault: /^ {2}default\b/m.test(b) }));
+      .map((b) => ({
+        name: /^([a-z_]+)"/.exec(b)?.[1] as string,
+        hasDefault: /^ {2}default\b/m.test(b),
+      }));
     const required = variables.filter((v) => !v.hasDefault).map((v) => v.name);
     expect(required.sort()).toEqual([
       'corpus_repo',
@@ -270,34 +273,61 @@ describe('shared-project guards', () => {
 
   it('binds the publisher to the corpus repo id on main only', () => {
     expect(moduleText).toContain(
-      '${local.pool_principal}/attribute.repo_id_ref/${var.corpus_repo_id}@refs/heads/main"',
+      '${local.pool_principal}/attribute.repo_id_workflow/${local.publisher_identity}"',
     );
     expect(moduleText).not.toContain('attribute.repository/');
     expect(moduleText).not.toContain('attribute.repo_ref');
+    expect(moduleText).not.toContain('attribute.repo_id_ref');
+  });
+
+  it('binds publisher and deployer to the exact repo id, ref AND workflow file', () => {
+    expect(moduleText).toContain(
+      'publisher_identity = "${var.corpus_repo_id}@refs/heads/main|${var.corpus_repo}/${var.publish_workflow_path}@refs/heads/main"',
+    );
+    expect(moduleText).toContain(
+      'deployer_identity  = "${var.governance_repo_id}@refs/heads/main|${var.governance_repo}/${var.deploy_workflow_path}@refs/heads/main"',
+    );
+    expect(moduleText).toContain(
+      '"attribute.repo_id_workflow"    = "assertion.repository_id + \'@\' + assertion.ref + \'|\' + assertion.job_workflow_ref"',
+    );
+    expect(moduleText).toContain('"attribute.job_workflow_ref"    = "assertion.job_workflow_ref"');
+    const defaults = (name: string): string | undefined =>
+      new RegExp(`variable "${name}" \\{[\\s\\S]*?default\\s+= "([^"]+)"`).exec(moduleText)?.[1];
+    expect(defaults('publish_workflow_path')).toBe('.github/workflows/publish-corpus.yml');
+    expect(defaults('deploy_workflow_path')).toBe('.github/workflows/infra.yml');
+    const members = [
+      ...moduleCode.matchAll(/^\s*member\s*=\s*"(\$\{local\.pool_principal\}[^"]*)"/gm),
+    ].map((m) => m[1] as string);
+    const wf = members.filter((p) => p.includes('attribute.repo_id_workflow/'));
+    expect(wf).toEqual([
+      '${local.pool_principal}/attribute.repo_id_workflow/${local.publisher_identity}',
+      '${local.pool_principal}/attribute.repo_id_workflow/${local.deployer_identity}',
+    ]);
+    // Exact match: no wildcard, no prefix operator, and nothing trails the ref.
+    for (const p of wf) expect(p).not.toMatch(/[*]|startsWith/);
+    for (const id of ['publisher_identity', 'deployer_identity']) {
+      expect(moduleCode).toMatch(new RegExp(`${id}\\s+= "[^"]*@refs/heads/main"\\n`));
+    }
+    // The workflow file is mandatory: nothing binds a repo+ref without it.
+    expect(moduleText).not.toMatch(/attribute\.repo_id_ref|attribute\.ref\//);
   });
 
   it('ends publisher and deployer principals exactly in @refs/heads/main, with no wildcard', () => {
-    const principals = [...moduleCode.matchAll(/^\s*member\s*=\s*"(\$\{local\.pool_principal\}[^"]*)"/gm)].map(
-      (m) => m[1] as string,
-    );
-    const refBound = principals.filter((p) => p.includes('attribute.repo_id_ref/'));
-    expect(refBound).toHaveLength(2);
-    for (const p of refBound) {
-      expect(p.endsWith('@refs/heads/main')).toBe(true);
-      expect(p).not.toMatch(/[*]|startsWith/);
+    const identities = [
+      ...moduleCode.matchAll(/^\s*(publisher|deployer)_identity\s*=\s*"([^"]*)"/gm),
+    ].map((m) => m[2] as string);
+    expect(identities).toHaveLength(2);
+    for (const v of identities) {
+      expect(v.endsWith('@refs/heads/main')).toBe(true);
+      expect(v).not.toMatch(/[*]|startsWith/);
+      expect(v).toContain('@refs/heads/main|');
     }
-    expect(refBound.some((p) => p.includes('${var.corpus_repo_id}@'))).toBe(true);
-    expect(refBound.some((p) => p.includes('${var.governance_repo_id}@'))).toBe(true);
-    // The mapped attribute is the id and the full ref, nothing looser.
-    expect(moduleText).toContain(
-      '"attribute.repo_id_ref"         = "assertion.repository_id + \'@\' + assertion.ref"',
-    );
+    expect(identities[0]).toContain('${var.corpus_repo_id}@');
+    expect(identities[1]).toContain('${var.governance_repo_id}@');
   });
 
   it('pins trust on numeric ids: provider condition and reader', () => {
-    expect(moduleText).toContain(
-      "assertion.repository_owner_id == '${var.github_owner_id}'",
-    );
+    expect(moduleText).toContain("assertion.repository_owner_id == '${var.github_owner_id}'");
     expect(moduleText).toContain('"attribute.repository_id"       = "assertion.repository_id"');
     expect(moduleText).toContain('= "assertion.repository_owner_id"');
     expect(moduleText).toContain(
@@ -310,9 +340,7 @@ describe('shared-project guards', () => {
 
   it('gives the reader objectViewer on the corpus bucket and nothing that writes', () => {
     const reader = blocks.filter((b) => /^google_[a-z_]+"\s*"reader(_wif)?"/.test(b));
-    const grants = blocks.filter(
-      (b) => /^google_storage_bucket_iam_member"\s*"reader"/.test(b),
-    );
+    const grants = blocks.filter((b) => /^google_storage_bucket_iam_member"\s*"reader"/.test(b));
     expect(reader.length).toBe(3);
     expect(grants).toHaveLength(1);
     expect(grants[0]).toContain('role   = "roles/storage.objectViewer"');
@@ -325,7 +353,9 @@ describe('shared-project guards', () => {
     }
     // No write-capable storage role is granted to the reader's member anywhere.
     for (const b of blocks.filter((x) => x.includes('google_service_account.reader.email'))) {
-      expect(b).not.toMatch(/roles\/storage\.(objectCreator|objectUser|objectAdmin|admin|legacy\w*)/);
+      expect(b).not.toMatch(
+        /roles\/storage\.(objectCreator|objectUser|objectAdmin|admin|legacy\w*)/,
+      );
       expect(b).not.toMatch(/roles\/(owner|editor)/);
     }
   });
@@ -339,7 +369,9 @@ describe('shared-project guards', () => {
     expect(create).toContain("resource.name == '${local.object_prefix}refs/main'");
     const overwrite = blocks.find((b) => b.includes('"publisher_overwrite_ref"')) as string;
     expect(overwrite).toContain('role   = "roles/storage.objectUser"');
-    expect(overwrite).toMatch(/expression\s+= "resource\.name == '\$\{local\.object_prefix\}refs\/main'"/);
+    expect(overwrite).toMatch(
+      /expression\s+= "resource\.name == '\$\{local\.object_prefix\}refs\/main'"/,
+    );
     expect(overwrite).not.toContain('startsWith');
     expect(moduleText).toContain(
       'object_prefix  = "projects/_/buckets/${google_storage_bucket.corpus.name}/objects/"',

@@ -63,11 +63,11 @@ rm -rf "infra/installations/$NAME/.terraform"
 
 In `infra/installations/$NAME/main.tf` change, and only change:
 
-| Where                              | Value                                                                       |
-| ---------------------------------- | --------------------------------------------------------------------------- |
-| `provider "google"`                | `project` and `region`                                                      |
+| Where                              | Value                                                                                                                               |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `provider "google"`                | `project` and `region`                                                                                                              |
 | `module "review_corpus"` arguments | `project_id`, `region`, `github_owner`, `github_owner_id`, `corpus_repo`, `corpus_repo_id`, `governance_repo`, `governance_repo_id` |
-| commented `backend "gcs"`          | `bucket` = `review-tfstate-<project_id>` (or `<name_prefix>-tfstate-<id>`)  |
+| commented `backend "gcs"`          | `bucket` = `review-tfstate-<project_id>` (or `<name_prefix>-tfstate-<id>`)                                                          |
 
 The three `*_id` values are the **numeric GitHub ids**, as quoted strings. Trust
 is pinned on them, not on the names, because a name can be re-registered by
@@ -147,15 +147,15 @@ gh variable set CORPUS_PUBLISHER_SA --repo "$CORPUS_REPO" --body "$(tofu output 
 gh variable set CORPUS_BUCKET       --repo "$CORPUS_REPO" --body "$(tofu output -raw corpus_bucket)"
 ```
 
-| Variable            | Value (output)  | Set on                                                    | Used by                                |
-| ------------------- | --------------- | --------------------------------------------------------- | -------------------------------------- |
-| `INFRA_WIF_PROVIDER`  | `wif_provider`  | the governance repo (`$GOV_REPO`)                         | `infra.yml`, the apply job             |
-| `INFRA_DEPLOYER_SA`   | `deployer_sa`   | the governance repo                                       | `infra.yml`, the apply job             |
-| `CORPUS_WIF_PROVIDER` | `wif_provider`  | the corpus repo (`$CORPUS_REPO`)                          | the corpus repo's publish workflow     |
-| `CORPUS_PUBLISHER_SA` | `publisher_sa`  | the corpus repo                                           | the corpus repo's publish workflow     |
-| `CORPUS_BUCKET`       | `corpus_bucket` | the corpus repo, and every repo that runs the review      | publish, and the review's corpus fetch |
-| `CORPUS_WIF_PROVIDER` | `wif_provider`  | every repo that runs the review (or the org)              | the review workflow (pass B)           |
-| `CORPUS_READER_SA`    | `reader_sa`     | every repo that runs the review (or the org)              | the review workflow (pass B)           |
+| Variable              | Value (output)  | Set on                                               | Used by                                |
+| --------------------- | --------------- | ---------------------------------------------------- | -------------------------------------- |
+| `INFRA_WIF_PROVIDER`  | `wif_provider`  | the governance repo (`$GOV_REPO`)                    | `infra.yml`, the apply job             |
+| `INFRA_DEPLOYER_SA`   | `deployer_sa`   | the governance repo                                  | `infra.yml`, the apply job             |
+| `CORPUS_WIF_PROVIDER` | `wif_provider`  | the corpus repo (`$CORPUS_REPO`)                     | the corpus repo's publish workflow     |
+| `CORPUS_PUBLISHER_SA` | `publisher_sa`  | the corpus repo                                      | the corpus repo's publish workflow     |
+| `CORPUS_BUCKET`       | `corpus_bucket` | the corpus repo, and every repo that runs the review | publish, and the review's corpus fetch |
+| `CORPUS_WIF_PROVIDER` | `wif_provider`  | every repo that runs the review (or the org)         | the review workflow (pass B)           |
+| `CORPUS_READER_SA`    | `reader_sa`     | every repo that runs the review (or the org)         | the review workflow (pass B)           |
 
 For the review-running repositories:
 
@@ -182,10 +182,15 @@ bucket. The consequence: only `main` of the corpus is served keylessly; a
 
 ### Why `main-evil` or a tag cannot match
 
-The provider maps `attribute.repo_id_ref` to
-`assertion.repository_id + '@' + assertion.ref`. The publisher is bound to the
-principal `attribute.repo_id_ref/<corpus_repo_id>@refs/heads/main`, and the
-deployer to `attribute.repo_id_ref/<governance_repo_id>@refs/heads/main`. A
+The provider maps `attribute.repo_id_workflow` to
+`assertion.repository_id + '@' + assertion.ref + '|' + assertion.job_workflow_ref`.
+The publisher is bound to the principal
+`attribute.repo_id_workflow/<corpus_repo_id>@refs/heads/main|<corpus_repo>/<publish_workflow_path>@refs/heads/main`,
+and the deployer to
+`attribute.repo_id_workflow/<governance_repo_id>@refs/heads/main|<governance_repo>/<deploy_workflow_path>@refs/heads/main`.
+The workflow paths default to `.github/workflows/publish-corpus.yml` and
+`.github/workflows/infra.yml` (inputs `publish_workflow_path` and
+`deploy_workflow_path`). A
 principalSet member is an **exact string match**; there is no prefix or wildcard
 matching. So a run on `refs/heads/main-evil` presents `<id>@refs/heads/main-evil`,
 a tag presents `<id>@refs/tags/...`, and a pull request presents
@@ -194,11 +199,24 @@ the service account. A repository that took over a deleted name has a different
 numeric id and fails the same way. The provider additionally rejects any token
 whose `repository_owner_id` is not `github_owner_id`.
 
+### Why the workflow file is part of the identity
+
+The repository and ref say where the code came from, not which code ran. Any
+workflow file on `main` that requests `id-token: write` could otherwise assume
+the publisher or deployer, so one new or edited workflow merged for another
+purpose would gain write access to the corpus or to the infrastructure. The OIDC
+`job_workflow_ref` claim names the workflow file (and its ref) that is running,
+so it is folded into the same exact-match string: only
+`publish-corpus.yml` on `main` of the corpus repository can publish, and only
+`infra.yml` on `main` of the governance repository can deploy. A different
+workflow file, even on `main`, presents a different string and is refused.
+Renaming the workflow file means changing the input and re-applying locally.
+
 ### What each service account can do in the bucket
 
-| Service account | Bucket permission                                                                                                                                                                 |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| reader          | `roles/storage.objectViewer` on the corpus bucket, and nothing else: it cannot create, overwrite or delete.                                                                       |
+| Service account | Bucket permission                                                                                                                                                                                                                                                       |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| reader          | `roles/storage.objectViewer` on the corpus bucket, and nothing else: it cannot create, overwrite or delete.                                                                                                                                                             |
 | publisher       | `roles/storage.objectCreator`, conditional: create objects only under `corpus/`, `manifests/` and the object `refs/main`. Plus `roles/storage.objectUser`, conditional: `resource.name` equals exactly the object `refs/main`, so only that pointer can be overwritten. |
 
 Overwriting an object needs delete permission, which is why the second grant
@@ -215,11 +233,11 @@ any corpus object).
 
 ### Bucket layout (the contract with the corpus repository)
 
-| Object                 | Contents                                                                  |
-| ---------------------- | ------------------------------------------------------------------------- |
-| `corpus/<sha>/…`       | The corpus files of commit `<sha>`, immutable once written.               |
-| `manifests/<sha>.json` | The manifest for `<sha>`, **outside** the `corpus/` prefix.               |
-| `refs/main`            | The pointer: the `<sha>` that `main` currently is. Written last.          |
+| Object                 | Contents                                                         |
+| ---------------------- | ---------------------------------------------------------------- |
+| `corpus/<sha>/…`       | The corpus files of commit `<sha>`, immutable once written.      |
+| `manifests/<sha>.json` | The manifest for `<sha>`, **outside** the `corpus/` prefix.      |
+| `refs/main`            | The pointer: the `<sha>` that `main` currently is. Written last. |
 
 A reader reads `refs/main`, then `manifests/<sha>.json`, then `corpus/<sha>/…`.
 The reader never lists or trusts anything under `corpus/` to decide what is
@@ -230,7 +248,7 @@ current.
 Change anything under `infra/` through a pull request. The `infra` workflow:
 
 - on the pull request runs `tofu fmt -check -recursive`, `tofu init
-  -backend=false` and `tofu validate`, with **no cloud credentials**;
+-backend=false` and `tofu validate`, with **no cloud credentials**;
 - on merge to `main` authenticates as the deployer through OIDC, then runs
   `tofu init` and `tofu apply`. Applies are serialised by a concurrency group.
 
@@ -247,13 +265,13 @@ deliberate: the deployer cannot widen its own access.
 Granted by the module. No `roles/owner`, no `roles/editor`, no role that can
 set a project IAM policy.
 
-| Role                                     | Scope                    | Why                                                                                                                        |
-| ---------------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `roles/serviceusage.serviceUsageAdmin`   | project                  | Manage the five `google_project_service` resources (read and enable the APIs).                                              |
-| `roles/iam.workloadIdentityPoolAdmin`    | project                  | Manage the identity pool and its OIDC provider.                                                                            |
-| `roles/iam.serviceAccountAdmin`          | project                  | Manage the three service accounts and the identity bindings on them.                                                       |
-| `roles/storage.admin`                    | the two buckets only     | Manage each bucket's settings and IAM, and (for the state bucket) read and write the OpenTofu state objects.               |
-| custom `<prefix>_deployer_refresh`       | project                  | Read-only: `resourcemanager.projects.get`, `resourcemanager.projects.getIamPolicy`, `iam.roles.get`, so a plan can refresh the project grants it cannot change. |
+| Role                                   | Scope                | Why                                                                                                                                                             |
+| -------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `roles/serviceusage.serviceUsageAdmin` | project              | Manage the five `google_project_service` resources (read and enable the APIs).                                                                                  |
+| `roles/iam.workloadIdentityPoolAdmin`  | project              | Manage the identity pool and its OIDC provider.                                                                                                                 |
+| `roles/iam.serviceAccountAdmin`        | project              | Manage the three service accounts and the identity bindings on them.                                                                                            |
+| `roles/storage.admin`                  | the two buckets only | Manage each bucket's settings and IAM, and (for the state bucket) read and write the OpenTofu state objects.                                                    |
+| custom `<prefix>_deployer_refresh`     | project              | Read-only: `resourcemanager.projects.get`, `resourcemanager.projects.getIamPolicy`, `iam.roles.get`, so a plan can refresh the project grants it cannot change. |
 
 ## 8. Teardown
 
@@ -306,7 +324,7 @@ in the deleted state). There are two ways round it:
   pool becomes `<name_prefix>-github-r2`, so nothing collides. Use a different
   suffix each time.
 - **Or undelete the old pool and import it:** `gcloud iam
-  workload-identity-pools undelete <pool-id> --location=global`, then
+workload-identity-pools undelete <pool-id> --location=global`, then
   `tofu import` it. Only worth it if you want the old id back.
 
 ## 9. Reinstall

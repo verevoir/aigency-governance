@@ -20,7 +20,8 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository_id"       = "assertion.repository_id"
     "attribute.repository_owner_id" = "assertion.repository_owner_id"
     "attribute.ref"                 = "assertion.ref"
-    "attribute.repo_id_ref"         = "assertion.repository_id + '@' + assertion.ref"
+    "attribute.job_workflow_ref"    = "assertion.job_workflow_ref"
+    "attribute.repo_id_workflow"    = "assertion.repository_id + '@' + assertion.ref + '|' + assertion.job_workflow_ref"
   }
 
   attribute_condition = local.attribute_condition

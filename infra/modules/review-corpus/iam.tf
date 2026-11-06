@@ -1,6 +1,12 @@
 locals {
   object_prefix  = "projects/_/buckets/${google_storage_bucket.corpus.name}/objects/"
   pool_principal = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}"
+
+  # The whole identity: <repo id>@<ref>|<owner/name>/<workflow path>@<ref>. It is
+  # compared as one exact string, so BOTH the repository+ref AND the workflow
+  # file must match.
+  publisher_identity = "${var.corpus_repo_id}@refs/heads/main|${var.corpus_repo}/${var.publish_workflow_path}@refs/heads/main"
+  deployer_identity  = "${var.governance_repo_id}@refs/heads/main|${var.governance_repo}/${var.deploy_workflow_path}@refs/heads/main"
 }
 
 # Additive IAM only: every grant here is a single-member resource, so applying
@@ -44,14 +50,15 @@ resource "google_storage_bucket_iam_member" "publisher_overwrite_ref" {
   }
 }
 
-# Main only, by numeric id: the principal is the WHOLE string
-# <corpus_repo_id>@refs/heads/main, an exact match. A branch such as main-evil,
-# a tag, or a repository that re-registered the old name has a different
-# repo_id_ref and cannot assume the publisher.
+# Main only, by numeric id, from one workflow file: the principal is the WHOLE
+# string <corpus_repo_id>@refs/heads/main|<repo>/<workflow>@refs/heads/main, an
+# exact match. A branch such as main-evil, a tag, a re-registered repository
+# name, or any OTHER workflow on main has a different repo_id_workflow and
+# cannot assume the publisher.
 resource "google_service_account_iam_member" "publisher_wif" {
   service_account_id = google_service_account.publisher.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "${local.pool_principal}/attribute.repo_id_ref/${var.corpus_repo_id}@refs/heads/main"
+  member             = "${local.pool_principal}/attribute.repo_id_workflow/${local.publisher_identity}"
 }
 
 # --- reader: reads the corpus bucket, from any repository of the owner id ---
@@ -97,7 +104,7 @@ resource "google_service_account_iam_member" "deployer_wif" {
 
   service_account_id = google_service_account.deployer[0].name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "${local.pool_principal}/attribute.repo_id_ref/${var.governance_repo_id}@refs/heads/main"
+  member             = "${local.pool_principal}/attribute.repo_id_workflow/${local.deployer_identity}"
 }
 
 # The deployer's roles are listed, with a reason each, in infra/INSTALL.md.

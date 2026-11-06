@@ -63,6 +63,28 @@ variable "governance_repo" {
   }
 }
 
+variable "publish_workflow_path" {
+  description = "Path, in corpus_repo, of the one workflow file allowed to publish. The publisher can be assumed only from this workflow on refs/heads/main."
+  type        = string
+  default     = ".github/workflows/publish-corpus.yml"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_./-]+$", var.publish_workflow_path)) && !startswith(var.publish_workflow_path, "/")
+    error_message = "publish_workflow_path must be a relative file path such as .github/workflows/publish-corpus.yml."
+  }
+}
+
+variable "deploy_workflow_path" {
+  description = "Path, in governance_repo, of the one workflow file allowed to deploy. The deployer can be assumed only from this workflow on refs/heads/main."
+  type        = string
+  default     = ".github/workflows/infra.yml"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_./-]+$", var.deploy_workflow_path)) && !startswith(var.deploy_workflow_path, "/")
+    error_message = "deploy_workflow_path must be a relative file path such as .github/workflows/infra.yml."
+  }
+}
+
 variable "name_prefix" {
   description = "Prefix for every named resource, so several installations can live in one project."
   type        = string
