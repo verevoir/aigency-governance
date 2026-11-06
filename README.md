@@ -141,9 +141,13 @@ The infrastructure is an OpenTofu module (`infra/modules/review-corpus/`) that
 is meant to be installed repeatedly, for other projects and colleagues as well
 as this one. **[`infra/INSTALL.md`](infra/INSTALL.md)** is the numbered,
 copy-pasteable install, teardown and reinstall path. A merge to `main` that
-changes `infra/` is planned, then applied after the `infra-apply` environment's
-reviewers approve, through `.github/workflows/infra.yml`; the same workflow
-checks for drift weekly and never applies from that job.
+changes `infra/` is planned, then applied through `.github/workflows/infra.yml`
+behind the `infra-apply` environment. That gate holds only once the operator has
+configured required reviewers on the environment, which is a GitHub setting this
+repository cannot enforce; without them the apply is not held for approval. The
+same workflow checks weekly for drift in the resources the module manages and
+never applies from that job. It does not detect IAM grants added by hand outside
+the module.
 
 `review.yml` still reads the corpus with `governance-token` today. It switches
 to fetching from the bucket in a follow-up change; until then nothing about how

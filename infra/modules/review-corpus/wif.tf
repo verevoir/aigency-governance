@@ -29,7 +29,10 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repo_id_workflow_env" = "assertion.repository_id + '@' + assertion.ref + '|' + assertion.job_workflow_ref + '|' + (has(assertion.environment) ? assertion.environment : '')"
   }
 
-  attribute_condition = local.attribute_condition
+  # A LITERAL expression, not a local, so a scanner (Checkov CKV_GCP_125) can see
+  # that it pins the numeric owner id. The owner-id check can never be dropped: a
+  # custom allowed_owner_condition is only ANDed on, so it can narrow, never widen.
+  attribute_condition = "assertion.repository_owner_id == '${var.github_owner_id}'${var.allowed_owner_condition == null ? "" : " && (${var.allowed_owner_condition})"}"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"

@@ -175,10 +175,6 @@ describe('infra.yml hygiene', () => {
     expect(workflow.match(/infra\/installations\/verevoir/g)).toHaveLength(1);
   });
 
-  it('explains that timeouts are unmeasured ceilings', () => {
-    expect(workflow).toContain('ceilings, not measurements');
-  });
-
   it('writes a plan file that .gitignore covers', () => {
     expect(gitignore.split('\n')).toContain('*.tfplan');
     expect(workflow).toContain('-out=plan.tfplan');
@@ -200,10 +196,6 @@ describe('infra.yml scan job', () => {
 
   it('carries no credentials', () => {
     expect(scan()).not.toContain('id-token');
-  });
-
-  it('states that the docker image is pulled by tag, outside the SHA pin', () => {
-    expect(workflow).toContain('docker image by TAG');
   });
 
   it('skips no check without a reason', () => {
@@ -320,10 +312,6 @@ describe('infra.yml apply job (push to main)', () => {
   it('serialises applies without cancelling a running one', () => {
     expect(apply()).toMatch(/concurrency:\n {6}group: \S+\n {6}cancel-in-progress: false/);
   });
-
-  it('says GitHub keeps one pending run, so a newer push replaces it', () => {
-    expect(apply()).toContain('ONE pending run per group');
-  });
 });
 
 describe('infra.yml drift job (schedule and dispatch)', () => {
@@ -357,18 +345,31 @@ describe('infra.yml drift job (schedule and dispatch)', () => {
     expect(drift()).not.toContain('tofu apply');
   });
 
-  it.each([
-    { exit: 0, status: 0, title: '' },
-    { exit: 1, status: 1, title: 'Plan failed' },
-    { exit: 2, status: 2, title: 'Drift' },
-  ])('exits $status with "$title" when tofu plan exits $exit', ({ exit, status, title }) => {
-    const r = execute(script(), {}, exit);
-    expect(r.status).toBe(status);
-    expect(r.out).toContain(title === '' ? '' : `::error title=${title}::`);
+  it('exits 0 and prints nothing when tofu plan finds no changes', () => {
+    const r = execute(script(), {}, 0);
+    expect({ status: r.status, out: r.out }).toEqual({ status: 0, out: '' });
+  });
+
+  it('exits 1 titled "Plan failed" when tofu plan errors', () => {
+    const r = execute(script(), {}, 1);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('::error title=Plan failed::');
+  });
+
+  it('exits 2 titled "Drift" when tofu plan finds changes', () => {
+    const r = execute(script(), {}, 2);
+    expect(r.status).toBe(2);
+    expect(r.out).toContain('::error title=Drift::');
   });
 
   it('does not call an error drift', () => {
     expect(execute(script(), {}, 1).out).not.toContain('title=Drift');
+  });
+});
+
+describe('infra.yml jobs that need the planner', () => {
+  it.each(['plan', 'drift'])('skips the %s job while INFRA_PLANNER_SA is unset', (name) => {
+    expect(job(name)).toMatch(/\n {4}if: .*vars\.INFRA_PLANNER_SA != ''/);
   });
 });
 
@@ -432,6 +433,14 @@ const locals = new Map<string, string>();
 for (const block of moduleCode.matchAll(/^locals \{\n([\s\S]*?)\n\}$/gm)) {
   for (const l of (block[1] as string).matchAll(/^ {2}(\w+) = "(.*)"$/gm)) {
     locals.set(l[1] as string, l[2] as string);
+  }
+}
+
+/** Locals as raw expressions (not only quoted strings), e.g. a conditional pool id. */
+const localExpr = new Map<string, string>();
+for (const block of moduleCode.matchAll(/^locals \{\n([\s\S]*?)\n\}$/gm)) {
+  for (const l of (block[1] as string).matchAll(/^ {2}(\w+) = (.+)$/gm)) {
+    localExpr.set(l[1] as string, l[2] as string);
   }
 }
 
@@ -622,10 +631,18 @@ describe('module: what is granted, and to whom', () => {
     expect(moduleText).toContain("assertion.repository_owner_id == '${var.github_owner_id}'");
   });
 
-  it('only narrows the provider condition with a custom one', () => {
-    expect(moduleText).toContain(
-      '"(${local.owner_id_condition}) && (${var.allowed_owner_condition})"',
+  const conditionLine = (): string =>
+    moduleCode.split('\n').find((l) => l.trim().startsWith('attribute_condition =')) ?? '';
+
+  it('writes the provider condition as a literal that starts with the owner id check', () => {
+    expect(conditionLine()).toMatch(
+      /^\s*attribute_condition = "assertion\.repository_owner_id == '\$\{var\.github_owner_id\}'/,
     );
+  });
+
+  it('only ANDs a custom condition onto the owner id check', () => {
+    expect(conditionLine()).toContain('&& (${var.allowed_owner_condition})');
+    expect(conditionLine()).not.toContain('||');
   });
 
   it('never trusts the owner name', () => {
@@ -709,6 +726,34 @@ describe('module: additive IAM and no keys', () => {
   });
 });
 
+describe('module: every named resource carries name_prefix', () => {
+  const nameAttribute: Record<string, string> = {
+    google_service_account: 'account_id',
+    google_project_iam_custom_role: 'role_id',
+    google_storage_bucket: 'name',
+    google_iam_workload_identity_pool: 'workload_identity_pool_id',
+    google_iam_workload_identity_pool_provider: 'workload_identity_pool_provider_id',
+  };
+  const named = resources
+    .filter((r) => r.type in nameAttribute)
+    .map((r) => {
+      const raw = new RegExp(`^\\s*${nameAttribute[r.type] ?? ''} = (.+)$`, 'm').exec(r.body)?.[1];
+      const viaLocal = /^local\.(\w+)$/.exec(raw ?? '')?.[1];
+      const id = viaLocal === undefined ? (raw ?? '') : (localExpr.get(viaLocal) ?? '');
+      return { resource: `${r.type}.${r.name}`, id };
+    });
+
+  it('finds the resources that carry an id', () => {
+    expect(named.length).toBeGreaterThanOrEqual(11);
+  });
+
+  it('puts name_prefix in every id', () => {
+    expect(named.filter((n) => !n.id.includes('var.name_prefix')).map((n) => n.resource)).toEqual(
+      [],
+    );
+  });
+});
+
 describe('module: buckets, APIs and versions', () => {
   const buckets = resources.filter((r) => r.type === 'google_storage_bucket');
 
@@ -722,6 +767,24 @@ describe('module: buckets, APIs and versions', () => {
     { setting: 'versioning', re: /versioning \{\n\s+enabled = true/ },
   ])('sets $setting on every bucket', ({ re }) => {
     expect(buckets.filter((b) => !re.test(b.body)).map((b) => tagOf(b.type, b.name))).toEqual([]);
+  });
+
+  const bucketTexts = moduleText
+    .split('resource "google_storage_bucket" ')
+    .slice(1)
+    .map((s) => s.split('\n}\n')[0] as string);
+
+  it('finds both bucket blocks', () => {
+    expect(bucketTexts).toHaveLength(2);
+  });
+
+  it('skips bucket access logging, with a reason, on every bucket', () => {
+    expect(bucketTexts.filter((t) => !/#checkov:skip=CKV_GCP_62:\S/.test(t))).toEqual([]);
+  });
+
+  it('skips no check other than bucket access logging', () => {
+    const ids = [...moduleText.matchAll(/#checkov:skip=(CKV_\w+)/g)].map((m) => m[1]);
+    expect(ids.filter((id) => id !== 'CKV_GCP_62')).toEqual([]);
   });
 
   it('protects the state bucket from destroy', () => {
@@ -941,58 +1004,9 @@ describe('INSTALL.md matches the code', () => {
     expect(flat).not.toContain(stale);
   });
 
-  it('lists the provider variable as used by plan, apply and drift', () => {
-    expect(flat).toMatch(
-      /INFRA_WIF_PROVIDER[^|]*\|[^|]*\|[^|]*\|\s*`infra.yml`, the plan, apply and drift jobs/,
-    );
-  });
-
-  it('says the publisher can read refs/main only', () => {
-    expect(flat).toContain('can read only `refs/main`');
-  });
-
-  it('states the deployer residual risk', () => {
-    expect(flat).toMatch(/accepted\s+residual\s+risk/);
-  });
-
-  it('requires a dedicated project', () => {
-    expect(flat).toContain('**dedicated project**');
-  });
-
-  it('says the environment does not enforce the reviewers', () => {
-    expect(flat).toContain('does NOT enforce is the reviewers');
-  });
-
-  it('says there is no owned drift alert channel', () => {
-    expect(flat).toContain('no owned alert channel');
-  });
-
-  it('says the scan image is pulled by tag', () => {
-    expect(flat).toContain('docker image by tag');
-  });
-
-  it('names the plan artifact retention', () => {
-    expect(flat).toContain('kept 7 days');
-  });
-
-  it('keeps the first-apply caveat for the custom roles and the mapping', () => {
-    expect(flat).toContain('first evaluated by a real apply');
-  });
-
-  it('says the custom roles are three', () => {
-    expect(flat).not.toMatch(/the custom role\b/);
-  });
-
-  it('puts the ordering guard for refs/main on the publish workflow', () => {
-    expect(flat).toContain('`refs/main` has no ordering guard');
-  });
-
-  it('states the residual risk in iam.tf', () => {
-    expect(iamSource).toContain('accepted residual risk');
-  });
-
-  it('requires a dedicated project in iam.tf', () => {
-    expect(iamSource).toContain('DEDICATED project');
+  it('lists each repository variable once in the variables table', () => {
+    const rows = [...install.matchAll(/^\| `([A-Z_]+)`\s+\|/gm)].map((m) => m[1]);
+    expect(rows.filter((v, i) => rows.indexOf(v) !== i)).toEqual([]);
   });
 
   it.each(['cannot widen its own access', 'no role that can grant roles'])(

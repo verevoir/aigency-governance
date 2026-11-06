@@ -4,7 +4,11 @@
 # Push to main: scan; PLAN as the read-only planner and keep that plan; then,
 # behind the `infra-apply` environment (operator-configured required reviewers),
 # authenticate as the deployer and apply exactly the plan that was kept.
-# Weekly and on demand: plan as the planner and FAIL on drift. Never applies.
+# Weekly and on demand: plan as the planner and FAIL when a MANAGED resource
+# differs from the code. Never applies. It sees managed resources only: an IAM
+# grant added by hand outside the module is NOT detected (see INSTALL.md).
+# The plan and drift jobs run only while INFRA_PLANNER_SA is set: a shared
+# install with create_deployer = false has no planner.
 # Remote state is required: the bucket and prefix come from repository
 # VARIABLES and every job that touches cloud state fails if they are unset.
 # Nothing here is a secret.
@@ -40,8 +44,9 @@ env:
 
 jobs:
   # Misconfiguration scan of the OpenTofu code. It cannot be run locally here,
-  # so the first CI run is what shows what it finds; any skip_check added later
-  # must carry a cited reason per ID, and none is added now.
+  # so the first CI run is what shows what it finds. No skip_check input is used
+  # here; the one skip (CKV_GCP_62) is an inline comment in main.tf, with its
+  # reason.
   # RESIDUAL RISK: the SHA pins the action's own code, but the action pulls its
   # docker image by TAG (ghcr.io/bridgecrewio/checkov:3.4.3), which a registry
   # can move. The pin does not cover the image.
@@ -88,7 +93,11 @@ jobs:
         run: tofu validate
 
   plan:
-    if: github.event_name == 'push'
+    # Plans are NOT serialised (only apply is): pushes in quick succession run
+    # plan jobs side by side. Each run uploads its own artifact, plans take no
+    # lock, and apply refuses a plan whose state has since moved.
+    # Skipped while INFRA_PLANNER_SA is unset: no planner exists without a deployer.
+    if: github.event_name == 'push' && vars.INFRA_PLANNER_SA != ''
     needs: scan
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -147,9 +156,12 @@ jobs:
     env:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
-    # One apply runs at a time. GitHub keeps ONE pending run per group, so a
-    # newer push replaces (cancels) an older pending run rather than queueing
-    # behind it. That is safe: the older plan is never applied late.
+    # One apply at a time (plan jobs are not serialised). While an apply runs,
+    # GitHub keeps at most ONE other pending run per group, and a newer one
+    # replaces (cancels) an older pending one; a running apply is never
+    # cancelled. Nothing is lost by a cancelled run: the newer run plans from the
+    # newer main, which contains the older change, and the older plan is never
+    # applied late.
     concurrency:
       group: infra-apply
       cancel-in-progress: false
@@ -182,7 +194,9 @@ jobs:
         run: tofu apply -input=false plan.tfplan
 
   drift:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Detects drift in MANAGED resources only: tofu plan cannot see an IAM grant
+    # added by hand outside the module. Skipped while INFRA_PLANNER_SA is unset.
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && vars.INFRA_PLANNER_SA != ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -219,7 +233,7 @@ jobs:
           status=0
           tofu plan -input=false -lock=false -detailed-exitcode || status=$?
           if [ "${status}" -eq 2 ]; then
-            echo "::error title=Drift::The estate and the code differ: apply, or revert the out-of-band change." >&2
+            echo "::error title=Drift::A managed resource differs from the code: apply, or revert the out-of-band change." >&2
             exit 2
           fi
           if [ "${status}" -ne 0 ]; then

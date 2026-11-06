@@ -3,7 +3,8 @@ dist/
 coverage/
 .DS_Store
 
-# OpenTofu: provider plugins and the local bootstrap state (never commit state).
+# OpenTofu: provider plugins, any stray local state file (state is remote; never
+# commit one) and saved plans.
 .terraform/
 *.tfstate
 *.tfstate.*

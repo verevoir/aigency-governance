@@ -137,7 +137,8 @@ bucket should show no change; if it does, the bucket was not made as step 4
 says, so fix the bucket rather than apply. Review the whole plan, answer `yes`.
 Commit the `.terraform.lock.hcl` that `tofu init` wrote through a pull request.
 The first apply is local and by a person: it is the only way the project-level
-grants, the custom roles and each new service account are made (section 7).
+grants and the custom roles are made, and the only way a new service account
+gets its per-account grants (section 7).
 
 ## 6. Put the outputs into repository variables
 
@@ -161,18 +162,17 @@ gh variable set CORPUS_PUBLISHER_SA --repo "$CORPUS_REPO" --body "$(tofu output 
 gh variable set CORPUS_BUCKET       --repo "$CORPUS_REPO" --body "$(tofu output -raw corpus_bucket)"
 ```
 
-| Variable              | Value (output)  | Set on                                               | Used by                                     |
-| --------------------- | --------------- | ---------------------------------------------------- | ------------------------------------------- |
-| `INFRA_WIF_PROVIDER`  | `wif_provider`  | the governance repo (`$GOV_REPO`)                    | `infra.yml`, the plan, apply and drift jobs |
-| `INFRA_DEPLOYER_SA`   | `deployer_sa`   | the governance repo                                  | `infra.yml`, the apply job                  |
-| `INFRA_PLANNER_SA`    | `planner_sa`    | the governance repo                                  | `infra.yml`, the plan and drift jobs        |
-| `TF_STATE_BUCKET`     | `state_bucket`  | the governance repo                                  | `infra.yml`, every job with state           |
-| `TF_STATE_PREFIX`     | your prefix     | the governance repo                                  | `infra.yml`, every job with state           |
-| `CORPUS_WIF_PROVIDER` | `wif_provider`  | the corpus repo (`$CORPUS_REPO`)                     | the corpus repo's publish workflow          |
-| `CORPUS_PUBLISHER_SA` | `publisher_sa`  | the corpus repo                                      | the corpus repo's publish workflow          |
-| `CORPUS_BUCKET`       | `corpus_bucket` | the corpus repo, and every repo that runs the review | publish, and the review's corpus fetch      |
-| `CORPUS_WIF_PROVIDER` | `wif_provider`  | every repo that runs the review (or the org)         | the review workflow (pass B)                |
-| `CORPUS_READER_SA`    | `reader_sa`     | every repo that runs the review (or the org)         | the review workflow (pass B)                |
+| Variable              | Value (output)  | Set on                                                                             | Used by                                                              |
+| --------------------- | --------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `INFRA_WIF_PROVIDER`  | `wif_provider`  | the governance repo (`$GOV_REPO`)                                                  | `infra.yml`, the plan, apply and drift jobs                          |
+| `INFRA_DEPLOYER_SA`   | `deployer_sa`   | the governance repo                                                                | `infra.yml`, the apply job                                           |
+| `INFRA_PLANNER_SA`    | `planner_sa`    | the governance repo                                                                | `infra.yml`, the plan and drift jobs                                 |
+| `TF_STATE_BUCKET`     | `state_bucket`  | the governance repo                                                                | `infra.yml`, every job with state                                    |
+| `TF_STATE_PREFIX`     | your prefix     | the governance repo                                                                | `infra.yml`, every job with state                                    |
+| `CORPUS_WIF_PROVIDER` | `wif_provider`  | the corpus repo (`$CORPUS_REPO`), and every repo that runs the review (or the org) | the corpus repo's publish workflow, and the review workflow (pass B) |
+| `CORPUS_PUBLISHER_SA` | `publisher_sa`  | the corpus repo                                                                    | the corpus repo's publish workflow                                   |
+| `CORPUS_BUCKET`       | `corpus_bucket` | the corpus repo, and every repo that runs the review                               | publish, and the review's corpus fetch                               |
+| `CORPUS_READER_SA`    | `reader_sa`     | every repo that runs the review (or the org)                                       | the review workflow (pass B)                                         |
 
 For the review-running repositories:
 
@@ -265,6 +265,11 @@ Renaming the workflow file means changing the input and re-applying locally.
 | reader          | `roles/storage.objectViewer` on the corpus bucket, and nothing else: it cannot create, overwrite or delete.                                                                                                                                                             |
 | publisher       | `roles/storage.objectCreator`, conditional: create objects only under `corpus/`, `manifests/` and the object `refs/main`. Plus `roles/storage.objectUser`, conditional: `resource.name` equals exactly the object `refs/main`, so only that pointer can be overwritten. |
 
+The reader is bound to the whole owner (`attribute.repository_owner_id`), not to
+named repositories: any repository of the owner can read the corpus. That is the
+operator's deliberate design. `allowed_owner_condition` can narrow it, never
+widen it.
+
 Overwriting an object needs delete permission, which is why the second grant
 exists and why it is limited to the one object. The publisher therefore cannot
 overwrite or delete anything under `corpus/` or `manifests/` (objects are
@@ -308,18 +313,33 @@ Change anything under `infra/` through a pull request. The `infra` workflow:
 -backend=false` and `tofu validate`, with **no cloud credentials**; and, on
   the pull request and on `main`, a Checkov misconfiguration scan of `infra/`
   that blocks (`soft_fail: false`). It cannot be run locally here, so the first
-  CI run shows what it finds; no check is skipped. The action is pinned by SHA
-  but pulls its docker image by tag, which the pin does not cover;
+  CI run shows what it finds. The only check skipped is CKV_GCP_62 (bucket
+  access logging), inline in `main.tf` on both buckets with its reason: the
+  module has no log bucket, which would be new cost and scope. GCP's Admin
+  Activity audit logs are always on, and Data Access audit logs for Cloud
+  Storage (off by default, a project setting this module does not manage) are
+  the alternative. That is the operator's decision to overturn. The action is
+  pinned by SHA but pulls its docker image by tag, which the pin does not cover;
 - on merge to `main` runs a **plan job** as the read-only planner (prints the
   plan), then an **apply job** that waits for the `infra-apply` environment's
   required reviewers, authenticates as the deployer through OIDC and applies
   exactly that saved plan, downloaded as an artifact (kept 7 days; after that
-  the apply fails rather than planning again). One apply runs at a time and
-  GitHub keeps a single pending run, so a newer push replaces an older pending
-  one, which is never applied late;
+  the apply fails rather than planning again). Applies are serialised: one runs
+  at a time, and GitHub keeps at most one other pending run, so a newer push
+  replaces (cancels) an older pending one. Nothing is lost: the newer run plans
+  from the newer `main`, which contains the older change. **Plans are not
+  serialised**: two quick pushes run two plan jobs side by side. Each uploads
+  its own run's artifact, so they do not collide, and plans take no lock
+  (`-lock=false`), so they block neither each other nor an apply; a plan made
+  before another apply landed is refused at apply as stale;
 - every Monday, and on demand, runs a **drift job** as the planner:
-  `tofu plan -detailed-exitcode` fails the job when the real estate and the
-  code differ (exit 2) or the plan errors (exit 1). It never applies;
+  `tofu plan -detailed-exitcode` fails the job when a resource this module
+  manages differs from the code (exit 2) or the plan errors (exit 1). It never
+  applies. It sees **managed resources only**, as the next section explains;
+- runs the plan and drift jobs only when the repository variable
+  `INFRA_PLANNER_SA` is set. A shared install with `create_deployer = false` has
+  no planner, so the jobs are skipped instead of failing at authentication; the
+  cost is that a forgotten variable skips them silently;
 - in every job that uses state, fails before authenticating if `TF_STATE_BUCKET`
   or `TF_STATE_PREFIX` is unset.
 
@@ -329,10 +349,13 @@ that names the `infra-apply` environment. Protect `main` accordingly: a merge to
 it starts a deploy, gated by that environment's reviewers.
 
 Changes the deployer cannot make: the module's project-level grants and its
-custom roles (it holds no role that sets a project IAM policy), and a service
-account that is new (its resource-level administrator grant does not exist
-yet). Those need a local `tofu apply` by a person with the bootstrap rights
-from step 2.
+custom roles (it holds no role that sets a project IAM policy), and the
+per-account grants of a service account that is new. It can create a service
+account (the project-wide `iam.serviceAccounts.create` permission), but cannot
+administer it or bind anything to it until its per-account administrator grant
+exists, and a person makes that grant. A change that adds a service account
+therefore needs a local `tofu apply` by a person with the bootstrap rights from
+step 2.
 
 ### The deployer's reach, and the residual risk
 
@@ -381,6 +404,15 @@ changes anything.
 | custom `<prefix>_planner_bucket` | the two buckets only  | `storage.buckets.get` and `storage.buckets.getIamPolicy`: a bucket's settings and IAM. No object.    |
 | `roles/storage.objectViewer`     | the state bucket only | Read the state objects.                                                                              |
 
+**What drift detection does not cover.** The drift job runs `tofu plan`, so it
+sees only the resources this module manages, and only the attributes it sets. It
+is blind to a grant added by hand outside the module: every grant here is a
+single-member `_iam_member`, so an extra member added to the same bucket or
+service-account policy, or a new binding elsewhere in the project, is not in
+state and does not show as drift. **Out-of-band IAM grants are not detected.**
+Comparing the live IAM policies with the expected ones is a follow-up, not built
+here.
+
 A failed drift job is the only alert, and **there is no owned alert channel in
 this change**: the run shows red in the Actions tab, and GitHub emails whoever
 last edited the cron line, if their notification settings allow it. Nobody is
@@ -394,7 +426,9 @@ The permission lists of the three custom roles are written from the GCP
 permission names and have not been exercised against a real project: the first
 local apply (step 5) is where an invalid name would be reported. The same goes
 for the provider's `has(assertion.environment)` mapping expression: it is
-first evaluated by a real apply and a real token.
+first evaluated by a real apply and a real token. More generally, nothing in
+this module has run against GCP before the first apply: the tests check the
+shape of the code, not its effect.
 
 ## 8. Teardown
 
@@ -456,6 +490,12 @@ After a teardown, into the same or a new project:
 
 1. Choose a `pool_suffix` you have not used (step 8) and add it to the module
    block. If the state bucket was deleted, create it again (step 4).
+   `pool_suffix` does not help with the three custom roles: their ids carry
+   `name_prefix`, and GCP keeps a deleted custom role's id reserved (it is
+   soft-deleted and not reusable straight away; GCP's documentation gives the
+   current period). If the reinstall fails on a custom role, use a different
+   `name_prefix`, or undelete the role (`gcloud iam roles undelete`) and
+   `tofu import` it.
 2. Repeat steps 4 to 6: create the state bucket if it is gone, `tofu init` with
    the backend config, `tofu import` the state bucket, `tofu apply`, and set the
    variables again. The variables change, because the identity pool name
@@ -493,8 +533,8 @@ module "review_corpus" {
 - `create_deployer = false`: the module's only grants are bucket-level and
   service-account-level. Nothing is granted at project level. Without a
   deployer there is no deploy-on-merge and no planner: apply by hand
-  (steps 4 and 5), and `deployer_sa` and `planner_sa` are null. The drift
-  job needs the planner, so it cannot run either.
+  (steps 4 and 5), and `deployer_sa` and `planner_sa` are null. The plan and
+  drift jobs need the planner, so they are skipped.
 - All IAM is additive (single-member grants); the module never replaces a
   policy or a role's member list.
 - Every id carries `name_prefix` (buckets, pool, provider, service accounts,

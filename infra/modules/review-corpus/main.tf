@@ -4,10 +4,6 @@ locals {
   state_bucket = "${var.name_prefix}-tfstate-${var.project_id}"
 
   pool_id = var.pool_suffix == "" ? "${var.name_prefix}-github" : "${var.name_prefix}-github-${var.pool_suffix}"
-
-  # The owner-id check can never be dropped: a custom condition only narrows it.
-  owner_id_condition  = "assertion.repository_owner_id == '${var.github_owner_id}'"
-  attribute_condition = var.allowed_owner_condition == null ? local.owner_id_condition : "(${local.owner_id_condition}) && (${var.allowed_owner_condition})"
 }
 
 # Only the APIs this module needs, and none at all when manage_apis is false
@@ -30,6 +26,7 @@ resource "google_project_service" "apis" {
 
 # The practices corpus, published by the corpus repository's CI.
 resource "google_storage_bucket" "corpus" {
+  #checkov:skip=CKV_GCP_62:No log bucket in this module; a log bucket is new cost and scope, left for the operator's decision. The alternative is GCP Cloud Audit Logs (Admin Activity is always on; Data Access logs for Cloud Storage are off by default and are a project setting this module does not manage).
   name                        = local.corpus_bucket
   project                     = var.project_id
   location                    = var.region
@@ -55,6 +52,7 @@ resource "google_storage_bucket" "corpus" {
 
 # Remote state for this installation. It outlives a teardown on purpose.
 resource "google_storage_bucket" "state" {
+  #checkov:skip=CKV_GCP_62:No log bucket in this module; a log bucket is new cost and scope, left for the operator's decision. The alternative is GCP Cloud Audit Logs (Admin Activity is always on; Data Access logs for Cloud Storage are off by default and are a project setting this module does not manage).
   name                        = local.state_bucket
   project                     = var.project_id
   location                    = var.region
