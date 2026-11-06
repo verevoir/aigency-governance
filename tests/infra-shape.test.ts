@@ -780,7 +780,9 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
 
   it('lists a "b/<name>" bucket as one place, bucket:<name>', () => {
     const out = run(clean, 'scopes', prefixedState).out;
-    expect(out.split('\n').filter((l) => l.startsWith('bucket:'))).toEqual(['bucket:b\tbucket_b.json']);
+    expect(out.split('\n').filter((l) => l.startsWith('bucket:'))).toEqual([
+      'bucket:b\tbucket_b.json',
+    ]);
   });
 
   it('exits 1 for an unknown command', () => {

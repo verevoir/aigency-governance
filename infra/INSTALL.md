@@ -357,7 +357,7 @@ Change anything under `infra/` through a pull request. The `infra` workflow:
   checks (below): `tofu plan -detailed-exitcode` for the managed resources, and
   a comparison of the live IAM policies with state for the module's own
   principals. Drift in either (exit 2) opens a GitHub issue titled `Infrastructure
-  drift`, or comments on the one already open; an error (exit 1) opens or
+drift`, or comments on the one already open; an error (exit 1) opens or
   comments on a separate issue titled `Infrastructure drift check failed`.
   Either way the job then fails. It never
   applies;

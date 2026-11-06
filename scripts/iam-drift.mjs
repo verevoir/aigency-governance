@@ -67,7 +67,9 @@ function describeState(show) {
   });
   const accounts = values('google_service_account');
   const expected = [
-    ...values('google_storage_bucket_iam_member').map((v) => binding(`bucket:${bucketName(v.bucket)}`, v)),
+    ...values('google_storage_bucket_iam_member').map((v) =>
+      binding(`bucket:${bucketName(v.bucket)}`, v),
+    ),
     ...values('google_service_account_iam_member').map((v) =>
       binding(`sa:${String(v.service_account_id).split('serviceAccounts/').pop()}`, v),
     ),
