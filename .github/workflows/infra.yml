@@ -211,6 +211,8 @@ jobs:
     # live-IAM comparison for the module's own principals (scripts/iam-drift.mjs).
     # Grants to principals outside the module are NOT covered. On drift (exit 2
     # from either) it opens a GitHub issue, or comments on the open one, then
+    # fails; on an ERROR (exit 1, or an earlier step failing) it opens or
+    # comments on a separate "Infrastructure drift check failed" issue, then
     # fails. This job alone holds issues: write. Skipped while INFRA_PLANNER_SA
     # is unset (the planner-missing job warns).
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && vars.INFRA_PLANNER_SA != ''
@@ -225,7 +227,8 @@ jobs:
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
     # Runs are serialised so the issue notification's check-then-create cannot
     # race with another drift run and open a duplicate. A run is never cancelled;
-    # GitHub keeps one pending run, which is enough for a weekly schedule.
+    # GitHub is understood to keep one pending run (from memory of its
+    # documentation; unverified here), which is enough for a weekly schedule.
     concurrency:
       group: infra-drift
       cancel-in-progress: false

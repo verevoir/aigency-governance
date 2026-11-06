@@ -190,7 +190,7 @@ set repository variables there.
 
 The governance repository also needs the planner and the remote-state location,
 and **Issues enabled** (Settings → General → Features): the drift job reports
-drift as an issue.
+drift, and its own errors, as issues.
 The `infra` workflow **fails**, before it authenticates, if `TF_STATE_BUCKET` or
 `TF_STATE_PREFIX` is unset, so it can never apply or plan from empty state:
 
@@ -280,7 +280,8 @@ Overwriting an object needs delete permission, which is why the second grant
 exists and why it is limited to the one object. The publisher therefore cannot
 overwrite or delete anything under `corpus/` or `manifests/` (objects are
 immutable once written; a republish of the same `<sha>` fails), and can read
-only `refs/main` (`roles/storage.objectUser` includes `storage.objects.get`,
+only `refs/main` (`roles/storage.objectUser` is understood to include `storage.objects.get`;
+unverified here, from memory of the role's permissions,
 limited by the same condition); it cannot read any other object. Publish in
 this order: `corpus/<sha>/…`, then `manifests/<sha>.json`,
 then `refs/main`. Use an upload that does not first read the object (for example
@@ -341,7 +342,8 @@ Change anything under `infra/` through a pull request. The `infra` workflow:
   emails and IAM bindings are in it (the plan job prints the same to the log).
   The apply needs the file, so it is kept, not dropped; if that exposure is not
   acceptable, the alternative is to keep the plan in the state bucket, which is
-  not built. Applies are serialised: one runs at a time, and GitHub keeps at
+  not built. Applies are serialised: one runs at a time, and GitHub (from memory of its
+  documentation; unverified here) keeps at
   most one other pending run, so a newer push replaces (cancels) an older
   pending one; its change is not lost, because the newer run is made from the
   newer `main`. **Plans are not serialised**: two quick pushes run two plan jobs
@@ -354,8 +356,10 @@ Change anything under `infra/` through a pull request. The `infra` workflow:
   with a named error), runs a **drift job** as the planner, with two read-only
   checks (below): `tofu plan -detailed-exitcode` for the managed resources, and
   a comparison of the live IAM policies with state for the module's own
-  principals. Drift in either (exit 2) opens a GitHub issue, or comments on the
-  one already open; an error (exit 1) fails the job without an issue. It never
+  principals. Drift in either (exit 2) opens a GitHub issue titled `Infrastructure
+  drift`, or comments on the one already open; an error (exit 1) opens or
+  comments on a separate issue titled `Infrastructure drift check failed`.
+  Either way the job then fails. It never
   applies;
 - runs the plan and drift jobs only when the repository variable
   `INFRA_PLANNER_SA` is set. A shared install with `create_deployer = false` has

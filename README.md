@@ -147,7 +147,8 @@ configured required reviewers on the environment, which is a GitHub setting this
 repository cannot enforce; without them the apply is not held for approval. The
 same workflow checks weekly for drift, in the resources the module manages and
 in the live IAM policies of the module's own principals, and opens an issue when
-it finds any; it never applies from that job. It does not look at grants to
+it finds any (a check that itself fails opens a separate "check failed" issue);
+it never applies from that job. It does not look at grants to
 principals outside the module.
 
 `review.yml` still reads the corpus with `governance-token` today. It switches

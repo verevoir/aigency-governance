@@ -622,10 +622,14 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
-  const run = (live: Live, command = 'compare'): { status: number | null; out: string } => {
+  const run = (
+    live: Live,
+    command = 'compare',
+    stateDoc: unknown = state,
+  ): { status: number | null; out: string } => {
     const dir = mkdtempSync(join(tmpdir(), 'iam-drift-'));
     dirs.push(dir);
-    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(stateDoc));
     mkdirSync(join(dir, 'live'));
     const files = { bucket: 'bucket_b.json', sa: `sa_${sa}.json`, project: 'project_p.json' };
     for (const [place, policy] of Object.entries(live)) {
@@ -760,6 +764,51 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
     expect(run({ ...clean, bucket }).out).toContain('is version 1');
   });
 
+  it('exits 1 when conditions are in state and the live policy is version 1', () => {
+    const bucket = { version: 1, bindings: clean.bucket.bindings };
+    expect(run({ ...clean, bucket }).status).toBe(1);
+  });
+
+  // The bucket attribute in state may be "b/<name>" or the bare name; both mean one bucket.
+  const prefixedState: unknown = JSON.parse(
+    JSON.stringify(state).replace(/"bucket":"b"/g, '"bucket":"b/b"'),
+  );
+
+  it('compares a bucket held in state as "b/<name>" as that bucket', () => {
+    expect(run(clean, 'compare', prefixedState).status).toBe(0);
+  });
+
+  it('lists a "b/<name>" bucket as one place, bucket:<name>', () => {
+    const out = run(clean, 'scopes', prefixedState).out;
+    expect(out.split('\n').filter((l) => l.startsWith('bucket:'))).toEqual(['bucket:b\tbucket_b.json']);
+  });
+
+  it('exits 1 for an unknown command', () => {
+    expect(run(clean, 'bogus').status).toBe(1);
+  });
+
+  it('prints the usage for an unknown command', () => {
+    expect(run(clean, 'bogus').out).toContain('usage: iam-drift.mjs');
+  });
+
+  it('exits 1 when no state path is given', () => {
+    expect(spawnSync('node', [script, 'compare'], { encoding: 'utf8' }).status).toBe(1);
+  });
+
+  const emptyState = { values: { root_module: { resources: [] } } };
+
+  it('exits 1, not clean, when state holds no module resources', () => {
+    expect(run({}, 'compare', emptyState).status).toBe(1);
+  });
+
+  it('says why it refuses an empty state', () => {
+    expect(run({}, 'compare', emptyState).out).toContain('refusing to call that clean');
+  });
+
+  it('exits 1 when the state document is not tofu show output', () => {
+    expect(run({}, 'compare', { nothing: true }).status).toBe(1);
+  });
+
   it('errors, not a clean pass, when a policy cannot be read', () => {
     expect(run({ bucket: clean.bucket, sa: clean.sa }).status).toBe(1);
   });
@@ -860,6 +909,49 @@ describe('scripts/iam-live-check.sh: the drift job step, executed with fake tofu
 
   it('names the place it has no case for', () => {
     expect(run({}, { node: unknownPlace }).out).toContain('unknown place weird:x');
+  });
+
+  // A gcloud that reads stdin must not eat the place list the loop is reading.
+  const stdinReader = `cat > /dev/null\n${fakeGcloud}`;
+
+  it.each([
+    'storage buckets get-iam-policy gs://b',
+    `iam service-accounts get-iam-policy ${account}`,
+    'projects get-iam-policy p',
+  ])('still visits every place when gcloud reads stdin: %s', (call) => {
+    expect(run({}, { gcloud: stdinReader }).log).toContain(call);
+  });
+
+  // The script's working files live in a temp dir it removes, not in the cwd.
+  const sandboxed = (
+    env: Record<string, string>,
+    tmp = '"$FAKES_DIR/tmp"',
+  ): ReturnType<typeof execute> =>
+    execute(
+      `cd "$FAKES_DIR"; mkdir tmp; export TMPDIR=${tmp} GITHUB_OUTPUT="$FAKES_DIR/gh_output"; : > "$GITHUB_OUTPUT"; rc=0; bash "${checkScript}" || rc=$?; echo "tmp-left=$(ls tmp | wc -l | tr -d ' ')"; echo "stray=$(ls | grep -c -E '^(state.json|scopes.tsv|live)$')"; exit $rc`,
+      { STATE_JSON: stateJson, ...env },
+      0,
+      { tofu: fakeTofu, gcloud: fakeGcloud },
+    );
+
+  it('leaves no state dump or policy file in the working directory', () => {
+    expect(sandboxed({}).out).toContain('stray=0');
+  });
+
+  it('removes its temp directory after a clean run', () => {
+    expect(sandboxed({}).out).toContain('tmp-left=0');
+  });
+
+  it('removes its temp directory after a failed run', () => {
+    expect(sandboxed({ GCLOUD_FAIL: 'get-iam-policy' }).out).toContain('tmp-left=0');
+  });
+
+  it('exits 1 when it cannot create its temp directory', () => {
+    expect(sandboxed({}, '/nonexistent/dir').status).toBe(1);
+  });
+
+  it('names the cause when it cannot create its temp directory', () => {
+    expect(sandboxed({}, '/nonexistent/dir').out).toContain('could not create a temp directory');
   });
 
   it.each([

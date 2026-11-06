@@ -26,8 +26,9 @@ resource "google_service_account" "publisher" {
 }
 
 # Create only under corpus/, manifests/ and refs/main; overwrite (which needs
-# delete) only refs/main. objectUser also carries objects.get, so the publisher
-# can read refs/main and nothing else.
+# delete) only refs/main. objectUser is understood to carry objects.get (from
+# memory of the role's permissions; unverified here), so the publisher can read
+# refs/main and nothing else.
 resource "google_storage_bucket_iam_member" "publisher_create" {
   bucket = google_storage_bucket.corpus.name
   role   = "roles/storage.objectCreator"

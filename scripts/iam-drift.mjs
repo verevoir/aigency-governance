@@ -44,6 +44,10 @@ const collapse = (text) =>
     .replace(/\s+/g, ' ')
     .trim();
 const fileFor = (scope) => `${scope.replace(/[^A-Za-z0-9._@-]/g, '_')}.json`;
+// The google provider's bucket IAM resources may hold the bucket as "b/<name>"
+// (the form of their import ids) rather than the bare name. Which one state really
+// holds is UNVERIFIED, so both are accepted and mean the same bucket.
+const bucketName = (value) => String(value).replace(/^b\//, '');
 const keyOf = (b) => JSON.stringify([b.scope, b.role, b.member, b.condition]);
 const describe = (kind, b) =>
   `${kind}: ${b.scope} ${b.role} ${b.member}${b.condition === '' ? '' : ` if ${b.condition}`}`;
@@ -63,7 +67,7 @@ function describeState(show) {
   });
   const accounts = values('google_service_account');
   const expected = [
-    ...values('google_storage_bucket_iam_member').map((v) => binding(`bucket:${v.bucket}`, v)),
+    ...values('google_storage_bucket_iam_member').map((v) => binding(`bucket:${bucketName(v.bucket)}`, v)),
     ...values('google_service_account_iam_member').map((v) =>
       binding(`sa:${String(v.service_account_id).split('serviceAccounts/').pop()}`, v),
     ),
