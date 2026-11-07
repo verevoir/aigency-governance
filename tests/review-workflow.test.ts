@@ -51,8 +51,8 @@ describe('review.yml shape', () => {
   });
 
   it('pins the reviewer exactly, once', () => {
-    expect(text.match(/@verevoir\/review@\d+\.\d+\.\d+/g)).toEqual(['@verevoir/review@0.3.2']);
-    expect(text).toContain("REVIEWER_PACKAGE: '@verevoir/review@0.3.2'");
+    expect(text.match(/@verevoir\/review@\d+\.\d+\.\d+/g)).toEqual(['@verevoir/review@0.3.3']);
+    expect(text).toContain("REVIEWER_PACKAGE: '@verevoir/review@0.3.3'");
   });
 
   it('installs the reviewer with no scripts, no save, no lockfile, under --prefix', () => {

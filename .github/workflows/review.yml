@@ -57,7 +57,7 @@ on:
 
 env:
   # The one place the reviewer version lives.
-  REVIEWER_PACKAGE: '@verevoir/review@0.3.2'
+  REVIEWER_PACKAGE: '@verevoir/review@0.3.3'
 
 jobs:
   review:
