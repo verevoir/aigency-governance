@@ -35,7 +35,7 @@ use `@main` until their pin PRs land.
 - **The reviewer is pinned and installed from npm.** The workflow installs the
   published `@verevoir/review` at one exact version, declared once in
   `review.yml` (`REVIEWER_PACKAGE`; transitive dependencies are pinned from
-  `@verevoir/review` 0.3.3, which bundles them), into the runner's temporary directory,
+  `@verevoir/review` 0.3.5, which bundles its two runtime dependencies (`@verevoir/llm`, `@anthropic-ai/sdk`)), into the runner's temporary directory,
   outside your repository, with `--ignore-scripts`, and runs it there. It is
   not built from this repository. Your pull request's tree is only read, as the
   diff and as `--context-root` files; nothing in it is installed or run.
