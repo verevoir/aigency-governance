@@ -1,0 +1,1639 @@
+// Pins the SHAPE of the keyless-corpus installation: infra.yml, the OpenTofu
+// module and INSTALL.md. Text-level: no cloud, no tofu, no YAML or HCL library.
+//
+// The module is tested by WHAT IT GRANTS AND TO WHOM, not by its spelling. The
+// HCL is read into (target, role, member, condition) grants, with Terraform
+// resource and local names normalised away: a service account is its
+// account_id suffix (`publisher`), a bucket its `<name>_bucket` local
+// (`corpus`), a custom role its role_id suffix, and locals are expanded. So a
+// pure rename of a resource or a local does not fail a test; a change to a
+// grant does. One behaviour per test; per-member checks use it.each.
+import { spawnSync } from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it } from 'vitest';
+
+const root = new URL('../', import.meta.url);
+const read = (path: string): string => readFileSync(new URL(path, root), 'utf8');
+
+/** Collapse alignment padding after a token, so a `tofu fmt` realignment cannot fail a test. */
+const squash = (source: string): string => source.replace(/(\S)[ \t]{2,}/g, '$1 ');
+/** Drop comment-only lines, so prose cannot satisfy or break a check. */
+const code = (source: string): string =>
+  source
+    .split('\n')
+    .filter((l) => !/^\s*(#|\/\/)/.test(l))
+    .join('\n');
+
+const workflow = read('.github/workflows/infra.yml');
+const install = read('infra/INSTALL.md');
+const gitignore = read('.gitignore');
+const moduleDir = new URL('infra/modules/review-corpus/', root);
+const moduleText = squash(
+  readdirSync(moduleDir)
+    .filter((f) => f.endsWith('.tf'))
+    .map((f) => readFileSync(new URL(f, moduleDir), 'utf8'))
+    .join('\n'),
+);
+const moduleCode = code(moduleText);
+const installation = squash(read('infra/installations/verevoir/main.tf'));
+
+const pairs = (names: string[], tokens: string[]): { name: string; token: string }[] =>
+  names.flatMap((name) => tokens.map((token) => ({ name, token })));
+
+// ---------------------------------------------------------------- workflow
+
+/** The bodies of every `run:` (block or single-line). */
+function runBodies(source: string): string[] {
+  const lines = source.split('\n');
+  const bodies: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(\s*)run:\s*(.*)$/.exec(lines[i] as string);
+    if (m === null) continue;
+    const indent = (m[1] as string).length;
+    const body: string[] = [];
+    if (!['|', '>-', '>'].includes(m[2] as string)) body.push(m[2] as string);
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j] as string;
+      if (line.trim() !== '' && line.length - line.trimStart().length <= indent) break;
+      body.push(line.replace(new RegExp(`^ {${indent + 2}}`), ''));
+    }
+    bodies.push(body.join('\n'));
+  }
+  return bodies;
+}
+
+/** The text of one job under `jobs:`. */
+function job(name: string): string {
+  const start = workflow.indexOf(`\n  ${name}:\n`);
+  expect(start, `job ${name}`).toBeGreaterThan(-1);
+  const rest = workflow.slice(start + 1);
+  const next = rest.slice(1).search(/\n {2}[a-z][a-z-]*:\n/);
+  return next === -1 ? rest : rest.slice(0, next + 1);
+}
+
+const entries = (block: string | undefined): string[] =>
+  (block ?? '')
+    .split('\n')
+    .map((l) => l.replace(/#.*$/, '').trim())
+    .filter((l) => l !== '')
+    .sort();
+
+const jobNames = ['scan', 'check', 'plan', 'apply', 'drift'];
+/** The jobs that authenticate to the cloud, and so use state. */
+const cloudJobs = ['plan', 'apply', 'drift'];
+const stateVars = ['TF_STATE_BUCKET', 'TF_STATE_PREFIX'];
+
+/**
+ * Run a workflow `run:` body in bash with a fake `tofu` that exits `tofuExit`
+ * and any other fake commands (name -> sh script). The fakes' directory is
+ * $FAKES_DIR and is removed afterwards; `log` is what the fakes wrote to
+ * $FAKES_DIR/log.
+ */
+function execute(
+  body: string,
+  env: Record<string, string>,
+  tofuExit = 0,
+  fakes: Record<string, string> = {},
+): { status: number | null; out: string; log: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'infra-shape-'));
+  try {
+    for (const [name, script] of Object.entries({ tofu: `exit ${tofuExit}`, ...fakes })) {
+      writeFileSync(join(dir, name), `#!/bin/sh\n${script}\n`);
+      chmodSync(join(dir, name), 0o755);
+    }
+    const r = spawnSync('/bin/bash', ['-e', '-c', body], {
+      env: { PATH: `${dir}:${dirname(process.execPath)}:/usr/bin:/bin`, FAKES_DIR: dir, ...env },
+      encoding: 'utf8',
+    });
+    const logPath = join(dir, 'log');
+    return {
+      status: r.status,
+      out: `${r.stdout}${r.stderr}`,
+      log: existsSync(logPath) ? readFileSync(logPath, 'utf8') : '',
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe('infra.yml pins', () => {
+  it.each([
+    {
+      action: 'google-github-actions/auth',
+      pin: '7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0',
+    },
+    { action: 'opentofu/setup-opentofu', pin: 'a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2' },
+    {
+      action: 'bridgecrewio/checkov-action',
+      pin: '45edc9d8856b664db2ec251f5f8632361f0a67aa # v12.3139.0',
+    },
+  ])('pins $action to the verified SHA', ({ action, pin }) => {
+    expect(workflow).toContain(`${action}@${pin}`);
+  });
+
+  const uses = [...workflow.matchAll(/^\s*(?:- )?uses:\s*(.+)$/gm)].map((m) => m[1] as string);
+
+  it('uses enough actions for the pin check to mean something', () => {
+    expect(uses.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it.each(uses)('pins %s by 40-hex SHA with a version comment', (u) => {
+    expect(u).toMatch(/^\S+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
+  });
+});
+
+describe('infra.yml permissions', () => {
+  const perms = (name: string): string[] =>
+    entries(/^ {4}permissions:\n((?: {6}.+\n)+)/m.exec(job(name))?.[1]);
+
+  it('is read-only at the top level', () => {
+    expect(entries(/^permissions:\n((?: {2}.+\n)+)/m.exec(workflow)?.[1])).toEqual([
+      'contents: read',
+    ]);
+  });
+
+  it.each(['scan', 'check'])('gives %s contents: read and nothing else', (name) => {
+    expect(perms(name)).toEqual(['contents: read']);
+  });
+
+  it.each(['plan', 'apply'])('gives %s only contents: read and id-token: write', (name) => {
+    expect(perms(name)).toEqual(['contents: read', 'id-token: write']);
+  });
+
+  it('gives drift issues: write as well', () => {
+    expect(perms('drift')).toEqual(['contents: read', 'id-token: write', 'issues: write']);
+  });
+
+  it('grants issues: write once in the whole workflow', () => {
+    expect(code(workflow).match(/issues: write/g)).toHaveLength(1);
+  });
+});
+
+describe('infra.yml hygiene', () => {
+  it('has run bodies to check', () => {
+    expect(runBodies(workflow).length).toBeGreaterThanOrEqual(10);
+  });
+
+  it('never expands ${{ }} inside a run: body', () => {
+    expect(runBodies(workflow).filter((b) => b.includes('${{'))).toEqual([]);
+  });
+
+  it.each(jobNames)('checks out exactly once in %s', (name) => {
+    expect(job(name).match(/uses: actions\/checkout@/g)).toHaveLength(1);
+  });
+
+  it.each(jobNames)('checks out with persist-credentials: false in %s', (name) => {
+    expect(job(name)).toContain('persist-credentials: false');
+  });
+
+  it('uses no secrets', () => {
+    expect(code(workflow)).not.toContain('secrets.');
+  });
+
+  it('names the installation directory once', () => {
+    expect(workflow.match(/infra\/installations\/verevoir/g)).toHaveLength(1);
+  });
+
+  it('writes a plan file that .gitignore covers', () => {
+    expect(gitignore.split('\n')).toContain('*.tfplan');
+    expect(workflow).toContain('-out=plan.tfplan');
+  });
+});
+
+describe('infra.yml scan job', () => {
+  const scan = (): string => job('scan');
+
+  it.each([
+    'directory: infra',
+    'framework: terraform',
+    'soft_fail: false',
+    'quiet: true',
+    'download_external_modules: false',
+  ])('runs checkov with %s', (input) => {
+    expect(scan()).toContain(input);
+  });
+
+  it('carries no credentials', () => {
+    expect(scan()).not.toContain('id-token');
+  });
+
+  it('passes no skip_check input to checkov', () => {
+    expect(code(workflow)).not.toContain('skip_check');
+  });
+
+  it('blocks the plan', () => {
+    expect(job('plan')).toMatch(/\n {4}needs: scan\n/);
+  });
+});
+
+describe('infra.yml check job (pull requests)', () => {
+  const check = (): string => job('check');
+
+  it('runs on pull requests only', () => {
+    expect(check()).toContain("github.event_name == 'pull_request'");
+  });
+
+  it.each(['google-github-actions/auth', 'id-token', 'secrets.', 'vars.', 'tofu apply'])(
+    'carries no %s',
+    (token) => {
+      expect(check()).not.toContain(token);
+    },
+  );
+
+  it.each(['tofu fmt -check -recursive', 'tofu validate', 'tofu init -backend=false'])(
+    'runs %s',
+    (command) => {
+      expect(check()).toContain(command);
+    },
+  );
+});
+
+describe('infra.yml plan job (push to main)', () => {
+  const plan = (): string => job('plan');
+
+  it('is triggered by pushes to main only', () => {
+    expect(workflow).toMatch(/push:\n {4}branches: \[main\]/);
+  });
+
+  it('runs on push only', () => {
+    expect(plan()).toContain("github.event_name == 'push'");
+  });
+
+  it('authenticates as the read-only planner', () => {
+    expect(plan()).toContain('service_account: ${{ vars.INFRA_PLANNER_SA }}');
+  });
+
+  it('never holds the deployer', () => {
+    expect(plan()).not.toContain('INFRA_DEPLOYER_SA');
+  });
+
+  it('never applies', () => {
+    expect(plan()).not.toContain('tofu apply');
+  });
+
+  it('plans without locking the state, and saves the plan', () => {
+    expect(plan()).toContain('tofu plan -input=false -lock=false -out=plan.tfplan');
+  });
+
+  it('prints the plan', () => {
+    expect(plan()).toContain('tofu show -no-color plan.tfplan');
+  });
+
+  it('uploads the plan and fails if there is none', () => {
+    expect(plan()).toContain('if-no-files-found: error');
+  });
+
+  it('gives the plan artifact a stated retention', () => {
+    expect(plan()).toMatch(/retention-days: \d+/);
+  });
+});
+
+describe('infra.yml apply job (push to main)', () => {
+  const apply = (): string => job('apply');
+
+  it('runs on push only', () => {
+    expect(apply()).toContain("github.event_name == 'push'");
+  });
+
+  it('waits for the plan job', () => {
+    expect(apply()).toMatch(/\n {4}needs: plan\n/);
+  });
+
+  it('waits in the environment the deployer is bound to', () => {
+    const env = /\n {4}environment: (\S+)\n/.exec(apply())?.[1];
+    expect(env).toBe(/default\s*=\s*"([^"]+)"/.exec(variableBlock('deploy_environment'))?.[1]);
+  });
+
+  it('authenticates as the deployer', () => {
+    expect(apply()).toContain('service_account: ${{ vars.INFRA_DEPLOYER_SA }}');
+  });
+
+  it('never holds the planner', () => {
+    expect(apply()).not.toContain('INFRA_PLANNER_SA');
+  });
+
+  it('downloads the saved plan', () => {
+    expect(apply()).toContain('actions/download-artifact@');
+  });
+
+  it('applies the saved plan and nothing else', () => {
+    expect(apply()).toContain('tofu apply -input=false plan.tfplan');
+  });
+
+  it('does not plan again', () => {
+    expect(apply()).not.toContain('tofu plan');
+  });
+
+  it('does not auto-approve', () => {
+    expect(apply()).not.toContain('-auto-approve');
+  });
+
+  it('serialises applies without cancelling a running one', () => {
+    expect(apply()).toMatch(/concurrency:\n {6}group: \S+\n {6}cancel-in-progress: false/);
+  });
+});
+
+describe('infra.yml drift job (schedule and dispatch)', () => {
+  const drift = (): string => job('drift');
+  const script = (): string =>
+    runBodies(drift()).find((b) => b.includes('-detailed-exitcode')) ?? '';
+
+  it('runs weekly', () => {
+    expect(workflow).toMatch(/schedule:\n\s+(?:#.*\n\s+)?- cron: '\d+ \d+ \* \* [0-6]'/);
+  });
+
+  it('can be run on demand', () => {
+    expect(workflow).toMatch(/\n {2}workflow_dispatch:\n/);
+  });
+
+  it('runs only on schedule or dispatch', () => {
+    expect(drift()).toContain(
+      "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'",
+    );
+  });
+
+  it('authenticates as the read-only planner', () => {
+    expect(drift()).toContain('service_account: ${{ vars.INFRA_PLANNER_SA }}');
+  });
+
+  it('never holds the deployer', () => {
+    expect(drift()).not.toContain('INFRA_DEPLOYER_SA');
+  });
+
+  it('never applies', () => {
+    expect(drift()).not.toContain('tofu apply');
+  });
+
+  it('exits 0 and prints nothing when tofu plan finds no changes', () => {
+    const r = execute(script(), {}, 0);
+    expect({ status: r.status, out: r.out }).toEqual({ status: 0, out: '' });
+  });
+
+  it('exits 1 when tofu plan errors', () => {
+    expect(execute(script(), {}, 1).status).toBe(1);
+  });
+
+  it('titles a plan error "Plan failed"', () => {
+    expect(execute(script(), {}, 1).out).toContain('::error title=Plan failed::');
+  });
+
+  it('exits 2 when tofu plan finds changes', () => {
+    expect(execute(script(), {}, 2).status).toBe(2);
+  });
+
+  it('titles plan changes "Drift"', () => {
+    expect(execute(script(), {}, 2).out).toContain('::error title=Drift::');
+  });
+
+  it('does not call an error drift', () => {
+    expect(execute(script(), {}, 1).out).not.toContain('title=Drift');
+  });
+});
+
+describe('infra.yml jobs that need the planner', () => {
+  it.each(['plan', 'drift'])('skips the %s job while INFRA_PLANNER_SA is unset', (name) => {
+    expect(job(name)).toMatch(/\n {4}if: .*vars\.INFRA_PLANNER_SA != ''/);
+  });
+
+  const missing = (): string => runBodies(job('planner-missing')).join('\n');
+
+  it('runs the planner-missing job when INFRA_PLANNER_SA is unset', () => {
+    expect(job('planner-missing')).toContain("vars.INFRA_PLANNER_SA == ''");
+  });
+
+  it('warns, by name, that the planner is not configured', () => {
+    expect(execute(missing(), {}).out).toContain('::warning title=Planner not configured::');
+  });
+
+  it('does not fail a shared install that has no planner', () => {
+    expect(execute(missing(), {}).status).toBe(0);
+  });
+});
+
+describe('infra.yml drift job: ref guard, live IAM check, notification', () => {
+  const drift = (): string => job('drift');
+  const body = (marker: string): string => runBodies(drift()).find((b) => b.includes(marker)) ?? '';
+  const repo = {
+    GITHUB_REPOSITORY: 'o/r',
+    GITHUB_SERVER_URL: 'https://github.com',
+    GITHUB_RUN_ID: '9',
+  };
+  // `gh issue list` prints $OPEN (an issue number) when set; $GH_FAIL makes every call fail.
+  const fakeGh = [
+    'echo "$@" >> "$FAKES_DIR/log"',
+    '[ "$1 $2" = "issue list" ] && [ -n "$OPEN" ] && echo "$OPEN"',
+    '[ -z "$GH_FAIL" ]',
+  ].join('\n');
+  const notify = (env: Record<string, string>): ReturnType<typeof execute> =>
+    execute(body('gh issue'), { ...repo, ...env }, 0, { gh: fakeGh });
+
+  it('refuses to run from another ref', () => {
+    expect(execute(body('GITHUB_REF'), { GITHUB_REF: 'refs/heads/topic' }).status).toBe(1);
+  });
+
+  it('names the error when it refuses another ref', () => {
+    const r = execute(body('GITHUB_REF'), { GITHUB_REF: 'refs/heads/topic' });
+    expect(r.out).toContain('::error title=Run drift from main::');
+  });
+
+  it('runs from main', () => {
+    expect(execute(body('GITHUB_REF'), { GITHUB_REF: 'refs/heads/main' }).status).toBe(0);
+  });
+
+  it('checks the ref before it authenticates', () => {
+    expect(drift().indexOf('GITHUB_REF')).toBeLessThan(
+      drift().indexOf('google-github-actions/auth'),
+    );
+  });
+
+  it('runs the live IAM check from the script the tests execute', () => {
+    expect(body('iam-live-check.sh')).toContain('scripts/iam-live-check.sh');
+  });
+
+  it('serialises drift runs without cancelling a running one', () => {
+    expect(drift()).toMatch(/concurrency:\n {6}group: \S+\n {6}cancel-in-progress: false/);
+  });
+
+  const notifyIf = (): string =>
+    /\n {8}if: (.*)\n/.exec(drift().split('- name: Report drift or an error')[1] ?? '')?.[1] ?? '';
+
+  it.each(["steps.plan.outputs.status != '0'", "steps.iam.outputs.status != '0'", 'failure()'])(
+    'notifies when %s',
+    (condition) => {
+      expect(notifyIf()).toContain(condition);
+    },
+  );
+
+  const driftEnv = { PLAN_STATUS: '2', IAM_STATUS: '0' };
+  const errorEnv = { PLAN_STATUS: '1', IAM_STATUS: '0' };
+  const neverRan = { PLAN_STATUS: '', IAM_STATUS: '' };
+
+  it('opens an issue for drift when none is open', () => {
+    expect(notify(driftEnv).log).toContain('issue create');
+  });
+
+  it('titles a drift issue "Infrastructure drift"', () => {
+    expect(notify(driftEnv).log).toContain('--title Infrastructure drift --body');
+  });
+
+  it('comments on the open issue instead of opening another', () => {
+    expect(notify({ ...driftEnv, OPEN: '7' }).log).toContain('issue comment 7');
+  });
+
+  it('opens no second issue while one is open', () => {
+    expect(notify({ ...driftEnv, OPEN: '7' }).log).not.toContain('issue create');
+  });
+
+  it('opens an issue when the live IAM check found the drift', () => {
+    expect(notify({ PLAN_STATUS: '0', IAM_STATUS: '2' }).log).toContain(
+      '--title Infrastructure drift --body',
+    );
+  });
+
+  it('opens an issue for an error too', () => {
+    expect(notify(errorEnv).log).toContain('issue create');
+  });
+
+  it('titles an error issue "Infrastructure drift check failed"', () => {
+    expect(notify(errorEnv).log).toContain('--title Infrastructure drift check failed --body');
+  });
+
+  it('does not title an error issue as drift', () => {
+    expect(notify(errorEnv).log).not.toContain('--title Infrastructure drift --body');
+  });
+
+  it('words an error issue as an error, not drift', () => {
+    expect(notify(errorEnv).log).toContain('This is an ERROR, not drift');
+  });
+
+  it('opens an error issue when an earlier step failed and no check ran', () => {
+    expect(notify(neverRan).log).toContain('--title Infrastructure drift check failed --body');
+  });
+
+  it('comments on the open error issue instead of opening another', () => {
+    expect(notify({ ...errorEnv, OPEN: '8' }).log).toContain('issue comment 8');
+  });
+
+  it('fails the step when gh fails, so the job fails visibly', () => {
+    expect(notify({ ...driftEnv, GH_FAIL: '1' }).status).not.toBe(0);
+  });
+
+  it('uses the workflow token for gh', () => {
+    expect(drift()).toContain('GH_TOKEN: ${{ github.token }}');
+  });
+
+  const finish = (env: Record<string, string>): number | null =>
+    execute(body('title=Drift check failed'), env).status;
+
+  it('exits 2 at the end when the plan found drift', () => {
+    expect(finish({ PLAN_STATUS: '2', IAM_STATUS: '0' })).toBe(2);
+  });
+
+  it('exits 2 at the end when the live IAM check found drift', () => {
+    expect(finish({ PLAN_STATUS: '0', IAM_STATUS: '2' })).toBe(2);
+  });
+
+  it('exits 1 at the end when a check only errored', () => {
+    expect(finish({ PLAN_STATUS: '0', IAM_STATUS: '1' })).toBe(1);
+  });
+});
+
+describe('scripts/iam-drift.mjs: live IAM against state', () => {
+  const script = fileURLToPath(new URL('scripts/iam-drift.mjs', root));
+  const sa = 'review-publisher@p.iam.gserviceaccount.com';
+  const pool = 'projects/1/locations/global/workloadIdentityPools/review-github';
+  const principalSet = `principalSet://iam.googleapis.com/${pool}/attribute.repository_owner_id/1`;
+  type Condition = { title?: string; expression: string };
+  type Policy = {
+    version?: number;
+    bindings: { role: string; members: string[]; condition?: Condition | undefined }[];
+  };
+  const expression = "resource.name.startsWith('x') || resource.name == 'y'";
+  const creator = {
+    role: 'roles/storage.objectCreator',
+    members: [`serviceAccount:${sa}`],
+    condition: { title: 'create', expression },
+  };
+  const legacyOwner = { role: 'roles/storage.legacyBucketOwner', members: ['projectOwner:p'] };
+  const viewer = { role: 'roles/storage.objectViewer', members: [`serviceAccount:${sa}`] };
+  const impersonation = { role: 'roles/iam.workloadIdentityUser', members: [principalSet] };
+  const state = {
+    values: {
+      root_module: {
+        child_modules: [
+          {
+            resources: [
+              { type: 'google_service_account', values: { email: sa, project: 'p' } },
+              { type: 'google_iam_workload_identity_pool', values: { name: pool } },
+              { type: 'google_storage_bucket', values: { name: 'b' } },
+              {
+                type: 'google_storage_bucket_iam_member',
+                values: {
+                  bucket: 'b',
+                  role: viewer.role,
+                  member: `serviceAccount:${sa}`,
+                  condition: [],
+                },
+              },
+              {
+                type: 'google_storage_bucket_iam_member',
+                values: {
+                  bucket: 'b',
+                  role: creator.role,
+                  member: `serviceAccount:${sa}`,
+                  condition: [{ title: 'create', description: 'd', expression }],
+                },
+              },
+              {
+                type: 'google_service_account_iam_member',
+                values: {
+                  service_account_id: `projects/p/serviceAccounts/${sa}`,
+                  role: impersonation.role,
+                  member: principalSet,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+  type Live = { bucket?: Policy; sa?: Policy; project?: Policy };
+  const clean: Required<Live> = {
+    bucket: { version: 3, bindings: [viewer, creator, legacyOwner] },
+    sa: { bindings: [impersonation] },
+    project: { bindings: [{ role: 'roles/owner', members: ['user:someone@example.com'] }] },
+  };
+
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  const run = (
+    live: Live,
+    command = 'compare',
+    stateDoc: unknown = state,
+  ): { status: number | null; out: string } => {
+    const dir = mkdtempSync(join(tmpdir(), 'iam-drift-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(stateDoc));
+    mkdirSync(join(dir, 'live'));
+    const files = { bucket: 'bucket_b.json', sa: `sa_${sa}.json`, project: 'project_p.json' };
+    for (const [place, policy] of Object.entries(live)) {
+      writeFileSync(join(dir, 'live', files[place as keyof Live]), JSON.stringify(policy));
+    }
+    const r = spawnSync('node', [script, command, join(dir, 'state.json'), join(dir, 'live')], {
+      encoding: 'utf8',
+    });
+    return { status: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+
+  it('reports a clean estate as clean', () => {
+    expect(run(clean).status).toBe(0);
+  });
+
+  const bucketWith = (...bindings: Policy['bindings']): Policy => ({ version: 3, bindings });
+  /** The corpus bucket policy with the publisher's creator grant carrying `condition`. */
+  const withCondition = (condition?: Condition): Policy =>
+    bucketWith(viewer, { ...creator, condition }, legacyOwner);
+  const extraAdmin = { role: 'roles/storage.admin', members: viewer.members };
+  const other = `principalSet://iam.googleapis.com/${pool}/attribute.repository/evil/x`;
+
+  it('exits 2 for an extra grant to a module service account', () => {
+    const bucket = bucketWith(...clean.bucket.bindings, extraAdmin);
+    expect(run({ ...clean, bucket }).status).toBe(2);
+  });
+
+  it('names an extra grant as unexpected', () => {
+    const bucket = bucketWith(...clean.bucket.bindings, extraAdmin);
+    expect(run({ ...clean, bucket }).out).toContain('unexpected: bucket:b roles/storage.admin');
+  });
+
+  it('exits 2 for an extra binding for another identity in the module pool', () => {
+    const live = {
+      ...clean,
+      sa: { bindings: [{ ...impersonation, members: [principalSet, other] }] },
+    };
+    expect(run(live).status).toBe(2);
+  });
+
+  it('names the extra pool binding as unexpected', () => {
+    const live = {
+      ...clean,
+      sa: { bindings: [{ ...impersonation, members: [principalSet, other] }] },
+    };
+    expect(run(live).out).toContain(`unexpected: sa:${sa}`);
+  });
+
+  it('exits 2 for a grant that state has and the live policy lacks', () => {
+    expect(run({ ...clean, bucket: bucketWith() }).status).toBe(2);
+  });
+
+  it('names a grant the live policy lacks as missing', () => {
+    expect(run({ ...clean, bucket: bucketWith() }).out).toContain(
+      'missing: bucket:b roles/storage.objectViewer',
+    );
+  });
+
+  it('does not look at grants to principals outside the module', () => {
+    const bucket = bucketWith(...clean.bucket.bindings, {
+      role: 'roles/storage.admin',
+      members: ['user:x@example.com'],
+    });
+    expect(run({ ...clean, bucket }).status).toBe(0);
+  });
+
+  // Conditional grants: the publisher's two grants carry IAM conditions. State
+  // holds them as condition[0].expression, the live policy as condition.expression.
+  it('ignores a differing title on a conditional grant', () => {
+    const bucket = withCondition({ title: 'renamed', expression });
+    expect(run({ ...clean, bucket }).status).toBe(0);
+  });
+
+  it.each([
+    { name: 'extra spaces', live: "resource.name.startsWith('x')   ||   resource.name == 'y'" },
+    { name: 'a line break', live: "resource.name.startsWith('x') ||\n  resource.name == 'y'" },
+    { name: 'tabs', live: "resource.name.startsWith('x')\t||\tresource.name == 'y'" },
+    { name: 'leading and trailing space', live: ` ${expression} ` },
+  ])('treats a live condition with $name as the same grant', ({ live }) => {
+    const bucket = withCondition({ title: 'create', expression: live });
+    expect(run({ ...clean, bucket }).status).toBe(0);
+  });
+
+  it('exits 2 when the live condition expression differs', () => {
+    const bucket = withCondition({ title: 'create', expression: "resource.name == 'z'" });
+    expect(run({ ...clean, bucket }).status).toBe(2);
+  });
+
+  it('names the differing live condition as unexpected', () => {
+    const bucket = withCondition({ title: 'create', expression: "resource.name == 'z'" });
+    expect(run({ ...clean, bucket }).out).toContain(
+      `unexpected: bucket:b ${creator.role} serviceAccount:${sa} if resource.name == 'z'`,
+    );
+  });
+
+  it('exits 2 when state has a condition and the live grant has none', () => {
+    expect(run({ ...clean, bucket: withCondition(undefined) }).status).toBe(2);
+  });
+
+  it('names the conditional grant as missing when the live grant has none', () => {
+    expect(run({ ...clean, bucket: withCondition(undefined) }).out).toContain(
+      `missing: bucket:b ${creator.role} serviceAccount:${sa} if ${expression}`,
+    );
+  });
+
+  it('exits 2 when the live grant has a condition and state has none', () => {
+    const bucket = bucketWith(
+      { ...viewer, condition: { expression: "resource.name == 'z'" } },
+      creator,
+      legacyOwner,
+    );
+    expect(run({ ...clean, bucket }).status).toBe(2);
+  });
+
+  it('names a condition only the live grant has as unexpected', () => {
+    const bucket = bucketWith(
+      { ...viewer, condition: { expression: "resource.name == 'z'" } },
+      creator,
+      legacyOwner,
+    );
+    expect(run({ ...clean, bucket }).out).toContain(
+      `unexpected: bucket:b ${viewer.role} serviceAccount:${sa} if resource.name == 'z'`,
+    );
+  });
+
+  it('errors, not a pass, when conditions are in state and the live policy has no version', () => {
+    expect(run({ ...clean, bucket: { bindings: clean.bucket.bindings } }).status).toBe(1);
+  });
+
+  it('errors, not a pass, when conditions are in state and the live policy is version 1', () => {
+    const bucket = { version: 1, bindings: clean.bucket.bindings };
+    expect(run({ ...clean, bucket }).out).toContain('is version 1');
+  });
+
+  it('exits 1 when conditions are in state and the live policy is version 1', () => {
+    const bucket = { version: 1, bindings: clean.bucket.bindings };
+    expect(run({ ...clean, bucket }).status).toBe(1);
+  });
+
+  // The bucket attribute in state may be "b/<name>" or the bare name; both mean one bucket.
+  const prefixedState: unknown = JSON.parse(
+    JSON.stringify(state).replace(/"bucket":"b"/g, '"bucket":"b/b"'),
+  );
+
+  it('compares a bucket held in state as "b/<name>" as that bucket', () => {
+    expect(run(clean, 'compare', prefixedState).status).toBe(0);
+  });
+
+  it('lists a "b/<name>" bucket as one place, bucket:<name>', () => {
+    const out = run(clean, 'scopes', prefixedState).out;
+    expect(out.split('\n').filter((l) => l.startsWith('bucket:'))).toEqual([
+      'bucket:b\tbucket_b.json',
+    ]);
+  });
+
+  it('exits 1 for an unknown command', () => {
+    expect(run(clean, 'bogus').status).toBe(1);
+  });
+
+  it('prints the usage for an unknown command', () => {
+    expect(run(clean, 'bogus').out).toContain('usage: iam-drift.mjs');
+  });
+
+  it('exits 1 when no state path is given', () => {
+    expect(spawnSync('node', [script, 'compare'], { encoding: 'utf8' }).status).toBe(1);
+  });
+
+  const emptyState = { values: { root_module: { resources: [] } } };
+
+  it('exits 1, not clean, when state holds no module resources', () => {
+    expect(run({}, 'compare', emptyState).status).toBe(1);
+  });
+
+  it('says why it refuses an empty state', () => {
+    expect(run({}, 'compare', emptyState).out).toContain('refusing to call that clean');
+  });
+
+  it('exits 1 when the state document is not tofu show output', () => {
+    expect(run({}, 'compare', { nothing: true }).status).toBe(1);
+  });
+
+  it('errors, not a clean pass, when a policy cannot be read', () => {
+    expect(run({ bucket: clean.bucket, sa: clean.sa }).status).toBe(1);
+  });
+
+  it('lists the three places to read, each with its file', () => {
+    const lines = run(clean, 'scopes').out.trim().split('\n');
+    expect(lines).toEqual([
+      'bucket:b\tbucket_b.json',
+      `project:p\tproject_p.json`,
+      `sa:${sa}\tsa_${sa}.json`,
+    ]);
+  });
+});
+
+describe('scripts/iam-live-check.sh: the drift job step, executed with fake tofu, gcloud and node', () => {
+  const checkScript = fileURLToPath(new URL('scripts/iam-live-check.sh', root));
+  const account = 'a@p.iam.gserviceaccount.com';
+  const stateJson = JSON.stringify({
+    values: {
+      root_module: {
+        resources: [
+          { type: 'google_service_account', values: { email: account, project: 'p' } },
+          { type: 'google_storage_bucket', values: { name: 'b' } },
+        ],
+      },
+    },
+  });
+  const fakeTofu = 'if [ -n "$TOFU_FAIL" ]; then exit 1; fi\nprintf \'%s\' "$STATE_JSON"';
+  // Logs its arguments; fails when they contain $GCLOUD_FAIL; prints $GCLOUD_OUT or an empty v3 policy.
+  const fakeGcloud = [
+    'echo "$@" >> "$FAKES_DIR/log"',
+    'case "$*" in *"$GCLOUD_FAIL"*) [ -n "$GCLOUD_FAIL" ] && exit 1 ;; esac',
+    'if [ -n "$GCLOUD_OUT" ]; then printf \'%s\' "$GCLOUD_OUT"; else printf \'%s\' \'{"version":3,"bindings":[]}\'; fi',
+  ].join('\n');
+  // Stands in for node and lists a place the script has no case for.
+  const unknownPlace = 'case "$2" in scopes) printf \'weird:x\\tx.json\\n\' ;; esac';
+  const extraBinding = JSON.stringify({
+    version: 3,
+    bindings: [{ role: 'roles/owner', members: [`serviceAccount:${account}`] }],
+  });
+
+  const run = (
+    env: Record<string, string>,
+    fakes: Record<string, string> = {},
+  ): ReturnType<typeof execute> =>
+    execute(
+      `cd "$FAKES_DIR"; export GITHUB_OUTPUT="$FAKES_DIR/gh_output"; : > "$GITHUB_OUTPUT"; rc=0; bash "${checkScript}" || rc=$?; cat "$GITHUB_OUTPUT"; exit $rc`,
+      { STATE_JSON: stateJson, ...env },
+      0,
+      { tofu: fakeTofu, gcloud: fakeGcloud, ...fakes },
+    );
+
+  it('exits 0 when every live policy matches state', () => {
+    expect(run({}).status).toBe(0);
+  });
+
+  it('writes status=0 for the reporting step when clean', () => {
+    expect(run({}).out).toContain('status=0');
+  });
+
+  it('exits 2 when a live policy has a binding state lacks', () => {
+    expect(run({ GCLOUD_OUT: extraBinding }).status).toBe(2);
+  });
+
+  it('writes status=2 for the reporting step on drift', () => {
+    expect(run({ GCLOUD_OUT: extraBinding }).out).toContain('status=2');
+  });
+
+  it('exits 1 when gcloud fails', () => {
+    expect(run({ GCLOUD_FAIL: 'get-iam-policy' }).status).toBe(1);
+  });
+
+  it('writes status=1 when gcloud fails', () => {
+    expect(run({ GCLOUD_FAIL: 'get-iam-policy' }).out).toContain('status=1');
+  });
+
+  it('names the place gcloud could not read', () => {
+    expect(run({ GCLOUD_FAIL: 'get-iam-policy' }).out).toContain(
+      '::error title=IAM check failed::could not read',
+    );
+  });
+
+  it('exits 1 when tofu show fails', () => {
+    expect(run({ TOFU_FAIL: '1' }).status).toBe(1);
+  });
+
+  it('exits 1, not a clean pass, when a policy is not JSON', () => {
+    expect(run({ GCLOUD_OUT: 'not json' }).status).toBe(1);
+  });
+
+  it('writes status=1 when the comparison errors', () => {
+    expect(run({ GCLOUD_OUT: 'not json' }).out).toContain('status=1');
+  });
+
+  it('exits 1 for a place it has no case for', () => {
+    expect(run({}, { node: unknownPlace }).status).toBe(1);
+  });
+
+  it('names the place it has no case for', () => {
+    expect(run({}, { node: unknownPlace }).out).toContain('unknown place weird:x');
+  });
+
+  // A gcloud that reads stdin must not eat the place list the loop is reading.
+  const stdinReader = `cat > /dev/null\n${fakeGcloud}`;
+
+  it.each([
+    'storage buckets get-iam-policy gs://b',
+    `iam service-accounts get-iam-policy ${account}`,
+    'projects get-iam-policy p',
+  ])('still visits every place when gcloud reads stdin: %s', (call) => {
+    expect(run({}, { gcloud: stdinReader }).log).toContain(call);
+  });
+
+  // The script's working files live in a temp dir it removes, not in the cwd.
+  const sandboxed = (
+    env: Record<string, string>,
+    tmp = '"$FAKES_DIR/tmp"',
+  ): ReturnType<typeof execute> =>
+    execute(
+      `cd "$FAKES_DIR"; mkdir tmp; export TMPDIR=${tmp} GITHUB_OUTPUT="$FAKES_DIR/gh_output"; : > "$GITHUB_OUTPUT"; rc=0; bash "${checkScript}" || rc=$?; echo "tmp-left=$(ls tmp | wc -l | tr -d ' ')"; echo "stray=$(ls | grep -c -E '^(state.json|scopes.tsv|live)$')"; exit $rc`,
+      { STATE_JSON: stateJson, ...env },
+      0,
+      { tofu: fakeTofu, gcloud: fakeGcloud },
+    );
+
+  it('leaves no state dump or policy file in the working directory', () => {
+    expect(sandboxed({}).out).toContain('stray=0');
+  });
+
+  it('removes its temp directory after a clean run', () => {
+    expect(sandboxed({}).out).toContain('tmp-left=0');
+  });
+
+  it('removes its temp directory after a failed run', () => {
+    expect(sandboxed({ GCLOUD_FAIL: 'get-iam-policy' }).out).toContain('tmp-left=0');
+  });
+
+  it('exits 1 when it cannot create its temp directory', () => {
+    expect(sandboxed({}, '/nonexistent/dir').status).toBe(1);
+  });
+
+  it('names the cause when it cannot create its temp directory', () => {
+    expect(sandboxed({}, '/nonexistent/dir').out).toContain('could not create a temp directory');
+  });
+
+  it.each([
+    { place: 'bucket', call: 'storage buckets get-iam-policy gs://b --format=json' },
+    {
+      place: 'service account',
+      call: `iam service-accounts get-iam-policy ${account} --format=json`,
+    },
+    { place: 'project', call: 'projects get-iam-policy p --format=json' },
+  ])('reads the $place policy with gcloud', ({ call }) => {
+    expect(run({}).log).toContain(call);
+  });
+});
+
+describe('infra.yml remote state: the fail-closed step, executed', () => {
+  const requireBody = (name: string): string =>
+    runBodies(job(name)).find((b) => b.includes('[ -z')) ?? '';
+  const both = { TF_STATE_BUCKET: 'bucket', TF_STATE_PREFIX: 'prefix' };
+
+  it.each(pairs(cloudJobs, stateVars))(
+    '$name reads $token from a repository variable',
+    ({ name, token }) => {
+      expect(job(name)).toContain(`${token}: \${{ vars.${token} }}`);
+    },
+  );
+
+  it.each(cloudJobs)('%s passes when both variables are set', (name) => {
+    expect(execute(requireBody(name), both).status).toBe(0);
+  });
+
+  it.each(pairs(cloudJobs, stateVars))('$name fails when $token is unset', ({ name, token }) => {
+    const env: Record<string, string> = { ...both };
+    delete env[token];
+    expect(execute(requireBody(name), env).status).toBe(1);
+  });
+
+  it.each(pairs(cloudJobs, stateVars))('$name fails when $token is empty', ({ name, token }) => {
+    expect(execute(requireBody(name), { ...both, [token]: '' }).status).toBe(1);
+  });
+
+  it.each(cloudJobs)('%s has a Require remote state step', (name) => {
+    expect(job(name)).toContain('- name: Require remote state');
+  });
+
+  it.each(cloudJobs)('%s checks the state location before it authenticates', (name) => {
+    const text = job(name);
+    expect(text.indexOf('Require remote state')).toBeLessThan(
+      text.indexOf('google-github-actions/auth'),
+    );
+  });
+
+  it.each(cloudJobs)('%s passes the bucket and prefix to tofu init', (name) => {
+    expect(job(name)).toContain(
+      'tofu init -input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}"',
+    );
+  });
+});
+
+// ------------------------------------------------------------------ module
+
+type Resource = { type: string; name: string; body: string };
+type Grant = {
+  target: string;
+  role: string;
+  member: string;
+  condition?: string | undefined;
+  gated: boolean;
+};
+
+const resources: Resource[] = [
+  ...moduleCode.matchAll(/^resource "([a-z_]+)" "(\w+)" \{\n([\s\S]*?)\n\}$/gm),
+].map((m) => ({ type: m[1] as string, name: m[2] as string, body: m[3] as string }));
+
+const locals = new Map<string, string>();
+for (const block of moduleCode.matchAll(/^locals \{\n([\s\S]*?)\n\}$/gm)) {
+  for (const l of (block[1] as string).matchAll(/^ {2}(\w+) = "(.*)"$/gm)) {
+    locals.set(l[1] as string, l[2] as string);
+  }
+}
+
+/** Locals as raw expressions (not only quoted strings), e.g. a conditional pool id. */
+const localExpr = new Map<string, string>();
+for (const block of moduleCode.matchAll(/^locals \{\n([\s\S]*?)\n\}$/gm)) {
+  for (const l of (block[1] as string).matchAll(/^ {2}(\w+) = (.+)$/gm)) {
+    localExpr.set(l[1] as string, l[2] as string);
+  }
+}
+
+const resolve = (s: string): string => {
+  let out = s;
+  for (let i = 0; i < 5; i++) {
+    out = out.replace(/\$\{local\.(\w+)\}/g, (_, n: string) => locals.get(n) ?? `<?${n}>`);
+  }
+  return out;
+};
+const norm = (s: string): string => s.replace(/\$\{var\.(\w+)\}/g, '<$1>');
+
+/** A resource's identity independent of its Terraform name. */
+function tagOf(type: string, name: string): string {
+  const r = resources.find((x) => x.type === type && x.name === name);
+  if (r === undefined) return `?${type}.${name}`;
+  if (type === 'google_service_account') {
+    return /account_id = "\$\{var\.name_prefix\}-(\w+)"/.exec(r.body)?.[1] ?? name;
+  }
+  if (type === 'google_storage_bucket')
+    return /name = local\.(\w+)_bucket/.exec(r.body)?.[1] ?? name;
+  return /role_id = ".*\}_(\w+)"/.exec(r.body)?.[1] ?? name;
+}
+
+const refs = (s: string): string =>
+  s
+    .replace(
+      /google_service_account\.(\w+)(?:\[0\])?\.(?:email|name)/g,
+      (_, n: string) => `sa:${tagOf('google_service_account', n)}`,
+    )
+    .replace(
+      /google_storage_bucket\.(\w+)\.name/g,
+      (_, n: string) => `bucket:${tagOf('google_storage_bucket', n)}`,
+    )
+    .replace(
+      /google_project_iam_custom_role\.(\w+)(?:\[0\])?\.name/g,
+      (_, n: string) => `role:${tagOf('google_project_iam_custom_role', n)}`,
+    )
+    .replace(/\$\{((?:sa|bucket|role):\w+)\}/g, '$1');
+
+const grants: Grant[] = resources
+  .filter((r) => r.type.endsWith('_iam_member'))
+  .flatMap((r) => {
+    const lines = r.body.split('\n');
+    const memberLine = lines.find((l) => /^\s*member = /.test(l)) ?? '';
+    const memberRaw = /member = "(.*)"$/.exec(memberLine)?.[1] ?? '';
+    const pool = /^\$\{local\.pool_principal\}\/attribute\.(\w+)\/(.*)$/.exec(memberRaw);
+    const member = pool
+      ? `wif:${pool[1]}=${norm(resolve(pool[2] as string))}`
+      : refs(memberRaw).replace(/^serviceAccount:/, '');
+    const rest = lines.filter((l) => l !== memberLine).join('\n');
+    const resolved = refs(rest);
+    const targets =
+      r.type === 'google_project_iam_member'
+        ? ['project']
+        : [...resolved.matchAll(/(?:bucket|sa):\w+/g)].map((m) => m[0]);
+    const roles = [...rest.matchAll(/"(roles\/[\w.]+)"/g), ...resolved.matchAll(/(role:\w+)/g)].map(
+      (m) => m[1] as string,
+    );
+    const expression = /expression = "(.*)"$/m.exec(rest)?.[1];
+    const condition = expression === undefined ? undefined : refs(resolve(expression));
+    const gated = r.body.includes('var.create_deployer');
+    return targets.flatMap((target) =>
+      roles.map((role) => ({ target, role, member, condition, gated })),
+    );
+  });
+
+const to = (member: string): string[] =>
+  grants
+    .filter((g) => g.member === member)
+    .map((g) => `${g.target} ${g.role}`)
+    .sort();
+
+const variableBlock = (name: string): string =>
+  moduleText
+    .split(/^variable "/m)
+    .slice(1)
+    .find((b) => b.startsWith(`${name}"`)) ?? '';
+const defaultOf = (name: string): string | undefined =>
+  /default\s*=\s*"?([^"\n]+)"?/.exec(variableBlock(name))?.[1];
+const ruleOf = (name: string): RegExp =>
+  new RegExp(/regex\("([^"]+)"/.exec(variableBlock(name))?.[1] ?? '(?!)');
+
+describe('module: what is granted, and to whom', () => {
+  it('parses the grants it asserts on', () => {
+    expect(grants.length).toBeGreaterThanOrEqual(15);
+  });
+
+  it('gives the publisher only create and overwrite on the corpus bucket', () => {
+    expect(to('sa:publisher')).toEqual([
+      'bucket:corpus roles/storage.objectCreator',
+      'bucket:corpus roles/storage.objectUser',
+    ]);
+  });
+
+  const publisher = (role: string): Grant | undefined =>
+    grants.find((g) => g.member === 'sa:publisher' && g.role === role);
+
+  it.each(['corpus/', 'manifests/', 'refs/main'])('lets the publisher create under %s', (path) => {
+    expect(publisher('roles/storage.objectCreator')?.condition).toContain(
+      `bucket:corpus/objects/${path}`,
+    );
+  });
+
+  it('lets the publisher overwrite the refs/main object by exact name, and nothing else', () => {
+    expect(publisher('roles/storage.objectUser')?.condition).toBe(
+      "resource.name == 'projects/_/buckets/bucket:corpus/objects/refs/main'",
+    );
+  });
+
+  it('gives the reader only objectViewer on the corpus bucket', () => {
+    expect(to('sa:reader')).toEqual(['bucket:corpus roles/storage.objectViewer']);
+  });
+
+  it('gives the deployer exactly its stated reach', () => {
+    expect(to('sa:deployer')).toEqual(
+      [
+        'project role:deployer_project',
+        'project roles/iam.workloadIdentityPoolAdmin',
+        'project roles/serviceusage.serviceUsageAdmin',
+        'bucket:corpus roles/storage.admin',
+        'bucket:state roles/storage.admin',
+        'sa:publisher roles/iam.serviceAccountAdmin',
+        'sa:reader roles/iam.serviceAccountAdmin',
+        'sa:deployer roles/iam.serviceAccountAdmin',
+        'sa:planner roles/iam.serviceAccountAdmin',
+      ].sort(),
+    );
+  });
+
+  it('gives the planner only read roles, custom roles included', () => {
+    expect(to('sa:planner')).toEqual([
+      'bucket:corpus role:planner_bucket',
+      'bucket:state role:planner_bucket',
+      'bucket:state roles/storage.objectViewer',
+      'project role:planner',
+    ]);
+  });
+
+  it.each([
+    'sa:publisher <- wif:repo_id_workflow=<corpus_repo_id>@refs/heads/main|<corpus_repo>/<publish_workflow_path>@refs/heads/main',
+    'sa:reader <- wif:repository_owner_id=<github_owner_id>',
+    'sa:planner <- wif:repo_id_workflow=<governance_repo_id>@refs/heads/main|<governance_repo>/<deploy_workflow_path>@refs/heads/main',
+    'sa:deployer <- wif:repo_id_workflow_env=<governance_repo_id>@refs/heads/main|<governance_repo>/<deploy_workflow_path>@refs/heads/main|<deploy_environment>',
+  ])('binds impersonation: %s', (binding) => {
+    const bindings = grants
+      .filter((g) => g.role === 'roles/iam.workloadIdentityUser')
+      .map((g) => `${g.target} <- ${g.member}`);
+    expect(bindings).toContain(binding);
+  });
+
+  it('binds no other impersonation', () => {
+    expect(grants.filter((g) => g.role === 'roles/iam.workloadIdentityUser')).toHaveLength(4);
+  });
+
+  it('keeps the planner out of the deployer principal: they use different attributes', () => {
+    const attr = (target: string): string | undefined =>
+      /wif:(\w+)=/.exec(
+        grants.find((g) => g.role === 'roles/iam.workloadIdentityUser' && g.target === target)
+          ?.member ?? '',
+      )?.[1];
+    expect(attr('sa:deployer')).not.toBe(attr('sa:planner'));
+  });
+
+  it.each(['repo_id_workflow', 'repo_id_workflow_env', 'repository_owner_id'])(
+    'maps attribute.%s in the provider',
+    (attribute) => {
+      expect(moduleText).toContain(`"attribute.${attribute}" =`);
+    },
+  );
+
+  it.each([
+    'assertion.repository_id',
+    'assertion.ref',
+    'assertion.job_workflow_ref',
+    'assertion.environment',
+  ])('builds repo_id_workflow_env from %s', (claim) => {
+    const line =
+      moduleText.split('\n').find((l) => l.includes('"attribute.repo_id_workflow_env" =')) ?? '';
+    expect(line).toContain(claim);
+  });
+
+  it('tolerates a job with no environment claim', () => {
+    expect(moduleText).toContain('has(assertion.environment)');
+  });
+
+  it('always requires the owner id in the provider condition', () => {
+    expect(moduleText).toContain("assertion.repository_owner_id == '${var.github_owner_id}'");
+  });
+
+  const conditionLine = (): string =>
+    moduleCode.split('\n').find((l) => l.trim().startsWith('attribute_condition =')) ?? '';
+
+  it('writes the provider condition as a literal that starts with the owner id check', () => {
+    expect(conditionLine()).toMatch(
+      /^\s*attribute_condition = "assertion\.repository_owner_id == '\$\{var\.github_owner_id\}'/,
+    );
+  });
+
+  it('ANDs a custom condition onto the owner id check', () => {
+    expect(conditionLine()).toContain('&& (${var.allowed_owner_condition})');
+  });
+
+  it('never ORs anything into the provider condition', () => {
+    expect(conditionLine()).not.toContain('||');
+  });
+
+  it('never trusts the owner name', () => {
+    expect(moduleText).not.toContain('var.github_owner}');
+  });
+
+  it.each(['corpus_repo', 'governance_repo'])(
+    'uses the %s name only after its numeric id',
+    (name) => {
+      const uses = [...locals.values()].filter((v) => v.includes(`var.${name}}`));
+      const after = new RegExp(
+        `^\\$\\{var\\.${name}_id\\}@refs/heads/main\\|\\$\\{var\\.${name}\\}/`,
+      );
+      expect(uses.filter((v) => !after.test(v))).toEqual([]);
+    },
+  );
+});
+
+describe('module: additive IAM and no keys', () => {
+  it('declares no iam_binding, iam_policy or audit config resource', () => {
+    expect(
+      resources.map((r) => r.type).filter((t) => /_iam_(binding|policy|audit_config)$/.test(t)),
+    ).toEqual([]);
+  });
+
+  it('creates no service account key', () => {
+    expect(moduleText).not.toContain('google_service_account_key');
+  });
+
+  it('uses no owner, editor, project IAM admin, IAM admin or security admin role', () => {
+    expect(moduleCode).not.toMatch(
+      /roles\/(owner|editor|resourcemanager\.projectIamAdmin|iam\.securityAdmin|iam\.admin)"/,
+    );
+  });
+
+  it('never grants objectAdmin', () => {
+    expect(moduleCode).not.toContain('roles/storage.objectAdmin');
+  });
+
+  it('gates every grant that involves the deployer or planner on create_deployer', () => {
+    const involved = grants.filter((g) => /sa:(deployer|planner)/.test(`${g.member} ${g.target}`));
+    expect(involved.length).toBeGreaterThan(0);
+    expect(involved.filter((g) => !g.gated)).toEqual([]);
+  });
+
+  it('gates every project-level grant on create_deployer', () => {
+    expect(grants.filter((g) => g.target === 'project' && !g.gated)).toEqual([]);
+  });
+
+  it('gates the deployer and planner accounts and every custom role on create_deployer', () => {
+    const subjects = resources.filter(
+      (r) =>
+        r.type === 'google_project_iam_custom_role' ||
+        (r.type === 'google_service_account' && /deployer|planner/.test(tagOf(r.type, r.name))),
+    );
+    expect(
+      subjects.filter((r) => !r.body.includes('var.create_deployer')).map((r) => r.name),
+    ).toEqual([]);
+  });
+
+  const customRoles = resources.filter((r) => r.type === 'google_project_iam_custom_role');
+  const permissionsOf = (r: Resource): string[] =>
+    [...(/permissions = \[([\s\S]*?)\]/.exec(r.body)?.[1] ?? '').matchAll(/"([^"]+)"/g)].map(
+      (m) => m[1] as string,
+    );
+
+  it('has three custom roles', () => {
+    expect(customRoles).toHaveLength(3);
+  });
+
+  it('gives no custom role a permission that sets a policy', () => {
+    expect(customRoles.flatMap(permissionsOf).filter((p) => /\.set\w*Policy$/.test(p))).toEqual([]);
+  });
+
+  it('gives the planner roles read permissions only', () => {
+    const planner = customRoles.filter((r) => tagOf(r.type, r.name).startsWith('planner'));
+    expect(planner).toHaveLength(2);
+    expect(
+      planner.flatMap(permissionsOf).filter((p) => !/\.(get|list|getIamPolicy)$/.test(p)),
+    ).toEqual([]);
+  });
+});
+
+describe('module: every named resource carries name_prefix', () => {
+  const nameAttribute: Record<string, string> = {
+    google_service_account: 'account_id',
+    google_project_iam_custom_role: 'role_id',
+    google_storage_bucket: 'name',
+    google_iam_workload_identity_pool: 'workload_identity_pool_id',
+    google_iam_workload_identity_pool_provider: 'workload_identity_pool_provider_id',
+  };
+  const named = resources
+    .filter((r) => r.type in nameAttribute)
+    .map((r) => {
+      const raw = new RegExp(`^\\s*${nameAttribute[r.type] ?? ''} = (.+)$`, 'm').exec(r.body)?.[1];
+      const viaLocal = /^local\.(\w+)$/.exec(raw ?? '')?.[1];
+      const id = viaLocal === undefined ? (raw ?? '') : (localExpr.get(viaLocal) ?? '');
+      return { resource: `${r.type}.${r.name}`, id };
+    });
+
+  it('finds the resources that carry an id', () => {
+    expect(named.length).toBeGreaterThanOrEqual(11);
+  });
+
+  it('puts name_prefix in every id', () => {
+    expect(named.filter((n) => !n.id.includes('var.name_prefix')).map((n) => n.resource)).toEqual(
+      [],
+    );
+  });
+});
+
+describe('module: buckets, APIs and versions', () => {
+  const buckets = resources.filter((r) => r.type === 'google_storage_bucket');
+
+  it('has the corpus and state buckets', () => {
+    expect(buckets.map((b) => tagOf(b.type, b.name)).sort()).toEqual(['corpus', 'state']);
+  });
+
+  it.each([
+    { setting: 'uniform bucket-level access', re: /uniform_bucket_level_access = true/ },
+    { setting: 'public access prevention', re: /public_access_prevention = "enforced"/ },
+    { setting: 'versioning', re: /versioning \{\n\s+enabled = true/ },
+  ])('sets $setting on every bucket', ({ re }) => {
+    expect(buckets.filter((b) => !re.test(b.body)).map((b) => tagOf(b.type, b.name))).toEqual([]);
+  });
+
+  const bucketTexts = moduleText
+    .split('resource "google_storage_bucket" ')
+    .slice(1)
+    .map((s) => s.split('\n}\n')[0] as string);
+
+  it('finds both bucket blocks', () => {
+    expect(bucketTexts).toHaveLength(2);
+  });
+
+  it('skips bucket access logging on every bucket', () => {
+    expect(bucketTexts.filter((t) => !/#checkov:skip=CKV_GCP_62:/.test(t))).toEqual([]);
+  });
+
+  it('skips OIDC trust (CKV_GCP_125) on the provider', () => {
+    const provider =
+      moduleText.split('resource "google_iam_workload_identity_pool_provider" ')[1] ?? '';
+    expect(provider.split('\n}\n')[0]).toContain('#checkov:skip=CKV_GCP_125:');
+  });
+
+  const skips = [...moduleText.matchAll(/#checkov:skip=(CKV_\w+):(.*)/g)].map((m) => ({
+    id: m[1] as string,
+    reason: (m[2] as string).trim(),
+  }));
+
+  it('has exactly three skips: two buckets and the provider', () => {
+    expect(skips.map((s) => s.id).sort()).toEqual(['CKV_GCP_125', 'CKV_GCP_62', 'CKV_GCP_62']);
+  });
+
+  // What each skip must say it relies on: the design that makes the finding
+  // deliberate, not merely some text.
+  const designs: Record<string, RegExp[]> = {
+    CKV_GCP_62: [/no log bucket/i, /operator's decision/i, /Audit Logs/],
+    CKV_GCP_125: [/owner-wide/i, /repository_owner_id/, /operator's/i],
+  };
+
+  it.each(skips)('skips only a check the module has a stated design for: $id', ({ id }) => {
+    expect(Object.keys(designs)).toContain(id);
+  });
+
+  it.each(skips.flatMap(({ id, reason }) => (designs[id] ?? []).map((re) => ({ id, reason, re }))))(
+    'has the $id skip state the design it relies on: $re',
+    ({ reason, re }) => {
+      expect(reason).toMatch(re);
+    },
+  );
+
+  it('protects the state bucket from destroy', () => {
+    const state = buckets.find((b) => tagOf(b.type, b.name) === 'state');
+    expect(state?.body).toContain('prevent_destroy = true');
+  });
+
+  it('keeps old corpus versions for a configurable number of days', () => {
+    const corpus = buckets.find((b) => tagOf(b.type, b.name) === 'corpus');
+    expect(corpus?.body).toContain('days_since_noncurrent_time = var.noncurrent_retention_days');
+  });
+
+  it('defaults the retention to 30 days', () => {
+    expect(defaultOf('noncurrent_retention_days')).toBe('30');
+  });
+
+  it('fits the longest pool id in the 32 characters GCP allows', () => {
+    const prefix = Number(/\{1,(\d+)\}/.exec(variableBlock('name_prefix'))?.[1]) + 1;
+    const suffix = Number(/\{0,(\d+)\}/.exec(variableBlock('pool_suffix'))?.[1]);
+    expect(prefix + '-github-'.length + suffix).toBeLessThanOrEqual(32);
+  });
+
+  it('never disables an API on destroy', () => {
+    expect(moduleCode).toContain('disable_on_destroy = false');
+  });
+
+  it('enables exactly the five APIs it needs', () => {
+    const services = [...moduleCode.matchAll(/"([a-z]+\.googleapis\.com)"/g)].map((m) => m[1]);
+    expect(services.sort()).toEqual([
+      'cloudresourcemanager.googleapis.com',
+      'iam.googleapis.com',
+      'iamcredentials.googleapis.com',
+      'storage.googleapis.com',
+      'sts.googleapis.com',
+    ]);
+  });
+
+  it('exposes exactly the seven outputs', () => {
+    const outputs = [...moduleCode.matchAll(/^output "(\w+)"/gm)].map((m) => m[1]);
+    expect(outputs.sort()).toEqual([
+      'corpus_bucket',
+      'deployer_sa',
+      'planner_sa',
+      'publisher_sa',
+      'reader_sa',
+      'state_bucket',
+      'wif_provider',
+    ]);
+  });
+
+  it('pins OpenTofu ~> 1.12', () => {
+    expect(moduleText).toContain('required_version = "~> 1.12"');
+  });
+
+  it('pins a specific google provider minor', () => {
+    expect(moduleText).toMatch(/version = "~> \d+\.\d+\.0"/);
+  });
+
+  it.each(['verevoir', 'ai-gency'])('contains no hard-coded %s, comments included', (word) => {
+    expect(moduleText.toLowerCase()).not.toContain(word);
+  });
+});
+
+describe('module: input rules', () => {
+  const rules = [
+    {
+      vars: ['github_owner_id', 'corpus_repo_id', 'governance_repo_id'],
+      ok: ['266172281'],
+      bad: ['', 'verevoir', '12a', '-1', '1 2'],
+    },
+    {
+      vars: ['corpus_repo', 'governance_repo'],
+      ok: ['verevoir/aigency-governance'],
+      bad: ['', 'noslash', 'a/b/c', 'a b/c', '/x'],
+    },
+    {
+      vars: ['name_prefix'],
+      ok: ['review', 'rvw-corp', 'abcdefghij'],
+      bad: ['', 'a', 'Review', '1abc', 'a_b', 'abcdefghijk'],
+    },
+    { vars: ['pool_suffix'], ok: ['', 'r2', 'abc-123'], bad: ['R2', 'a_b', 'abcdefghijklm'] },
+    {
+      vars: ['publish_workflow_path', 'deploy_workflow_path'],
+      ok: ['.github/workflows/infra.yml'],
+      bad: ['', 'a b', 'x?y', 'a;b'],
+    },
+    { vars: ['deploy_environment'], ok: ['infra-apply'], bad: ['', 'a b', 'x;y'] },
+  ];
+  const cases = rules.flatMap((r) =>
+    r.vars.flatMap((v) => [
+      ...r.ok.map((s) => ({ v, s, accepted: true })),
+      ...r.bad.map((s) => ({ v, s, accepted: false })),
+    ]),
+  );
+
+  it.each(cases)('$v accepted=$accepted for "$s"', ({ v, s, accepted }) => {
+    expect(ruleOf(v).test(s)).toBe(accepted);
+  });
+
+  it.each(['publish_workflow_path', 'deploy_workflow_path'])(
+    '%s rejects an absolute path',
+    (name) => {
+      expect(variableBlock(name)).toContain(`!startswith(var.${name}, "/")`);
+    },
+  );
+
+  it('defaults the deploy environment to the one the workflow waits in', () => {
+    expect(defaultOf('deploy_environment')).toBe('infra-apply');
+  });
+
+  it.each(['true) || (true', 'x || y', 'x && y', 'f(x)', 'true // '])(
+    'refuses the widening allowed_owner_condition "%s"',
+    (value) => {
+      expect(ruleOf('allowed_owner_condition').test(value)).toBe(true);
+    },
+  );
+
+  it('accepts one plain comparison as allowed_owner_condition', () => {
+    expect(ruleOf('allowed_owner_condition').test("assertion.repository == 'o/r'")).toBe(false);
+  });
+
+  it('lets a null allowed_owner_condition through', () => {
+    expect(variableBlock('allowed_owner_condition')).toContain(
+      'var.allowed_owner_condition == null ||',
+    );
+  });
+});
+
+// ------------------------------------------------------------ installation
+
+describe('verevoir installation', () => {
+  const call = /module "review_corpus" \{\n([\s\S]*?)\n\}/.exec(installation)?.[1] ?? '';
+  const passed = [...code(call).matchAll(/^\s*(\w+)\s*=/gm)].map((m) => m[1] as string);
+  const required = moduleText
+    .split(/^variable "/m)
+    .slice(1)
+    .filter((b) => !/^ {2}default\b/m.test(b))
+    .map((b) => /^(\w+)"/.exec(b)?.[1] as string);
+
+  it.each(required)('passes the required input %s', (name) => {
+    expect(passed).toContain(name);
+  });
+
+  it('passes no input the module does not declare', () => {
+    const declared = moduleText
+      .split(/^variable "/m)
+      .slice(1)
+      .map((b) => /^(\w+)"/.exec(b)?.[1]);
+    expect(passed.filter((n) => n !== 'source' && !declared.includes(n))).toEqual([]);
+  });
+
+  it.each([
+    'project_id = "ai-gency"',
+    'region = "europe-west2"',
+    'github_owner = "verevoir"',
+    'github_owner_id = "266172281"',
+    'corpus_repo = "verevoir/aigency-guardrails"',
+    'corpus_repo_id = "1238645336"',
+    'governance_repo = "verevoir/aigency-governance"',
+    'governance_repo_id = "1334340199"',
+  ])('sets %s', (line) => {
+    expect(installation).toContain(line);
+  });
+
+  it('declares a partial gcs backend', () => {
+    expect(code(installation)).toMatch(/backend "gcs" \{\s*\}/);
+  });
+
+  it('bakes no bucket or prefix into the code', () => {
+    expect(code(installation)).not.toMatch(/\b(bucket|prefix)\s*=/);
+  });
+
+  it.each(['-migrate-state', 'BOOTSTRAP'])(
+    'no longer carries the local-bootstrap marker %s',
+    (marker) => {
+      expect(installation).not.toContain(marker);
+    },
+  );
+
+  it.each(['-backend-config', 'TF_STATE_BUCKET', 'TF_STATE_PREFIX'])(
+    'explains in a comment how %s reaches init',
+    (token) => {
+      expect(installation).toContain(token);
+    },
+  );
+});
+
+// ----------------------------------------------------------------- INSTALL
+
+describe('INSTALL.md matches the code', () => {
+  it.each([
+    'TF_STATE_BUCKET',
+    'TF_STATE_PREFIX',
+    'INFRA_PLANNER_SA',
+    'infra-apply',
+    '-backend-config',
+    'tofu import',
+    'repo_id_workflow_env',
+    'deploy_environment',
+    'noncurrent_retention_days',
+    'INSTALLATION',
+  ])('documents %s', (token) => {
+    expect(install).toContain(token);
+  });
+
+  it.each(['--versioning', '--uniform-bucket-level-access', '--public-access-prevention'])(
+    'documents creating the state bucket with %s',
+    (flag) => {
+      expect(install).toContain(flag);
+    },
+  );
+
+  it('enables the Storage API before creating the state bucket', () => {
+    const enable = install.indexOf('gcloud services enable storage.googleapis.com');
+    expect(enable).toBeGreaterThan(-1);
+    expect(enable).toBeLessThan(install.indexOf('gcloud storage buckets create'));
+  });
+
+  it('lists each repository variable once in the variables table', () => {
+    const rows = [...install.matchAll(/^\| `([A-Z_]+)`\s+\|/gm)].map((m) => m[1]);
+    expect(rows.filter((v, i) => rows.indexOf(v) !== i)).toEqual([]);
+  });
+});
