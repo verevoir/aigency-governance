@@ -10,7 +10,12 @@
 # by commit SHA, so that pin pins the reviewer version for them too. The
 # existing callers still use @main until their pin PRs land. The corpus floats
 # with `guardrails-ref` (default main), and its commit is recorded in the job
-# summary so a verdict can be traced to the bar it was judged by.
+# summary so a verdict can be traced to the bar it was judged by. The private
+# corpus is read with a short-lived token minted per run from a GitHub App
+# (read-only on aigency-guardrails alone) and revoked when the job ends. There
+# is no long-lived personal access token, but there is one long-lived App
+# private key, scoped by the App's installation to reading one repository.
+# See the README for how to rotate it.
 #
 # The reviewer is installed from npm into RUNNER_TEMP, outside the repository
 # under review, with --ignore-scripts, and run from there. The pull request's
@@ -29,6 +34,14 @@ on:
         type: string
         required: false
         default: main
+      guardrails-app-client-id:
+        description: >-
+          Client ID of the GitHub App that reads verevoir/aigency-guardrails.
+          Not sensitive. The App is installed only on that repository with
+          Contents read-only. Callers should leave the default alone.
+        type: string
+        required: false
+        default: 'Iv23lid18mHn32QW1lbL'
       guardrails-ref:
         description: >-
           Which revision of verevoir/aigency-guardrails supplies the practices
@@ -48,12 +61,20 @@ on:
       anthropic-api-key:
         description: The key the panel calls with. One model call per lens.
         required: true
+      guardrails-app-private-key:
+        description: >-
+          The private key of the GitHub App that reads the private
+          verevoir/aigency-guardrails practices corpus. Map it from the
+          caller's secret GUARDRAILS_APP_PRIVATE_KEY.
+          Declared optional so that a missing key fails fast, by name, in the
+          first step: a missing required secret is a startup failure, and the
+          check then silently never appears. In effect it is required.
+        required: false
       governance-token:
         description: >-
-          Reads the private verevoir/aigency-guardrails practices corpus. It
-          must have contents:read on aigency-guardrails; the default
-          GITHUB_TOKEN cannot do this. Required, as it always has been.
-        required: true
+          No longer used. Accepted only so that a caller that still passes it
+          gets a named failure rather than a startup failure.
+        required: false
 
 env:
   # The one place the reviewer version lives.
@@ -75,7 +96,7 @@ jobs:
       - name: Confirm the key is available before doing anything expensive
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
-          GOVERNANCE_TOKEN: ${{ secrets.governance-token }}
+          GUARDRAILS_APP_PRIVATE_KEY: ${{ secrets.guardrails-app-private-key }}
         run: |
           if [ -z "${ANTHROPIC_API_KEY}" ]; then
             echo "::error title=Review::ANTHROPIC_API_KEY is not available to this workflow."
@@ -83,8 +104,8 @@ jobs:
             exit 1
           fi
           # Never echo the value, its length or any prefix of it.
-          if [ -z "${GOVERNANCE_TOKEN}" ]; then
-            echo "::error title=Review::governance-token is empty. Add GOVERNANCE_TOKEN as a repository secret with contents:read on verevoir/aigency-guardrails. Organization secrets are not passed to private repositories on the GitHub Free plan."
+          if [ -z "${GUARDRAILS_APP_PRIVATE_KEY}" ]; then
+            echo "::error title=Review::guardrails-app-private-key is empty. Map it in the caller as guardrails-app-private-key: secrets.GUARDRAILS_APP_PRIVATE_KEY (inside a dollar-sign expression) and add GUARDRAILS_APP_PRIVATE_KEY as a repository secret (organization secrets are not passed to private repositories on the GitHub Free plan). governance-token is no longer used."
             exit 1
           fi
 
@@ -110,18 +131,41 @@ jobs:
           # yields exactly the change.
           git diff --merge-base "origin/${BASE_REF}" HEAD > "${RUNNER_TEMP}/review.diff"
 
+      # A read-only token for the private practices corpus, from the GitHub App
+      # named by guardrails-app-client-id. skip-token-revoke is deliberately not
+      # set, so the token is revoked when the job ends.
+      - name: Mint a read-only token for the practices corpus
+        id: corpus-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.guardrails-app-client-id }}
+          private-key: ${{ secrets.guardrails-app-private-key }}
+          owner: verevoir
+          repositories: aigency-guardrails
+          permission-contents: read
+
       # The practices the lenses are derived from. Checked out inside the
       # workspace (checkout requires that) but untracked, so it is not in the
-      # diff, and it is not a path any PR can supply. Token: governance-token,
-      # which needs contents:read on aigency-guardrails (private).
+      # diff, and it is not a path any PR can supply. The token is the App
+      # token minted in the previous step, and persist-credentials: false keeps
+      # it out of .aigency-guardrails/.git/config. No other step receives it.
       - name: Fetch the practices corpus
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           repository: verevoir/aigency-guardrails
           ref: ${{ inputs.guardrails-ref }}
-          token: ${{ secrets.governance-token }}
+          token: ${{ steps.corpus-token.outputs.token }}
           path: .aigency-guardrails
           persist-credentials: false
+
+      # Runs only when the mint failed. The action's own error (a malformed key,
+      # or the App not installed on aigency-guardrails) is in the log above; this
+      # adds one in this workflow's vocabulary. It reads no secret and no token.
+      - name: Name a failed token mint
+        if: failure() && steps.corpus-token.outcome == 'failure'
+        run: |
+          echo "::error title=Review::Could not mint the read-only corpus token. Check that guardrails-app-private-key holds the App's complete private key (the PEM, header and footer lines included), and that the App is installed on verevoir/aigency-guardrails with Contents read-only. The action's own error is in the Mint step above."
+          exit 1
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:

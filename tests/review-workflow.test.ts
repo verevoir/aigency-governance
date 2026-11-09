@@ -221,33 +221,116 @@ describe('review.yml shape', () => {
   it('stays callable by existing callers', () => {
     expect(text).toMatch(/governance-ref:/);
     expect(text).toMatch(/\bmodel:/);
-    // Each secret's own block, so one secret's `required: true` can't satisfy another.
-    const secretBlock = (name: string): string =>
-      new RegExp(`^ {6}${name}:\\n((?: {8}.*\\n)+)`, 'm').exec(text)?.[1] ?? '';
-    expect(secretBlock('anthropic-api-key')).toMatch(/^ {8}required: true$/m);
-    expect(secretBlock('governance-token')).toMatch(/^ {8}required: true$/m);
-    expect(text).toMatch(/governance-token:/);
     expect(text).toMatch(/guardrails-ref:/);
-    expect(text).not.toContain('corpus-token');
   });
 
-  it('fails fast on an empty governance-token, through env:, naming "repository secret"', () => {
+  // Each secret's own block, so one secret's `required` can't satisfy another.
+  const secretBlock = (name: string): string =>
+    new RegExp(`^ {6}${name}:\\n((?: {8}.*\\n)+)`, 'm').exec(text)?.[1] ?? '';
+
+  it('keeps anthropic-api-key required', () => {
+    expect(secretBlock('anthropic-api-key')).toMatch(/^ {8}required: true$/m);
+  });
+
+  it('declares guardrails-app-private-key optional, so a missing one fails fast by name', () => {
+    expect(secretBlock('guardrails-app-private-key')).toMatch(/^ {8}required: false$/m);
+  });
+
+  it('still accepts governance-token, optional and unused', () => {
+    expect(secretBlock('governance-token')).toMatch(/^ {8}required: false$/m);
+    expect(secretBlock('governance-token')).toContain('No longer used');
+  });
+
+  it('defaults guardrails-app-client-id to the App Client ID', () => {
+    const block = /^ {6}guardrails-app-client-id:\n((?: {8}.*\n)+)/m.exec(text)?.[1] ?? '';
+    expect(block).toMatch(/^ {8}type: string$/m);
+    expect(block).toMatch(/^ {8}default: 'Iv23lid18mHn32QW1lbL'$/m);
+  });
+
+  it('references no secrets.governance-token anywhere', () => {
+    expect(text).not.toMatch(/secrets\.governance-token/);
+    expect(text).not.toContain('GOVERNANCE_TOKEN');
+  });
+
+  it('fails fast on an empty guardrails-app-private-key, through env:, naming the secret to map', () => {
     const steps = text.split(/\n {6}- /).slice(1);
     const step = steps.find((s) => s.includes('Confirm the key is available'));
     expect(step).toBeDefined();
-    expect(step).toMatch(/\n {10}GOVERNANCE_TOKEN: \$\{\{ secrets\.governance-token \}\}\n/);
-    expect(step).toContain('[ -z "${GOVERNANCE_TOKEN}" ]');
-    expect(step).toContain('governance-token is empty');
-    expect(step).toContain('repository secret');
+    expect(step).toMatch(
+      /\n {10}GUARDRAILS_APP_PRIVATE_KEY: \$\{\{ secrets\.guardrails-app-private-key \}\}\n/,
+    );
+    expect(step).toContain('[ -z "${GUARDRAILS_APP_PRIVATE_KEY}" ]');
+    expect(step).toContain('guardrails-app-private-key is empty');
+    expect(step).toContain('GUARDRAILS_APP_PRIVATE_KEY');
+    expect(step).toContain('governance-token is no longer used');
     // The value is never printed.
-    expect(step).not.toMatch(/echo[^\n]*\$\{?GOVERNANCE_TOKEN[^\n]*\n/);
-    expect(step).not.toContain('${#GOVERNANCE_TOKEN');
+    expect(step).not.toMatch(/echo[^\n]*\$\{?GUARDRAILS_APP_PRIVATE_KEY[^\n]*\n/);
+    expect(step).not.toContain('${#GUARDRAILS_APP_PRIVATE_KEY');
   });
 
-  it('reads the guardrails corpus with governance-token', () => {
+  it('pins create-github-app-token by a full SHA with a version comment', () => {
+    expect(text).toMatch(/uses: actions\/create-github-app-token@[0-9a-f]{40} # v\d+\.\d+\.\d+\n/);
+  });
+
+  it('mints the corpus token with exactly the expected inputs', () => {
+    const steps = text.split(/\n {6}- /).slice(1);
+    const step = steps.find((s) => s.includes('create-github-app-token')) as string;
+    expect(step).toBeDefined();
+    expect(step).toMatch(/\n {8}id: corpus-token\n/);
+    const withBlock = /\n {8}with:\n((?: {10}.+\n?)+)/.exec(step)?.[1] ?? '';
+    const entries = withBlock
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => l.trim());
+    expect(entries.sort()).toEqual(
+      [
+        'client-id: ${{ inputs.guardrails-app-client-id }}',
+        'owner: verevoir',
+        'permission-contents: read',
+        'private-key: ${{ secrets.guardrails-app-private-key }}',
+        'repositories: aigency-guardrails',
+      ].sort(),
+    );
+    // Revoked when the job ends: never opted out.
+    expect(step).not.toContain('skip-token-revoke');
+  });
+
+  it('mints the token immediately before the corpus checkout', () => {
+    const steps = text.split(/\n {6}- /).slice(1);
+    const mint = steps.findIndex((s) => s.includes('create-github-app-token'));
+    const fetch = steps.findIndex((s) => s.includes('repository: verevoir/aigency-guardrails'));
+    expect(mint).toBeGreaterThan(-1);
+    expect(fetch).toBe(mint + 1);
+  });
+
+  it('reads the guardrails corpus with the App token, without persisting it', () => {
     const step = /repository: verevoir\/aigency-guardrails\n(?: {10}.+\n)+/.exec(text);
     expect(step).not.toBeNull();
-    expect(step?.[0]).toContain('token: ${{ secrets.governance-token }}');
+    expect(step?.[0]).toContain('token: ${{ steps.corpus-token.outputs.token }}');
+    expect(step?.[0]).toMatch(/^ {10}persist-credentials: false$/m);
+  });
+
+  it('gives the App token to no other step', () => {
+    expect(text.match(/steps\.corpus-token\.outputs/g)).toHaveLength(1);
+    // The only other reference reads the mint step's outcome, never its token.
+    expect(text.match(/steps\.corpus-token(?!\.outputs\.token \}\})/g)).toEqual([
+      'steps.corpus-token',
+    ]);
+  });
+
+  it('hands the private key to the fail-fast step and the mint step only', () => {
+    expect(text.match(/secrets\.guardrails-app-private-key/g)).toHaveLength(2);
+  });
+
+  it('names a failed mint in the workflow vocabulary, reading no secret or token', () => {
+    const steps = text.split(/\n {6}- /).slice(1);
+    const step = steps.find((s) => s.includes('Name a failed token mint')) as string;
+    expect(step).toBeDefined();
+    expect(step).toContain("if: failure() && steps.corpus-token.outcome == 'failure'");
+    expect(step).toContain('guardrails-app-private-key');
+    expect(step).toContain('verevoir/aigency-guardrails');
+    expect(step).not.toContain('secrets.');
+    expect(step).not.toContain('outputs.token');
   });
 });
 
