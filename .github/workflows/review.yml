@@ -83,9 +83,9 @@ jobs:
       contents: read
       checks: read
     steps:
-      # First of all: this reviews a pull request against its base, and only
-      # these two events carry one. Anything else would check out a branch tip
-      # and review an empty diff, so it is refused by name instead.
+      # Only these two events carry a pull request. Anything else has no pull
+      # request to review: no checkout of it runs and base_ref is blank. So
+      # it is refused here, by name.
       - name: Refuse an event this workflow cannot review
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -251,9 +251,16 @@ jobs:
             echo '```'
             echo ""
           } >> "${GITHUB_STEP_SUMMARY}"
-          # Also in the job log, since the summary is not part of it.
+          # Also in the job log. Check names come from the pull request's own
+          # jobs, so workflow commands are suspended while they print.
+          if ! stop_token="$(openssl rand -hex 32)" || [ -z "${stop_token}" ]; then
+            echo "::error title=Review::Could not generate a stop-commands token, so the checks were not printed and the reviewer was not run."
+            exit 1
+          fi
           echo "::group::Checks given to the reviewer"
+          echo "::stop-commands::${stop_token}"
           cat "${RUNNER_TEMP}/checks.txt"
+          echo "::${stop_token}::"
           echo "::endgroup::"
 
       # continue-on-error, with the verdict taken again below: the report is
@@ -283,8 +290,7 @@ jobs:
             printf '%s\n' "${PR_BODY}" > "${RUNNER_TEMP}/description.md"
             args+=(--description-file "${RUNNER_TEMP}/description.md")
           fi
-          stop_token="$(openssl rand -hex 32)"
-          if [ -z "${stop_token}" ]; then
+          if ! stop_token="$(openssl rand -hex 32)" || [ -z "${stop_token}" ]; then
             echo "::error title=Review::Could not generate a stop-commands token, so the reviewer was not run."
             exit 1
           fi

@@ -559,36 +559,180 @@ describe('under pull_request_target, an outside author is reviewed only when a m
   });
 });
 
-describe('the Review step suspends workflow commands around the reviewer', () => {
-  // A stand-in reviewer in a throwaway RUNNER_TEMP that prints a forged
-  // annotation, as a model echoing pull request text could.
-  function fakeRunnerTemp(exitStatus: number): string {
-    const temp = mkdtempSync(join(tmpdir(), 'review-stop-commands-'));
-    const bin = join(temp, 'aigency-review', 'node_modules', '.bin');
-    mkdirSync(bin, { recursive: true });
-    const reviewer = join(bin, 'aigency-review');
-    writeFileSync(
-      reviewer,
-      `#!/bin/sh\ncat >/dev/null\necho '## Review: Rejected'\necho '::error title=Review::forged by the model'\nexit ${exitStatus}\n`,
-    );
-    chmodSync(reviewer, 0o755);
-    writeFileSync(join(temp, 'review.diff'), 'diff --git a/x b/x\n');
-    writeFileSync(join(temp, 'checks.txt'), '');
-    return temp;
+function writeExecutable(path: string, script: string): void {
+  writeFileSync(path, script);
+  chmodSync(path, 0o755);
+}
+
+// Stand-in openssl for the token-minting failure modes.
+const BROKEN_OPENSSL = {
+  'exits non-zero': '#!/bin/sh\nexit 1\n',
+  'prints nothing': '#!/bin/sh\nexit 0\n',
+} as const;
+
+/**
+ * A throwaway RUNNER_TEMP holding a stand-in reviewer and a stand-in gh, each
+ * printing forged workflow commands, as a model echoing pull request text, or
+ * a fork's job named to look like a command, could. `openssl` replaces the
+ * real one when given. Returns the env to run a step with.
+ */
+function stageRunnerTemp(options: { reviewerExit?: number; openssl?: string } = {}): {
+  temp: string;
+  env: Record<string, string>;
+} {
+  const temp = mkdtempSync(join(tmpdir(), 'review-stop-commands-'));
+  const reviewerBin = join(temp, 'aigency-review', 'node_modules', '.bin');
+  mkdirSync(reviewerBin, { recursive: true });
+  writeExecutable(
+    join(reviewerBin, 'aigency-review'),
+    `#!/bin/sh\ncat >/dev/null\necho '## Review: Rejected'\necho '::error title=Review::forged by the model'\nexit ${options.reviewerExit ?? 0}\n`,
+  );
+  const tools = join(temp, 'tools');
+  mkdirSync(tools);
+  writeExecutable(
+    join(tools, 'gh'),
+    "#!/bin/sh\necho '::add-mask::forged'\necho '::error title=Review::forged check name: completed/success'\n",
+  );
+  if (options.openssl !== undefined) writeExecutable(join(tools, 'openssl'), options.openssl);
+  writeFileSync(join(temp, 'review.diff'), 'diff --git a/x b/x\n');
+  writeFileSync(join(temp, 'checks.txt'), '');
+  return {
+    temp,
+    env: {
+      PATH: `${tools}:${process.env.PATH ?? ''}`,
+      RUNNER_TEMP: temp,
+      GITHUB_WORKSPACE: join(temp, 'workspace'),
+      GITHUB_STEP_SUMMARY: join(temp, 'summary.md'),
+      GH_TOKEN: 'not-a-token',
+      REPO: 'owner/repo',
+      HEAD_SHA: '0000000000000000000000000000000000000000',
+      PR_TITLE: 'a title',
+      PR_BODY: '',
+    },
+  };
+}
+
+function runStaged(name: string, options: { reviewerExit?: number; openssl?: string } = {}) {
+  const { temp, env } = stageRunnerTemp(options);
+  try {
+    return runStep(name, env);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+}
+
+describe('nothing the pull request or the model controls reaches the log as a workflow command', () => {
+  // Text a pull request or the model controls: the check names, the report,
+  // the title, the description and the diff, and the reviewer that prints the
+  // report.
+  const DERIVED =
+    /checks\.txt|review\.md|description\.md|review\.diff|PR_TITLE|PR_BODY|ADDED_LABEL/;
+  const PRINTS = /\b(cat|echo|printf|tee|head|tail|sed|awk)\b|\bgrep\b(?![^\n]*\s-q\b)/;
+  // `> "file"` or `>> "file"`. `>&2` is not a file: stderr reaches the log too.
+  const TO_FILE = /(^|[^&\d])>>?\s*"/;
+
+  interface Site {
+    readonly step: string;
+    readonly line: string;
+    readonly bracketed: boolean;
   }
 
-  function runReview(exitStatus: number) {
-    const temp = fakeRunnerTemp(exitStatus);
-    try {
-      return runStep('Review', {
-        RUNNER_TEMP: temp,
-        GITHUB_WORKSPACE: join(temp, 'workspace'),
-        PR_TITLE: 'a title',
-        PR_BODY: '',
-      });
-    } finally {
-      rmSync(temp, { recursive: true, force: true });
+  function outputSites(): { sites: Site[]; unclosed: string[] } {
+    const sites: Site[] = [];
+    const unclosed: string[] = [];
+    for (const step of allSteps) {
+      const name = /^name: (.*)$/m.exec(step)?.[1] ?? step.split('\n')[0] ?? '';
+      for (const body of runBodies(step)) {
+        const lines = body.split('\n');
+        // Lines inside a { ... } group redirected to a file print nothing to the log.
+        const toFile = new Set<number>();
+        const open: number[] = [];
+        lines.forEach((l, i) => {
+          const t = l.trim();
+          if (t === '{') open.push(i);
+          else if (t.startsWith('}')) {
+            const from = open.pop() ?? i;
+            if (TO_FILE.test(t)) for (let k = from; k <= i; k++) toFile.add(k);
+          }
+        });
+        let token: string | undefined;
+        lines.forEach((l, i) => {
+          const t = l.trim();
+          if (t.startsWith('#')) return;
+          const start = /^echo "::stop-commands::\$\{(\w+)\}"$/.exec(t);
+          if (start !== null) {
+            token = start[1];
+            return;
+          }
+          if (token !== undefined && t === `echo "::\${${token}}::"`) {
+            token = undefined;
+            return;
+          }
+          const prints = DERIVED.test(t) && PRINTS.test(t);
+          const runsReviewer = t.includes('/.bin/aigency-review');
+          if (!(prints || runsReviewer) || TO_FILE.test(t) || toFile.has(i)) return;
+          sites.push({ step: name, line: t, bracketed: token !== undefined });
+        });
+        if (token !== undefined) unclosed.push(name);
+      }
     }
+    return { sites, unclosed };
+  }
+
+  it('finds the sites that print check names and the report to the log', () => {
+    const { sites } = outputSites();
+    const lines = sites.map((s) => s.line);
+    expect(lines).toContain('cat "${RUNNER_TEMP}/checks.txt"');
+    expect(lines.some((l) => l.includes('/.bin/aigency-review'))).toBe(true);
+    expect(lines.some((l) => l.includes('tee "${RUNNER_TEMP}/review.md"'))).toBe(true);
+  });
+
+  it('prints every one of them inside a stop-commands bracket that is closed again', () => {
+    const { sites, unclosed } = outputSites();
+    expect(sites.filter((s) => !s.bracketed)).toEqual([]);
+    expect(unclosed).toEqual([]);
+  });
+
+  it('prints the check names to the log inside the group, with commands suspended', () => {
+    const result = runStaged('Collect the other checks');
+    expect(result.status, result.stderr).toBe(0);
+    const lines = result.stdout.trimEnd().split('\n');
+    expect(lines[0]).toBe('::group::Checks given to the reviewer');
+    const start = /^::stop-commands::([0-9a-f]{64})$/.exec(lines[1] as string);
+    expect(start, result.stdout).not.toBeNull();
+    expect(lines[lines.length - 2]).toBe(`::${start?.[1]}::`);
+    expect(lines[lines.length - 1]).toBe('::endgroup::');
+    for (const forged of [
+      '::add-mask::forged',
+      '::error title=Review::forged check name: completed/success',
+    ]) {
+      const at = lines.indexOf(forged);
+      expect(at, forged).toBeGreaterThan(1);
+      expect(at, forged).toBeLessThan(lines.length - 2);
+    }
+  });
+
+  it.each(
+    ['Collect the other checks', 'Review'].flatMap((step) =>
+      (Object.keys(BROKEN_OPENSSL) as (keyof typeof BROKEN_OPENSSL)[]).map(
+        (mode) => [step, mode] as const,
+      ),
+    ),
+  )('%s fails by name, printing nothing it was given, when openssl %s', (step, mode) => {
+    const result = runStaged(step, { openssl: BROKEN_OPENSSL[mode] });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(
+      '::error title=Review::Could not generate a stop-commands token',
+    );
+    expect(result.stdout).not.toContain('::stop-commands::');
+    expect(result.stdout).not.toContain('forged');
+    expect(result.stdout).not.toContain('## Review');
+  });
+});
+
+describe('the Review step suspends workflow commands around the reviewer', () => {
+  function runReview(exitStatus: number) {
+    return runStaged('Review', { reviewerExit: exitStatus });
   }
 
   it.each([0, 1])(

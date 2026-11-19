@@ -166,12 +166,16 @@ gap is the failure that matters.
 
 The CLI appends its report to the job summary itself, and the workflow does not
 append it again. The **Review** step also prints the report to the job log,
-bracketed by `::stop-commands::<token>` and `::<token>::`. The token is random
-and made in that step (`openssl rand -hex 32`; `openssl` is already on the
-runner), so the reviewer cannot know
-it, and nothing it prints between them (including text the model quotes from
-the pull request, such as `::error::` or `::add-mask::`) is read as a workflow
-command. Commands resume after the reviewer exits, whatever its exit status. When the CLI exits 1, the **Take the verdict** step adds an
+bracketed by `::stop-commands::<token>` and `::<token>::`, and step **Collect
+the other checks** prints the names of the pull request's checks the same way.
+A fork's own jobs choose those names. Each token is random and made in its
+step (`openssl rand -hex 32`; `openssl` is already on the runner), so neither
+the reviewer nor the pull request can know it. Nothing printed between them
+(such as `::error::` or `::add-mask::` text the model quotes from the pull
+request, or a check named like one) is read as a workflow command. Commands
+resume after the reviewer exits, whatever its exit status. If no token can be
+made, the step fails by name and prints nothing it was given. When the CLI
+exits 1, the **Take the verdict** step adds an
 annotation to the Checks tab: one saying the review did not approve if the report
 heading is `Rejected`; an empty, missing, `Could not run` or unrecognised report
 is reported as could-not-run. A green
@@ -288,14 +292,18 @@ names the pull request's merge ref explicitly.
   a push; a `pull_request` run waits for it and a `pull_request_target` run
   does not, so just after a push the ref can still hold the previous head's
   merge. Re-run the check once the pull request shows as mergeable. A pull
-  request that conflicts with its base fails earlier, at step **Check out the
-  pull request (pull_request_target)**, with checkout's own error, because
-  GitHub builds no merge ref for it.
+  request that conflicts with its base is expected to fail earlier, at step
+  **Check out the pull request (pull_request_target)**, with checkout's own
+  error, because GitHub builds no merge ref for it.
 - **Other events are refused.** Step **Refuse an event this workflow cannot
   review** fails by name on anything but `pull_request` and
   `pull_request_target`.
-- **Nothing the model prints is read as a workflow command.** Step
-  **Review** suspends workflow commands around the reviewer; see
+- **Nothing the pull request or the model controls is read as a workflow
+  command.** The names of the pull request's checks are chosen by whoever
+  wrote its jobs, a fork included, and the reviewer's report quotes the pull
+  request. Step **Collect the other checks** prints the check names, and
+  step **Review** the report, between `::stop-commands::<token>` and
+  `::<token>::`, each with a fresh token; see
   [What comes back](#what-comes-back).
 
 ### Who it runs for
@@ -317,9 +325,15 @@ blank `outside-author-label` means no label admits anyone.
 The label admits one event, not the pull request. A later push by the same
 author is a `synchronize` event and fails the gate again, even with the label
 still on the pull request, so a maintainer removes and re-adds it to review
-the new head, after reading what changed. Spending happens only when a
-maintainer acts. Under `pull_request` this step does not run: there GitHub
-does not pass the secrets to a fork's pull request at all.
+the new head, after reading what changed. The head reviewed is the one at
+the moment the label is added: the `labeled` event carries the pull
+request's head at that moment, and step **Confirm the merge ref is built on
+this event's head** fails if the merge ref is built on any other head. So a
+push landing between the maintainer reading the head and adding the label is
+reviewed without having been read. A push after the label is added is not
+reviewed under that label. Spending happens only when a maintainer acts.
+Under `pull_request` this step does not run: there GitHub does not pass the
+secrets to a fork's pull request at all.
 
 What the associations mean is GitHub's, not this workflow's. GitHub defines
 `MEMBER` as "Author is a member of the organization that owns the
@@ -343,10 +357,11 @@ the secrets.
 The pull request's content (the diff, its title and description, the files
 under `--context-root`, the names of its checks) reaches the model as data.
 A pull request written to manipulate the model (prompt injection) could sway
-the verdict. No step executes that content, so it cannot run code. Text the
-model echoes into the job log is not read as a workflow command, so it cannot
-forge an annotation or mask a value; step **Review** brackets the reviewer's
-output with `::stop-commands::`. The verdict is input to a human decision,
+the verdict. No step executes that content, so it cannot run code. Neither the
+check names nor what the model echoes is read as a workflow command when it
+reaches the job log, so it cannot forge an annotation or mask a value: steps
+**Collect the other checks** and **Review** print them inside a
+`::stop-commands::` bracket. The verdict is input to a human decision,
 not a merge.
 
 **Spending the key.** Under `pull_request_target`, GitHub's approval gate for
@@ -360,7 +375,15 @@ a fork's pull request, as often as they like, with a diff and description of
 any size, and spend that key. The mitigation is step **Admit the author before
 spending anything** (see [Who it runs for](#who-it-runs-for)): an outside
 author's pull request is reviewed only on the event of a maintainer adding
-the label, once per push. What is left is spend a maintainer chose, at the size
+the label, once per push.
+
+**Every label spends on a trusted author's pull request.** Callers list
+`labeled` in their `types` so the opt-in label can start a run. The gate admits
+`OWNER`, `MEMBER` and `COLLABORATOR` authors on any action, so every label
+added to their pull request, whatever its name, starts a full review and
+spends the key. That spend is not gated.
+
+What is left is spend a maintainer chose, at the size
 of the diff they admitted, and the spend of trusted authors. A spend-capped
 key bounds both.
 
@@ -375,7 +398,7 @@ concurrency.
 ### Not yet confirmed by a real run
 
 The workflow's tests are local: text-level checks, plus the gate, the
-merge-ref check and the Review step's bracket run under bash. No real
+merge-ref check and the two stop-commands brackets run under bash. No real
 `pull_request_target` run has been observed yet. In particular, it is not yet
 confirmed that:
 
@@ -385,8 +408,11 @@ confirmed that:
 - the label flow behaves as described on GitHub: a `labeled` event carrying
   the label's name, an outside author's push failing the gate with the label
   still on, and removing and re-adding it starting a fresh run;
-- the runner honours `::stop-commands::` for the reviewer's output as
-  documented.
+- a pull request that conflicts with its base fails at step **Check out the
+  pull request (pull_request_target)**, because GitHub builds no merge ref
+  for it;
+- the runner honours `::stop-commands::` for the check names and the
+  reviewer's output as documented.
 
 From 2 December 2026, GitHub plans to block `pull_request_target` workflows
 in **public** repositories that have no applicable Actions event policy, so a
