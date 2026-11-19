@@ -62,10 +62,10 @@ event it got.
 | Kind   | Name                   | Required | Meaning                                                                                                                                                                                                                                |
 | ------ | ---------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | secret | `anthropic-api-key`    | **yes**  | The key the panel calls a model with, once per lens.                                                                                                                                                                                   |
-| secret | `governance-token`     | **yes**  | Reads the private `verevoir/aigency-guardrails` corpus. Must have `contents: read` on it. It no longer reads this repository.                                                                                                          |
+| secret | `governance-token`     | **yes**  | Reads the private `verevoir/aigency-guardrails` corpus. Must have `contents: read` on it.                                                                                                                                              |
 | input  | `guardrails-ref`       | no       | Revision of `aigency-guardrails` the lenses are derived from. Default `main`.                                                                                                                                                          |
 | input  | `model`                | no       | Overrides the pinned judge. Blank means the reviewer's own default.                                                                                                                                                                    |
-| input  | `governance-ref`       | no       | **Accepted but unused.** Kept so callers that still pass it keep working; it no longer selects anything.                                                                                                                               |
+| input  | `governance-ref`       | no       | **Accepted but unused.** Callers that pass it keep working; it selects nothing.                                                                                                                                                        |
 | input  | `outside-author-label` | no       | `pull_request_target` only. The label a maintainer adds to run the review for an author who is not `OWNER`, `MEMBER` or `COLLABORATOR`. Default `review:run`; blank admits no outside author. See [Who it runs for](#who-it-runs-for). |
 
 **Every caller's job must grant `contents: read` and `checks: read`**, as the
@@ -154,8 +154,8 @@ The CLI reports one of four outcomes, and its exit code decides the check:
 | rejected         | `## Review: Rejected`         | 1    | At least one lens raised a blocking finding. The report says what.                                                                                                                                                                          |
 | could not run    | `## Review: Could not run`    | 1    | The review did not happen: bad arguments, an unreadable corpus, no `lens:` tags, an empty diff, a missing key, and so on. Red **on purpose**: a green badge over a review that never ran is worse than a red one over a review that failed. |
 
-So the check is green for approved and nothing in scope (which now exits 0, not
-1), and red for everything else. A lens that did not run is named in the report before any findings, and
+So the check is green for approved and nothing in scope, and red for everything
+else. A lens that did not run is named in the report before any findings, and
 it keeps the panel from approving: addressing the findings and not noticing the
 gap is the failure that matters.
 
@@ -251,6 +251,30 @@ names the pull request's merge ref explicitly.
   `tests/review-workflow.test.ts` ("executes nothing from the checkout",
   "sets persist-credentials: false on every checkout") pins these.
 
+- **The reviewer reads only inside the checkout, and only regular files.**
+  The checkout reaches the reviewer as `--context-root`, and the pull request
+  chooses the paths read from it: the diff names the changed files, and its
+  added lines can cite files and ADRs. The reviewer never follows a symbolic
+  link in any component of a path, refuses any path that resolves outside the
+  context root, and reads regular files only. So a pull request cannot point
+  it at `/proc/self/environ`, or at anything else outside the checkout, by
+  naming the path or by committing a symlink to it. These rules are in
+  `@verevoir/review` 0.3.5, not in `review.yml`:
+  - `dist/context-files.js`: `unsafePathReason` refuses a path that is
+    absolute, has a `..` segment or contains a NUL, without touching it;
+    `hasSymlinkComponent` lstats each component and refuses the path if any
+    is a symlink, even one pointing inside the root; `buildFileContext` then
+    refuses a real path outside the root's real path, and reads only a
+    regular file of at most 16 KiB.
+  - `dist/references.js` (`buildReferences`) imports the same
+    `unsafePathReason` and `hasSymlinkComponent` and applies the same root
+    check. For a cited path it only stats the file; for an ADR it reads the
+    first heading. Its directory listings do not descend into a symlinked
+    directory.
+
+  A change to `REVIEWER_PACKAGE` must keep these rules. Check them in the new
+  version before moving the pin.
+
 - **It reviews the commit the event is about.** Step **Confirm the merge ref
   is built on this event's head** fails if the merge ref's second parent is
   not the event's head commit. GitHub rebuilds that ref asynchronously, so
@@ -286,10 +310,13 @@ still on the pull request, so a maintainer removes and re-adds it to review
 the new head, after reading what changed. Spending happens only when a
 maintainer acts. Under `pull_request` this step does not run.
 
-What the associations mean is GitHub's, not this workflow's: `MEMBER` is any
-member of the organization that owns the repository, whatever their access to
-it, and `COLLABORATOR` is anyone invited to the repository, including with
-read-only access. Anyone who can add labels (triage access and above) can
+What the associations mean is GitHub's, not this workflow's. GitHub defines
+`MEMBER` as "Author is a member of the organization that owns the
+repository" and `COLLABORATOR` as "Author has been invited to collaborate on
+the repository". Neither definition names a permission level. It follows
+that an organization member with no access to the repository counts as
+`MEMBER`, and that a collaborator with the Read role counts as
+`COLLABORATOR`. Anyone who can add labels (triage access and above) can
 admit a run.
 
 ### What it does not protect
@@ -313,7 +340,11 @@ not a merge.
 
 **Spending the key.** Under `pull_request_target`, GitHub's approval gate for
 outside contributors does not apply, and every model call is paid for with
-the caller's `anthropic-api-key`. Without a gate, anyone could open or push to
+the caller's `anthropic-api-key`. GitHub's
+[Enterprise Server 3.12 page on approving workflow runs from public forks](https://docs.github.com/en/enterprise-server@3.12/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/approving-workflow-runs-from-public-forks)
+says workflows triggered by `pull_request_target` "will always run,
+regardless of approval settings". The current github.com version of that page
+does not carry that sentence. Without a gate, anyone could open or push to
 a fork's pull request, as often as they like, with a diff and description of
 any size, and spend that key. The mitigation is step **Admit the author before
 spending anything** (see [Who it runs for](#who-it-runs-for)): an outside
@@ -345,6 +376,12 @@ confirmed that:
   still on, and removing and re-adding it starting a fresh run;
 - the runner honours `::stop-commands::` for the reviewer's output as
   documented.
+
+From 2 December 2026, GitHub plans to block `pull_request_target` workflows
+in **public** repositories that have no applicable Actions event policy, so a
+public caller needs an event policy that allows `pull_request_target`; private
+and internal repositories are not affected
+([Securely using pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)).
 
 ## Running it locally
 

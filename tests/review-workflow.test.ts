@@ -209,7 +209,8 @@ describe('review.yml shape', () => {
     expect(elsePart).not.toContain('did not approve');
     // Every path exits 1.
     expect(script).toMatch(/fi\n\s+exit 1/);
-    // No negative match on the Could not run heading any more.
+    // The Could not run heading is never matched: anything but a positive
+    // Rejected falls to the could-not-run branch.
     expect(script).not.toContain('Could not run');
   });
 
@@ -312,7 +313,7 @@ describe('review.yml under each event', () => {
     expect(own[0]).toMatch(/^ {10}fetch-depth: 0$/m);
   });
 
-  it('under pull_request, checks out the default ref (the merge commit), as before', () => {
+  it('under pull_request, checks out the default ref (the merge commit)', () => {
     const [own] = stepsUnder('pull_request').filter((s) => isCheckout(s) && !isCorpusCheckout(s));
     expect(own).not.toMatch(/^ {10}ref:/m);
   });
