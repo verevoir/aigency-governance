@@ -98,14 +98,9 @@ jobs:
         run: tofu validate
 
   plan:
-    # Plans are NOT serialised (only apply is): pushes in quick succession run
-    # plan jobs side by side, and with -lock=false a plan can read state while
-    # an apply is writing it, so it may describe a half-applied estate. That is
-    # safe as far as the author knows (not exercised here), not harmless: tofu
-    # is understood to refuse to apply a saved plan whose state has
-    # moved since, so a stale plan fails the apply and a re-run of the workflow
-    # makes a fresh one. Each run uploads its own artifact.
-    # Skipped while INFRA_PLANNER_SA is unset (the planner-missing job warns).
+    # Not serialised, and -lock=false, so a plan can read a half-applied state; a
+    # stale plan then fails the apply. Skipped while INFRA_PLANNER_SA is unset.
+    # See INSTALL.md section 7, "From then on, every change deploys on merge".
     if: github.event_name == 'push' && vars.INFRA_PLANNER_SA != ''
     needs: scan
     runs-on: ubuntu-latest
@@ -167,14 +162,9 @@ jobs:
     env:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
-    # One apply at a time. While an apply runs, GitHub (as remembered from its
-    # documentation; unverified here) keeps at most ONE other
-    # pending run per group, and a newer one replaces (cancels) an older pending
-    # one; a running apply is never cancelled. A cancelled run's change is not
-    # lost: the newer run is made from the newer main, which contains it. Its
-    # plan, though, was made without a lock (see the plan job), so it is applied
-    # only if the state has not moved since; otherwise the apply fails and the
-    # run is re-run.
+    # One apply at a time, never cancelled once running; a newer pending run
+    # replaces an older one (GitHub behaviour from memory; unverified here).
+    # See INSTALL.md section 7, "From then on, every change deploys on merge".
     concurrency:
       group: infra-apply
       cancel-in-progress: false
@@ -207,14 +197,9 @@ jobs:
         run: tofu apply -input=false plan.tfplan
 
   drift:
-    # Two read-only checks as the planner: tofu plan (managed resources) and a
-    # live-IAM comparison for the module's own principals (scripts/iam-drift.mjs).
-    # Grants to principals outside the module are NOT covered. On drift (exit 2
-    # from either) it opens a GitHub issue, or comments on the open one, then
-    # fails; on an ERROR (exit 1, or an earlier step failing) it opens or
-    # comments on a separate "Infrastructure drift check failed" issue, then
-    # fails. This job alone holds issues: write. Skipped while INFRA_PLANNER_SA
-    # is unset (the planner-missing job warns).
+    # Read-only, as the planner: tofu plan, and live IAM for the module's own
+    # principals only. Drift and errors each open their own issue, then fail.
+    # See INSTALL.md section 7, "What the drift job checks".
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && vars.INFRA_PLANNER_SA != ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -225,10 +210,8 @@ jobs:
     env:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
-    # Runs are serialised so the issue notification's check-then-create cannot
-    # race with another drift run and open a duplicate. A run is never cancelled;
-    # GitHub is understood to keep one pending run (from memory of its
-    # documentation; unverified here), which is enough for a weekly schedule.
+    # Serialised so two runs cannot both open an issue; never cancelled. See
+    # INSTALL.md section 7, "What the drift job checks" (Notification).
     concurrency:
       group: infra-drift
       cancel-in-progress: false

@@ -342,7 +342,7 @@ Change anything under `infra/` through a pull request. The `infra` workflow:
   emails and IAM bindings are in it (the plan job prints the same to the log).
   The apply needs the file, so it is kept, not dropped; if that exposure is not
   acceptable, the alternative is to keep the plan in the state bucket, which is
-  not built. Applies are serialised: one runs at a time, and GitHub (from memory of its
+  not built. Applies are serialised: one runs at a time, a running apply is never cancelled, and GitHub (from memory of its
   documentation; unverified here) keeps at
   most one other pending run, so a newer push replaces (cancels) an older
   pending one; its change is not lost, because the newer run is made from the
@@ -487,7 +487,7 @@ drift`, or comments on the one already open so weekly repeats do not pile up. An
 authentication did) opens or comments on a separate issue titled
 `Infrastructure drift check failed`, worded as an error, so an erroring job is
 not silent and the two are told apart by title. Drift runs are serialised by a
-concurrency group, so two overlapping runs cannot both open an issue.
+concurrency group, so two overlapping runs cannot both open an issue. A drift run is never cancelled; GitHub is understood to keep one pending run (from memory of its documentation; unverified here), which is enough for a weekly schedule.
 The issue holds a link to the run, no plan output. Only this job holds
 `issues: write`. The notification goes where GitHub sends issue notifications
 (watchers of the repository); there is no paging or chat integration. If the

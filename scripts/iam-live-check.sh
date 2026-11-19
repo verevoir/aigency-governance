@@ -13,10 +13,10 @@
 # into the installation directory, so a local run cannot leave a state dump where
 # a broad `git add` would pick it up.
 #
-# No `set -e`, on purpose: the exit status of `node ... compare` (0, 1 or 2) must
-# be captured and written to $GITHUB_OUTPUT before the script exits, and -e would
-# exit on the first non-zero status without writing it. Every command whose
-# failure matters is checked explicitly with `|| fail`.
+# No `set -e`, and nothing here relies on it: every command whose failure
+# matters is checked with `|| fail`, which writes status=1 and names the cause,
+# and the comparison's exit status (0, 1 or 2) is captured with `|| status=$?`,
+# which -e would not interrupt either.
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

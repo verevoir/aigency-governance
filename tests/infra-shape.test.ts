@@ -3,11 +3,13 @@
 //
 // The module is tested by WHAT IT GRANTS AND TO WHOM, not by its spelling. The
 // HCL is read into (target, role, member, condition) grants, with Terraform
-// resource and local names normalised away: a service account is its
-// account_id suffix (`publisher`), a bucket its `<name>_bucket` local
-// (`corpus`), a custom role its role_id suffix, and locals are expanded. So a
-// pure rename of a resource or a local does not fail a test; a change to a
-// grant does. One behaviour per test; per-member checks use it.each.
+// resource names normalised away: a service account is its account_id suffix
+// (`publisher`), a bucket its `<name>_bucket` local (`corpus`), a custom role
+// its role_id suffix, and locals are expanded. So renaming a Terraform resource
+// does not fail a test; a change to a grant does. The parser does depend on two
+// local names: a bucket's `local.<name>_bucket`, and `local.pool_principal` at
+// the start of a pool member. Mostly one behaviour per test (four tests still
+// bundle assertions, known and left on PR #32); per-member checks use it.each.
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
