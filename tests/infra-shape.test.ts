@@ -8,8 +8,8 @@
 // its role_id suffix, and locals are expanded. So renaming a Terraform resource
 // does not fail a test; a change to a grant does. The parser does depend on two
 // local names: a bucket's `local.<name>_bucket`, and `local.pool_principal` at
-// the start of a pool member. Mostly one behaviour per test (four tests still
-// bundle assertions, known and left on PR #32); per-member checks use it.each.
+// the start of a pool member. Mostly one behaviour per test (four tests bundle
+// assertions; see the PR's known-and-left); per-member checks use it.each.
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
@@ -1625,7 +1625,7 @@ describe('verevoir installation', () => {
   });
 
   it.each(['-migrate-state', 'BOOTSTRAP'])(
-    'no longer carries the local-bootstrap marker %s',
+    'never carries the local-bootstrap marker %s',
     (marker) => {
       expect(installation).not.toContain(marker);
     },
