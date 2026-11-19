@@ -571,6 +571,15 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
   const legacyOwner = { role: 'roles/storage.legacyBucketOwner', members: ['projectOwner:p'] };
   const viewer = { role: 'roles/storage.objectViewer', members: [`serviceAccount:${sa}`] };
   const impersonation = { role: 'roles/iam.workloadIdentityUser', members: [principalSet] };
+  const poolAdmin = {
+    role: 'roles/iam.workloadIdentityPoolAdmin',
+    members: [`serviceAccount:${sa}`],
+  };
+  const customRole = {
+    role: 'projects/p/roles/review_deployer_project',
+    members: [`serviceAccount:${sa}`],
+  };
+  const foreignOwner = { role: 'roles/owner', members: ['user:someone@example.com'] };
   const state = {
     values: {
       root_module: {
@@ -606,6 +615,22 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
                   member: principalSet,
                 },
               },
+              {
+                type: 'google_project_iam_member',
+                values: {
+                  project: 'p',
+                  role: poolAdmin.role,
+                  member: `serviceAccount:${sa}`,
+                },
+              },
+              {
+                type: 'google_project_iam_member',
+                values: {
+                  project: 'p',
+                  role: customRole.role,
+                  member: `serviceAccount:${sa}`,
+                },
+              },
             ],
           },
         ],
@@ -616,7 +641,7 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
   const clean: Required<Live> = {
     bucket: { version: 3, bindings: [viewer, creator, legacyOwner] },
     sa: { bindings: [impersonation] },
-    project: { bindings: [{ role: 'roles/owner', members: ['user:someone@example.com'] }] },
+    project: { bindings: [poolAdmin, customRole, foreignOwner] },
   };
 
   const dirs: string[] = [];
@@ -688,6 +713,17 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
     expect(run({ ...clean, bucket: bucketWith() }).out).toContain(
       'missing: bucket:b roles/storage.objectViewer',
     );
+  });
+
+  it('compares project grants, predefined and custom role, as clean when they match', () => {
+    expect(run({ ...clean, project: { bindings: [customRole, poolAdmin] } }).status).toBe(0);
+  });
+
+  it('reports a project grant the live policy lacks as missing, which is drift', () => {
+    expect(run({ ...clean, project: { bindings: [poolAdmin, foreignOwner] } })).toEqual({
+      status: 2,
+      out: expect.stringContaining(`missing: project:p ${customRole.role} serviceAccount:${sa}`),
+    });
   });
 
   it('does not look at grants to principals outside the module', () => {

@@ -122,6 +122,18 @@ because the module manages this same bucket and step 5 imports it.
 
 ## 5. Bootstrap: first apply, on remote state
 
+**Hold the first `tofu apply` until the drift follow-up has merged.** The drift
+job does not yet see resources the module does not track, such as an extra OIDC
+provider in the module's identity pool. Every identity binding in the module is a
+`principalSet` on the whole pool, the deployer's included
+(`attribute.repo_id_workflow_env`), so a second provider that maps the same
+attribute is a second path to the deployer (`workloadIdentityPoolAdmin`, and
+`storage.admin` on the state bucket) and to the other identities, from the first
+apply on. Adding a provider to the pool already needs pool admin, so this is a
+persistence and escalation path after a first compromise. The follow-up extends
+`scripts/iam-live-check.sh` and `scripts/iam-drift.mjs` to flag such resources;
+once it is on `main`, continue below.
+
 The `backend "gcs" {}` block is partial: pass the bucket and prefix at init.
 There is no local state and nothing to migrate.
 
