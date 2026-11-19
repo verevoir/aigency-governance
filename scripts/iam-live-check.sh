@@ -39,11 +39,9 @@ mkdir -p "${live}" || fail "could not create ${live}"
 tofu show -json > "${state}" || fail "tofu show failed"
 node "${script}" scopes "${state}" > "${scopes}" || fail "could not list the places to read"
 
-# gcloud's policy output is requested as JSON. Whether it includes IAM
-# conditions (a version 3 policy) is UNVERIFIED: iam-drift.mjs refuses to compare
-# a place that has conditional grants in state unless the policy says version 3.
-# Each gcloud call has stdin from /dev/null so it cannot swallow the loop's own
-# input (the remaining lines of the place list) and silently skip places.
+# Conditions need a version 3 policy; whether gcloud returns one is UNVERIFIED
+# (infra/INSTALL.md section 7, "What the drift job checks"). stdin is /dev/null so
+# no gcloud call can swallow the rest of the place list and silently skip places.
 while IFS=$'\t' read -r scope file; do
   case "${scope}" in
     bucket:*) gcloud storage buckets get-iam-policy "gs://${scope#bucket:}" --format=json < /dev/null > "${live}/${file}" || fail "could not read ${scope}" ;;

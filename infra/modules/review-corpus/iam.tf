@@ -25,10 +25,9 @@ resource "google_service_account" "publisher" {
   depends_on = [google_project_service.apis]
 }
 
-# Create only under corpus/, manifests/ and refs/main; overwrite (which needs
-# delete) only refs/main. objectUser is understood to carry objects.get (from
-# memory of the role's permissions; unverified here), so the publisher can read
-# refs/main and nothing else.
+# Create only under corpus/, manifests/ and refs/main; overwrite only refs/main.
+# That objectUser lets it read refs/main is UNVERIFIED. See infra/INSTALL.md
+# section 6, "What each service account can do in the bucket".
 resource "google_storage_bucket_iam_member" "publisher_create" {
   bucket = google_storage_bucket.corpus.name
   role   = "roles/storage.objectCreator"
@@ -83,16 +82,8 @@ resource "google_service_account_iam_member" "reader_wif" {
 }
 
 # --- deployer: applies this module, from the governance repo's main only ----
-# Everything from here on exists only when create_deployer is true.
-#
-# The deployer CAN widen access (full table: infra/INSTALL.md section 7). Two
-# project-wide predefined roles, for which no narrower form was VERIFIED (the
-# provider schema and GCP docs were not checked; one may exist): workloadIdentityPoolAdmin
-# can rewrite the provider's trust condition, and serviceUsageAdmin reaches any
-# API. It also administers this module's service accounts and buckets. That is an
-# accepted residual risk, which is why the shipped installation uses a DEDICATED
-# project and a shared project sets create_deployer = false. It holds no owner,
-# editor or project IAM admin role.
+# Only when create_deployer is true. It CAN widen access: see infra/INSTALL.md
+# section 7, "The deployer's reach, and the residual risk".
 
 resource "google_service_account" "deployer" {
   count = var.create_deployer ? 1 : 0
@@ -178,9 +169,8 @@ resource "google_storage_bucket_iam_member" "deployer" {
 }
 
 # --- planner: the read-only twin, for plans and drift checks ----------------
-# Bound to the same workflow file but NOT to the environment, so the plan and
-# drift jobs never hold write credentials. Plans run with -lock=false, so it
-# writes nothing, state included.
+# Same workflow as the deployer but no environment, so it never holds write
+# credentials. See infra/INSTALL.md section 7, "The planner's roles (read-only)".
 
 resource "google_service_account" "planner" {
   count = var.create_deployer ? 1 : 0

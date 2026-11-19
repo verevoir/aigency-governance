@@ -8,13 +8,9 @@ terraform {
     }
   }
 
-  # Remote state, with locking. The block is PARTIAL on purpose: the bucket and
-  # prefix are passed at init, so no installation value is baked in here:
-  #   tofu init -backend-config="bucket=$TF_STATE_BUCKET" \
-  #             -backend-config="prefix=$TF_STATE_PREFIX"
-  # CI reads them from the repository variables TF_STATE_BUCKET and
-  # TF_STATE_PREFIX and fails if either is unset. The bucket is created once, by
-  # an operator, before the first init: see infra/INSTALL.md step 4.
+  # Remote state, with locking. PARTIAL so no installation value is baked in: init
+  # gets them by -backend-config from TF_STATE_BUCKET and TF_STATE_PREFIX. See
+  # infra/INSTALL.md sections 4 and 5, "Create the state bucket" and "Bootstrap".
   backend "gcs" {}
 }
 

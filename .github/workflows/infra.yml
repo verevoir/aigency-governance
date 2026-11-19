@@ -48,13 +48,9 @@ env:
   INSTALLATION: infra/installations/verevoir
 
 jobs:
-  # Misconfiguration scan of the OpenTofu code. To run it locally, see INSTALL.md
-  # section 7, "Run the infra checks locally". No skip_check input is used
-  # here; the two skips (CKV_GCP_62 on both buckets, CKV_GCP_125 on the provider)
-  # are inline comments in the module, each with its reason.
-  # RESIDUAL RISK: the SHA pins the action's own code, but the action pulls its
-  # docker image by TAG (ghcr.io/bridgecrewio/checkov:3.4.3), which a registry
-  # can move. The pin does not cover the image.
+  # Checkov scan. No skip_check input: the skips are inline in the module, with reasons.
+  # RESIDUAL RISK: the SHA pins the action, not its image ghcr.io/bridgecrewio/checkov:3.4.3,
+  # pulled by tag. See INSTALL.md section 7, "Run the infra checks locally".
   scan:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -142,10 +138,9 @@ jobs:
           name: plan
           path: ${{ env.INSTALLATION }}/plan.tfplan
           if-no-files-found: error
-          # The binary plan holds resource values in plaintext and is readable by
-          # anyone who can read this repository's Actions artifacts, so it is
-          # kept for the minimum GitHub allows (1 day). The apply consumes it, so
-          # it cannot simply be dropped. After expiry the apply fails closed.
+          # Plaintext resource values, readable by anyone who can read Actions artifacts:
+          # kept the 1-day minimum because the apply needs it; it fails closed after. See
+          # INSTALL.md section 7, "From then on, every change deploys on merge".
           retention-days: 1
 
   apply:
@@ -269,10 +264,9 @@ jobs:
         continue-on-error: true
         working-directory: ${{ env.INSTALLATION }}
         run: bash "${GITHUB_WORKSPACE}/scripts/iam-live-check.sh"
-      # One open issue per kind at a time: a repeat run comments on it. Drift and
-      # an ERROR (the plan or the live IAM check failed, or an earlier step such
-      # as authentication did) are told apart by the issue title. If this step
-      # fails (for example Issues is disabled) the job fails visibly.
+      # One open issue per kind (drift, or an error), told apart by title; a repeat
+      # run comments on it. If this step fails (Issues disabled), the job fails. See
+      # INSTALL.md section 7, "What the drift job checks" (Notification).
       - name: Report drift or an error as a GitHub issue
         if: ${{ !cancelled() && steps.main.outcome == 'success' && (failure() || steps.plan.outputs.status != '0' || steps.iam.outputs.status != '0') }}
         env:

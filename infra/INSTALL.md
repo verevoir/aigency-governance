@@ -521,8 +521,8 @@ The repository's `verify` gate (`npm run verify`: typecheck, tests, lint) runs
 The commands below reproduce its `check` and `scan` jobs from the repository
 root, with the same arguments and working directories and no cloud credentials.
 
-**OpenTofu: the `check` job** (`infra.yml:76-98`). CI installs
-`tofu_version: 1.12.x` (`infra.yml:89`), the newest 1.12 patch at run time, so
+**OpenTofu: the `check` job** (`infra.yml:72-94`). CI installs
+`tofu_version: 1.12.x` (`infra.yml:85`), the newest 1.12 patch at run time, so
 a local 1.12 patch can differ. `TF_DATA_DIR` sends what `tofu init` downloads
 to a temporary directory instead of a `.terraform/` directory in the tree:
 
@@ -530,13 +530,13 @@ to a temporary directory instead of a `.terraform/` directory in the tree:
 export TF_DATA_DIR="$(mktemp -d)/tf-data"
 INSTALLATION=infra/installations/verevoir # infra.yml:48
 
-# Check formatting: infra.yml:90-92, working directory infra
+# Check formatting: infra.yml:86-88, working directory infra
 (cd infra && tofu fmt -check -recursive)
 
-# Initialise without a backend: infra.yml:93-95, working directory $INSTALLATION
+# Initialise without a backend: infra.yml:89-91, working directory $INSTALLATION
 (cd "$INSTALLATION" && tofu init -backend=false -input=false)
 
-# Validate: infra.yml:96-98, working directory $INSTALLATION, same TF_DATA_DIR
+# Validate: infra.yml:92-94, working directory $INSTALLATION, same TF_DATA_DIR
 (cd "$INSTALLATION" && tofu validate)
 ```
 
@@ -545,12 +545,12 @@ INSTALLATION=infra/installations/verevoir # infra.yml:48
 committed lock file it is expected to be left unchanged; `git status` afterwards
 shows whether it was. CI runs against the committed file.
 
-**Checkov: the `scan` job** (`infra.yml:58-74`). The job runs
+**Checkov: the `scan` job** (`infra.yml:54-70`). The job runs
 `bridgecrewio/checkov-action` pinned at
-`45edc9d8856b664db2ec251f5f8632361f0a67aa` (v12.3139.0, `infra.yml:68`), which
+`45edc9d8856b664db2ec251f5f8632361f0a67aa` (v12.3139.0, `infra.yml:64`), which
 runs the docker image `ghcr.io/bridgecrewio/checkov:3.4.3` (named at
-`infra.yml:56`; the CI log reports Checkov 3.4.3). Its inputs
-(`infra.yml:70-74`) are `directory: infra`, `framework: terraform`,
+`infra.yml:52`; the CI log reports Checkov 3.4.3). Its inputs
+(`infra.yml:66-70`) are `directory: infra`, `framework: terraform`,
 `soft_fail: false`, `quiet: true` and `download_external_modules: false`. It has
 no `skip_check` and no `config_file` input, so the only skips are the inline
 `#checkov:skip` comments in the module (`main.tf:29`, `main.tf:55`,

@@ -14,10 +14,9 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_provider_id = local.pool_id
   display_name                       = "GitHub OIDC"
 
-  # repo_id_workflow is <repo id>@<ref>|<workflow ref>. repo_id_workflow_env is
-  # the same string plus |<environment>, where the environment claim exists
-  # only on a job that names an environment: has() keeps a job without one
-  # from failing the mapping, and gives it an empty environment.
+  # repo_id_workflow is <repo id>@<ref>|<workflow ref>; _env adds |<environment>,
+  # and has() gives a job with no environment an empty one rather than failing the
+  # mapping. See infra/INSTALL.md section 6, "Why `main-evil` or a tag cannot match".
   attribute_mapping = {
     "google.subject"                 = "assertion.sub"
     "attribute.repository"           = "assertion.repository"
@@ -30,10 +29,9 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repo_id_workflow_env" = "assertion.repository_id + '@' + assertion.ref + '|' + assertion.job_workflow_ref + '|' + (has(assertion.environment) ? assertion.environment : '')"
   }
 
-  # The owner-id check is a literal here and can never be dropped: a custom
-  # allowed_owner_condition (validated: no parentheses, ||, && or //, so it cannot
-  # close the group it is spliced into) is only ANDed on, so it can narrow trust,
-  # never widen it.
+  # The owner-id check is a literal and always applies; a validated
+  # allowed_owner_condition is only ANDed on, so it narrows trust, never widens it.
+  # See infra/INSTALL.md section 6, "What each service account can do in the bucket".
   attribute_condition = "assertion.repository_owner_id == '${var.github_owner_id}'${var.allowed_owner_condition == null ? "" : " && (${var.allowed_owner_condition})"}"
 
   oidc {
