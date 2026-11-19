@@ -23,8 +23,11 @@
 # (refs/pull/<number>/merge), so the diff and the --context-root tree are the
 # same. pull_request_target runs the caller's workflow as it is on the base
 # branch, and passes the caller's secrets even to a fork's pull request. That
-# is why the "only READ" rule above carries the weight. The threat model is in
-# README.md, under "Triggering it with pull_request_target".
+# is why the "only READ" rule above carries the weight, and why, under that
+# event, an author the repository does not trust is reviewed only when a
+# maintainer adds the opt-in label (the step "Admit the author before
+# spending anything"). The threat model is in README.md, under "Triggering it
+# with pull_request_target".
 name: review
 
 on:
@@ -53,6 +56,17 @@ on:
         type: string
         required: false
         default: ''
+      outside-author-label:
+        description: >-
+          pull_request_target only. The label a maintainer adds to run the
+          review on a pull request whose author is not OWNER, MEMBER or
+          COLLABORATOR. It admits the one `labeled` event that adds it, not
+          the pull request: after each new push it must be removed and added
+          again. Blank admits no outside author at all. Ignored under
+          pull_request.
+        type: string
+        required: false
+        default: review:run
     secrets:
       anthropic-api-key:
         description: The key the panel calls with. One model call per lens.
@@ -92,6 +106,32 @@ jobs:
               exit 1
               ;;
           esac
+
+      # pull_request_target hands the caller's key to a fork's pull request,
+      # and GitHub's approval gate for outside contributors does not apply to
+      # that event. Without this step anyone could spend the caller's
+      # anthropic-api-key, on a diff of any size, by opening or pushing to a
+      # pull request. So before any secret, checkout or model call, the review
+      # runs only for an author the repository trusts, or on the event of a
+      # maintainer adding the opt-in label. Anything else fails here,
+      # including a blank association and a blank label input. Under
+      # pull_request it is skipped: there GitHub withholds the key from forks.
+      - name: Admit the author before spending anything
+        if: github.event_name == 'pull_request_target'
+        env:
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          EVENT_ACTION: ${{ github.event.action }}
+          ADDED_LABEL: ${{ github.event.label.name }}
+          RUN_LABEL: ${{ inputs.outside-author-label }}
+        run: |
+          case "${AUTHOR_ASSOCIATION}" in
+            OWNER | MEMBER | COLLABORATOR) exit 0 ;;
+          esac
+          if [ -n "${RUN_LABEL}" ] && [ "${EVENT_ACTION}" = "labeled" ] && [ "${ADDED_LABEL}" = "${RUN_LABEL}" ]; then
+            exit 0
+          fi
+          echo "::error title=Review::review not run: outside author ${AUTHOR_ASSOCIATION:-(none)}; a maintainer adds label ${RUN_LABEL:-(none configured)} to run it"
+          exit 1
 
       # Before anything expensive: a missing secret is reported by name
       # rather than surfacing later as a generic failure. `required: true`
@@ -241,6 +281,12 @@ jobs:
       # published whether the review passed or failed, and publishing must not
       # change the verdict. The CLI appends its own report to
       # GITHUB_STEP_SUMMARY, so nothing re-appends it.
+      #
+      # Nothing the reviewer prints is read as a workflow command. Its report
+      # quotes the pull request, and the model could echo `::error::` or
+      # `::add-mask::` lines, so commands are suspended with a token made here
+      # (openssl, already on the runner) that the reviewer never sees, and
+      # resumed once it exits, whatever its exit status.
       - name: Review
         id: review
         continue-on-error: true
@@ -261,9 +307,18 @@ jobs:
             printf '%s\n' "${PR_BODY}" > "${RUNNER_TEMP}/description.md"
             args+=(--description-file "${RUNNER_TEMP}/description.md")
           fi
+          stop_token="$(openssl rand -hex 32)"
+          if [ -z "${stop_token}" ]; then
+            echo "::error title=Review::Could not generate a stop-commands token, so the reviewer was not run."
+            exit 1
+          fi
+          echo "::stop-commands::${stop_token}"
+          status=0
           "${RUNNER_TEMP}/aigency-review/node_modules/.bin/aigency-review" "${args[@]}" \
             < "${RUNNER_TEMP}/review.diff" \
-            | tee "${RUNNER_TEMP}/review.md"
+            | tee "${RUNNER_TEMP}/review.md" || status=$?
+          echo "::${stop_token}::"
+          exit "${status}"
 
       # The CLI already wrote the report to the summary. This only covers a
       # failure before any report existed. tee creates review.md even when the

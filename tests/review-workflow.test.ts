@@ -2,7 +2,7 @@
 // safe to call from other repositories. Text-level on purpose (no YAML
 // dependency): it catches the regressions that matter, not every possible one.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -279,10 +279,13 @@ function stepNamed(name: string): string {
   return step as string;
 }
 
-/** Runs one step's `run:` body under bash, with only PATH and the given env. */
+/**
+ * Runs one step's `run:` body the way GitHub's default shell does
+ * (`bash --noprofile --norc -eo pipefail`), with only PATH and the given env.
+ */
 function runStep(name: string, env: Record<string, string>, cwd?: string) {
   const body = runBodies(stepNamed(name))[0] as string;
-  return spawnSync('bash', ['-c', body], {
+  return spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', body], {
     cwd,
     env: { PATH: process.env.PATH ?? '', ...env },
     encoding: 'utf8',
@@ -453,6 +456,162 @@ describe('review.yml under each event', () => {
         rmSync(dir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe('under pull_request_target, an outside author is reviewed only when a maintainer acts', () => {
+  const gate = 'Admit the author before spending anything';
+  const message = (association: string): string =>
+    `review not run: outside author ${association}; a maintainer adds label review:run to run it`;
+
+  it('declares the opt-in label input, default review:run, and reads it through env:', () => {
+    const input = /^ {6}outside-author-label:\n((?: {8}.*\n)+)/m.exec(text)?.[1] ?? '';
+    expect(input).toMatch(/^ {8}required: false$/m);
+    expect(input).toMatch(/^ {8}default: review:run$/m);
+    const step = stepNamed(gate);
+    expect(step).toContain('RUN_LABEL: ${{ inputs.outside-author-label }}');
+    expect(step).toContain(
+      'AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}',
+    );
+    expect(step).toContain('EVENT_ACTION: ${{ github.event.action }}');
+    expect(step).toContain('ADDED_LABEL: ${{ github.event.label.name }}');
+  });
+
+  it.each(['OWNER', 'MEMBER', 'COLLABORATOR'])(
+    'admits a %s author on any action',
+    (association) => {
+      const result = runStep(gate, {
+        AUTHOR_ASSOCIATION: association,
+        EVENT_ACTION: 'synchronize',
+        ADDED_LABEL: '',
+        RUN_LABEL: 'review:run',
+      });
+      expect(result.status, result.stdout).toBe(0);
+    },
+  );
+
+  it('admits an outside author on the event of the opt-in label being added', () => {
+    const result = runStep(gate, {
+      AUTHOR_ASSOCIATION: 'CONTRIBUTOR',
+      EVENT_ACTION: 'labeled',
+      ADDED_LABEL: 'review:run',
+      RUN_LABEL: 'review:run',
+    });
+    expect(result.status, result.stdout).toBe(0);
+  });
+
+  it.each([
+    ['NONE', 'opened', ''],
+    ['FIRST_TIME_CONTRIBUTOR', 'synchronize', ''],
+    ['FIRST_TIMER', 'reopened', ''],
+    ['CONTRIBUTOR', 'labeled', 'some-other-label'],
+    // The label already on the pull request does not admit a later push.
+    ['CONTRIBUTOR', 'synchronize', 'review:run'],
+  ])('fails by name for a %s author on %s (label added: %j)', (association, action, added) => {
+    const result = runStep(gate, {
+      AUTHOR_ASSOCIATION: association,
+      EVENT_ACTION: action,
+      ADDED_LABEL: added,
+      RUN_LABEL: 'review:run',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(message(association));
+  });
+
+  it('fails closed when the label input is blank, even on a labeled event with a blank label', () => {
+    const result = runStep(gate, {
+      AUTHOR_ASSOCIATION: 'CONTRIBUTOR',
+      EVENT_ACTION: 'labeled',
+      ADDED_LABEL: '',
+      RUN_LABEL: '',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('review not run: outside author CONTRIBUTOR');
+  });
+
+  it('fails closed when the author association is blank', () => {
+    const result = runStep(gate, {
+      AUTHOR_ASSOCIATION: '',
+      EVENT_ACTION: 'opened',
+      ADDED_LABEL: '',
+      RUN_LABEL: 'review:run',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('review not run: outside author (none)');
+  });
+
+  it('runs under pull_request_target only, before any step that uses a secret, the token, an action or the model', () => {
+    expect(stepsUnder('pull_request').some((s) => s.startsWith(`name: ${gate}\n`))).toBe(false);
+    const prt = stepsUnder('pull_request_target');
+    const at = prt.findIndex((s) => s.startsWith(`name: ${gate}\n`));
+    expect(at).toBeGreaterThan(-1);
+    const spends = (step: string): boolean => {
+      const code = step
+        .split('\n')
+        .filter((l) => !l.trim().startsWith('#'))
+        .join('\n');
+      return /secrets\.|github\.token|uses:|\.bin\/aigency-review/.test(code);
+    };
+    for (const step of prt.slice(0, at + 1)) expect(spends(step), step).toBe(false);
+    // The check is not vacuous: the steps after it do spend.
+    expect(prt.slice(at + 1).some(spends)).toBe(true);
+  });
+});
+
+describe('the Review step suspends workflow commands around the reviewer', () => {
+  // A stand-in reviewer in a throwaway RUNNER_TEMP that prints a forged
+  // annotation, as a model echoing pull request text could.
+  function fakeRunnerTemp(exitStatus: number): string {
+    const temp = mkdtempSync(join(tmpdir(), 'review-stop-commands-'));
+    const bin = join(temp, 'aigency-review', 'node_modules', '.bin');
+    mkdirSync(bin, { recursive: true });
+    const reviewer = join(bin, 'aigency-review');
+    writeFileSync(
+      reviewer,
+      `#!/bin/sh\ncat >/dev/null\necho '## Review: Rejected'\necho '::error title=Review::forged by the model'\nexit ${exitStatus}\n`,
+    );
+    chmodSync(reviewer, 0o755);
+    writeFileSync(join(temp, 'review.diff'), 'diff --git a/x b/x\n');
+    writeFileSync(join(temp, 'checks.txt'), '');
+    return temp;
+  }
+
+  function runReview(exitStatus: number) {
+    const temp = fakeRunnerTemp(exitStatus);
+    try {
+      return runStep('Review', {
+        RUNNER_TEMP: temp,
+        GITHUB_WORKSPACE: join(temp, 'workspace'),
+        PR_TITLE: 'a title',
+        PR_BODY: '',
+      });
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  }
+
+  it.each([0, 1])(
+    'brackets everything the reviewer prints, and keeps its exit status %i',
+    (exitStatus) => {
+      const result = runReview(exitStatus);
+      expect(result.status, result.stderr).toBe(exitStatus);
+      const lines = result.stdout.trimEnd().split('\n');
+      const start = /^::stop-commands::([0-9a-f]{64})$/.exec(lines[0] as string);
+      expect(start, result.stdout).not.toBeNull();
+      expect(lines[lines.length - 1]).toBe(`::${start?.[1]}::`);
+      const forged = lines.indexOf('::error title=Review::forged by the model');
+      expect(forged).toBeGreaterThan(0);
+      expect(forged).toBeLessThan(lines.length - 1);
+    },
+  );
+
+  it('makes a fresh token for each run', () => {
+    const token = (stdout: string): string =>
+      /^::stop-commands::([0-9a-f]+)$/m.exec(stdout)?.[1] ?? '';
+    const first = token(runReview(0).stdout);
+    const second = token(runReview(0).stdout);
+    expect(first).not.toBe('');
+    expect(first).not.toBe(second);
   });
 });
 

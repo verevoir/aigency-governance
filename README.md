@@ -59,13 +59,14 @@ event it got.
   the diff is that merge against the base, and the checks listed for the
   reviewer are those on the pull request's head commit.
 
-| Kind   | Name                | Required | Meaning                                                                                                                       |
-| ------ | ------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| secret | `anthropic-api-key` | **yes**  | The key the panel calls a model with, once per lens.                                                                          |
-| secret | `governance-token`  | **yes**  | Reads the private `verevoir/aigency-guardrails` corpus. Must have `contents: read` on it. It no longer reads this repository. |
-| input  | `guardrails-ref`    | no       | Revision of `aigency-guardrails` the lenses are derived from. Default `main`.                                                 |
-| input  | `model`             | no       | Overrides the pinned judge. Blank means the reviewer's own default.                                                           |
-| input  | `governance-ref`    | no       | **Accepted but unused.** Kept so callers that still pass it keep working; it no longer selects anything.                      |
+| Kind   | Name                   | Required | Meaning                                                                                                                                                                                                                                |
+| ------ | ---------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| secret | `anthropic-api-key`    | **yes**  | The key the panel calls a model with, once per lens.                                                                                                                                                                                   |
+| secret | `governance-token`     | **yes**  | Reads the private `verevoir/aigency-guardrails` corpus. Must have `contents: read` on it. It no longer reads this repository.                                                                                                          |
+| input  | `guardrails-ref`       | no       | Revision of `aigency-guardrails` the lenses are derived from. Default `main`.                                                                                                                                                          |
+| input  | `model`                | no       | Overrides the pinned judge. Blank means the reviewer's own default.                                                                                                                                                                    |
+| input  | `governance-ref`       | no       | **Accepted but unused.** Kept so callers that still pass it keep working; it no longer selects anything.                                                                                                                               |
+| input  | `outside-author-label` | no       | `pull_request_target` only. The label a maintainer adds to run the review for an author who is not `OWNER`, `MEMBER` or `COLLABORATOR`. Default `review:run`; blank admits no outside author. See [Who it runs for](#who-it-runs-for). |
 
 **Every caller's job must grant `contents: read` and `checks: read`**, as the
 example above does. A called workflow cannot exceed its caller's grant, and
@@ -124,8 +125,9 @@ On GitHub Free, organization secrets do not reach private repositories, so a
 private caller must set `GOVERNANCE_TOKEN` (and `ANTHROPIC_API_KEY`) as
 repository secrets.
 
-If `anthropic-api-key` is missing or blank, the first step of the job fails and
-names it. A blank value counts as missing: an unset secret in Actions arrives as
+If `anthropic-api-key` is missing or blank, the step "Confirm the key is
+available before doing anything expensive" fails and names it. It runs before
+any checkout, install or model call. A blank value counts as missing: an unset secret in Actions arrives as
 the empty string, which still satisfies `required: true`. A blank
 `governance-token` fails the same step with a message naming the repository
 secret to add. An under-scoped one fails later, at the corpus checkout, with
@@ -158,7 +160,12 @@ it keeps the panel from approving: addressing the findings and not noticing the
 gap is the failure that matters.
 
 The CLI appends its report to the job summary itself, and the workflow does not
-append it again. When the CLI exits 1, the **Take the verdict** step adds an
+append it again. The **Review** step also prints the report to the job log,
+bracketed by `::stop-commands::<token>` and `::<token>::`. The token is random
+and made in that step (`openssl rand -hex 32`), so the reviewer cannot know
+it, and nothing it prints between them (including text the model quotes from
+the pull request, such as `::error::` or `::add-mask::`) is read as a workflow
+command. Commands resume after the reviewer exits, whatever its exit status. When the CLI exits 1, the **Take the verdict** step adds an
 annotation to the Checks tab: one saying the review did not approve if the report
 heading is `Rejected`; an empty, missing, `Could not run` or unrecognised report
 is reported as could-not-run. A green
@@ -175,7 +182,9 @@ wrong.
 ### On a fork's pull request
 
 This section is about `on: pull_request`. Under `on: pull_request_target` a
-fork's pull request does get the secrets and is reviewed; see the next section.
+fork's pull request does get the secrets, and is reviewed only when its author
+is trusted or a maintainer adds the opt-in label; see
+[Who it runs for](#who-it-runs-for).
 
 Under `pull_request`, secrets are not passed to workflows triggered from a
 fork, so both arrive blank. The run fails at the step "Confirm the key is
@@ -183,18 +192,24 @@ available before doing anything expensive", which checks `anthropic-api-key`
 before any checkout or install runs. Only the event check runs before it. The
 corpus is never fetched and the reviewer is never installed.
 
-The outcome is right: the run is red, and your key is not spent reviewing a
-diff written by someone outside your repository. The message is
+Under `pull_request` that outcome is right: the run is red, and your key is
+not spent reviewing a diff written by someone outside your repository. The message is
 `ANTHROPIC_API_KEY is not available to this workflow.`, from the workflow
 step's own `::error` lines.
 
 ## Triggering it with pull_request_target
 
 ```yaml
-on: pull_request_target
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
 ```
 
-The rest of the caller is the same as the `pull_request` example above.
+The rest of the caller is the same as the `pull_request` example above. List
+`labeled` in `types`: GitHub's default types for this event leave it out, and
+without it the opt-in label never starts a run, so an outside author's pull
+request can never be reviewed. Use an `anthropic-api-key` with a spend cap set
+on the provider's side, so that even a maintainer's mistake has a ceiling.
 
 Under `pull_request_target`, GitHub runs the caller's workflow **as it is on
 the base branch**, and passes the caller's secrets **even to a fork's pull
@@ -212,8 +227,9 @@ names the pull request's merge ref explicitly.
   caller is read from the pull request itself. This holds in GitHub's
   `pull_request_target` semantics and in your caller's `uses:` pin, not in
   `review.yml`.
-- **Fork pull requests get reviewed.** The secrets reach the job, so a fork's
-  change is reviewed instead of failing for a missing key.
+- **Fork pull requests can be reviewed.** The secrets reach the job, so a
+  fork's change can be reviewed instead of failing for a missing key. Whether
+  it is depends on who wrote it; see [Who it runs for](#who-it-runs-for).
 - **The fork's code does not run with those secrets.** This is what makes
   the first two safe, and it is held in `.github/workflows/review.yml`:
   - step **Check out the pull request (pull_request_target)** checks out
@@ -244,6 +260,37 @@ names the pull request's merge ref explicitly.
 - **Other events are refused.** Step **Refuse an event this workflow cannot
   review** fails by name on anything but `pull_request` and
   `pull_request_target`.
+- **Nothing the model prints is read as a workflow command.** Step
+  **Review** suspends workflow commands around the reviewer; see
+  [What comes back](#what-comes-back).
+
+### Who it runs for
+
+Under `pull_request_target`, step **Admit the author before spending
+anything** runs second, after the event check and before any secret is read,
+anything is checked out or the model is called. The review goes ahead only if:
+
+- the pull request's `author_association` is `OWNER`, `MEMBER` or
+  `COLLABORATOR`; or
+- the event is `labeled`, and the label just added is `outside-author-label`
+  (default `review:run`).
+
+Otherwise the run fails with
+`review not run: outside author <association>; a maintainer adds label <name> to run it`.
+Both fail closed: a blank association counts as an outside author, and a
+blank `outside-author-label` means no label admits anyone.
+
+The label admits one event, not the pull request. A later push by the same
+author is a `synchronize` event and fails the gate again, even with the label
+still on the pull request, so a maintainer removes and re-adds it to review
+the new head, after reading what changed. Spending happens only when a
+maintainer acts. Under `pull_request` this step does not run.
+
+What the associations mean is GitHub's, not this workflow's: `MEMBER` is any
+member of the organization that owns the repository, whatever their access to
+it, and `COLLABORATOR` is anyone invited to the repository, including with
+read-only access. Anyone who can add labels (triage access and above) can
+admit a run.
 
 ### What it does not protect
 
@@ -258,10 +305,22 @@ the secrets.
 The pull request's content (the diff, its title and description, the files
 under `--context-root`, the names of its checks) reaches the model as data.
 A pull request written to manipulate the model (prompt injection) could sway
-the verdict. No step executes that content, so it cannot run code. The
-reviewer's report is printed to the job log, so text the model echoes could
-also appear there as a forged annotation. The verdict is input to a human
-decision, not a merge.
+the verdict. No step executes that content, so it cannot run code. Text the
+model echoes into the job log is not read as a workflow command, so it cannot
+forge an annotation or mask a value; step **Review** brackets the reviewer's
+output with `::stop-commands::`. The verdict is input to a human decision,
+not a merge.
+
+**Spending the key.** Under `pull_request_target`, GitHub's approval gate for
+outside contributors does not apply, and every model call is paid for with
+the caller's `anthropic-api-key`. Without a gate, anyone could open or push to
+a fork's pull request, as often as they like, with a diff and description of
+any size, and spend that key. The mitigation is step **Admit the author before
+spending anything** (see [Who it runs for](#who-it-runs-for)): an outside
+author's pull request is reviewed only on the event of a maintainer adding
+the label, once per push. What is left is spend a maintainer chose, at the size
+of the diff they admitted, and the spend of trusted authors. A spend-capped
+key bounds both.
 
 ### Concurrency, if your caller sets it
 
@@ -273,11 +332,19 @@ concurrency.
 
 ### Not yet confirmed by a real run
 
-The workflow's tests are text-level and local. No real `pull_request_target`
-run has been observed yet. In particular, it is not yet confirmed that the
-check this produces is attached where branch protection's required checks
-look for it: a `pull_request_target` run's `GITHUB_SHA` is the base branch's
-commit, not the pull request's head.
+The workflow's tests are local: text-level checks, plus the gate, the
+merge-ref check and the Review step's bracket run under bash. No real
+`pull_request_target` run has been observed yet. In particular, it is not yet
+confirmed that:
+
+- the check this produces is attached where branch protection's required
+  checks look for it: a `pull_request_target` run's `GITHUB_SHA` is the base
+  branch's commit, not the pull request's head;
+- the label flow behaves as described on GitHub: a `labeled` event carrying
+  the label's name, an outside author's push failing the gate with the label
+  still on, and removing and re-adding it starting a fresh run;
+- the runner honours `::stop-commands::` for the reviewer's output as
+  documented.
 
 ## Running it locally
 
