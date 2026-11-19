@@ -319,8 +319,8 @@ Change anything under `infra/` through a pull request. The `infra` workflow:
 - on the pull request runs `tofu fmt -check -recursive`, `tofu init
 -backend=false` and `tofu validate`, with **no cloud credentials**; and, on
   the pull request and on `main`, a Checkov misconfiguration scan of `infra/`
-  that blocks (`soft_fail: false`). It cannot be run locally here, so the first
-  CI run shows what it finds. Two checks are skipped, each inline with its reason. CKV_GCP_62 (bucket
+  that blocks (`soft_fail: false`). It can also be run locally: see "Run the
+  infra checks locally" at the end of this section. Two checks are skipped, each inline with its reason. CKV_GCP_62 (bucket
   access logging), inline in `main.tf` on both buckets with its reason: the
   module has no log bucket, which would be new cost and scope. GCP's Admin
   Activity audit logs are on and Data Access audit logs for Cloud Storage are
@@ -513,6 +513,80 @@ for the provider's `has(assertion.environment)` mapping expression: it is
 first evaluated by a real apply and a real token. More generally, nothing in
 this module has run against GCP before the first apply: the tests check the
 shape of the code, not its effect.
+
+### Run the infra checks locally
+
+The repository's `verify` gate (`npm run verify`: typecheck, tests, lint) runs
+**none** of the infra checks. They run only in `.github/workflows/infra.yml`.
+The commands below reproduce its `check` and `scan` jobs from the repository
+root, with the same arguments and working directories and no cloud credentials.
+They were written from `infra.yml` and the scan job's CI log, and have not been
+run here.
+
+**OpenTofu: the `check` job** (`infra.yml:76-98`). CI installs
+`tofu_version: 1.12.x` (`infra.yml:89`), the newest 1.12 patch at run time, so
+a local 1.12 patch can differ. `TF_DATA_DIR` sends what `tofu init` downloads
+to a temporary directory instead of a `.terraform/` directory in the tree:
+
+```sh
+export TF_DATA_DIR="$(mktemp -d)/tf-data"
+INSTALLATION=infra/installations/verevoir # infra.yml:48
+
+# Check formatting: infra.yml:90-92, working directory infra
+(cd infra && tofu fmt -check -recursive)
+
+# Initialise without a backend: infra.yml:93-95, working directory $INSTALLATION
+(cd "$INSTALLATION" && tofu init -backend=false -input=false)
+
+# Validate: infra.yml:96-98, working directory $INSTALLATION, same TF_DATA_DIR
+(cd "$INSTALLATION" && tofu validate)
+```
+
+`TF_DATA_DIR` does not move the installation's committed
+`.terraform.lock.hcl`, which `tofu init` reads and can rewrite. With the
+committed lock file it is expected to be left unchanged; `git status` afterwards
+shows whether it was. CI runs against the committed file.
+
+**Checkov: the `scan` job** (`infra.yml:58-74`). The job runs
+`bridgecrewio/checkov-action` pinned at
+`45edc9d8856b664db2ec251f5f8632361f0a67aa` (v12.3139.0, `infra.yml:68`), which
+runs the docker image `ghcr.io/bridgecrewio/checkov:3.4.3` (named at
+`infra.yml:56`; the CI log reports Checkov 3.4.3). Its inputs
+(`infra.yml:70-74`) are `directory: infra`, `framework: terraform`,
+`soft_fail: false`, `quiet: true` and `download_external_modules: false`. It has
+no `skip_check` and no `config_file` input, so the only skips are the inline
+`#checkov:skip` comments in the module (`main.tf:29`, `main.tf:55`,
+`wif.tf:11`), which a local run reads from the same files.
+
+With Docker, the same image CI uses, mounted read-only so nothing is written to
+the tree:
+
+```sh
+docker run --rm -v "$PWD:/src:ro" -w /src --entrypoint checkov \
+  ghcr.io/bridgecrewio/checkov:3.4.3 \
+  -d infra --framework terraform --quiet --download-external-modules false
+```
+
+Or with Python, the same Checkov version from PyPI:
+
+```sh
+pipx run --spec checkov==3.4.3 checkov \
+  -d infra --framework terraform --quiet --download-external-modules false
+```
+
+A non-zero exit is a failure, as `soft_fail: false` makes it in CI. One
+difference: the action writes its report as SARIF (`--output sarif`, to
+`results.sarif`, per the CI log), while these commands print Checkov's default
+console report and write no file. The pass or fail is understood not to depend
+on the output format (unverified here). That the image runs with
+`--entrypoint checkov` is also unverified here.
+
+**No local equivalent.** Every step of the `check` and `scan` jobs has one
+above. The `plan`, `apply` and `drift` jobs have none: they authenticate through
+Workload Identity Federation as the planner or deployer, which only `infra.yml`
+on `main` can do. A local `tofu plan` with bootstrap rights (step 5) runs as a
+different identity, so it does not reproduce them. The `planner-missing` job
+only reads a repository variable and has nothing to reproduce.
 
 ## 8. Teardown
 
