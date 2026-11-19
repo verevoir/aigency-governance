@@ -57,7 +57,12 @@ event it got.
   `pull_request` and `pull_request_target` the tree checked out is GitHub's
   test merge of the pull request into its base (`refs/pull/<number>/merge`),
   the diff is that merge against the base, and the checks listed for the
-  reviewer are those on the pull request's head commit.
+  reviewer are those on the pull request's head commit. Under `pull_request`
+  that is checkout's default, because the event's `github.ref` and
+  `github.sha` are the merge ref and its merge commit; under
+  `pull_request_target` the workflow names the ref. Both checkouts use
+  `fetch-depth: 0`: without full history `origin/<base>` does not exist, and
+  step **Work out what changed** fails with `unknown revision`.
 
 | Kind   | Name                   | Required | Meaning                                                                                                                                                                                                                                |
 | ------ | ---------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

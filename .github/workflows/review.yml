@@ -137,12 +137,9 @@ jobs:
             exit 1
           fi
 
-      # fetch-depth: 0 is load-bearing in both checkouts below: without it
-      # origin/<base> does not exist and the diff step dies with "unknown
-      # revision".
-      #
-      # pull_request: no ref, so checkout takes github.ref/github.sha, which
-      # on this event are refs/pull/<number>/merge and its merge commit.
+      # Both checkouts need fetch-depth: 0; under pull_request, checkout's
+      # default ref is the merge ref. See README.md, "What the workflow does,
+      # and its interface".
       - name: Check out the pull request (pull_request)
         if: github.event_name == 'pull_request'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
