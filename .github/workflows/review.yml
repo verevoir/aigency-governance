@@ -16,6 +16,15 @@
 # under review, with --ignore-scripts, and run from there. The pull request's
 # tree is only READ: as the diff, and as files under --context-root. Nothing
 # in it is installed, built or executed.
+#
+# Callers trigger it with `on: pull_request` or `on: pull_request_target`.
+# Any other event fails the first step, naming the event. Under both, the
+# tree checked out is GitHub's test merge of the pull request into its base
+# (refs/pull/<number>/merge), so the diff and the --context-root tree are the
+# same. pull_request_target runs the caller's workflow as it is on the base
+# branch, and passes the caller's secrets even to a fork's pull request. That
+# is why the "only READ" rule above carries the weight. The threat model is in
+# README.md, under "Triggering it with pull_request_target".
 name: review
 
 on:
@@ -69,7 +78,22 @@ jobs:
       contents: read
       checks: read
     steps:
-      # First, before anything expensive: a missing secret is reported by name
+      # First of all: this reviews a pull request against its base, and only
+      # these two events carry one. Anything else would check out a branch tip
+      # and review an empty diff, so it is refused by name instead.
+      - name: Refuse an event this workflow cannot review
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          case "${EVENT_NAME}" in
+            pull_request | pull_request_target) ;;
+            *)
+              echo "::error title=Review::This workflow reviews a pull request, but it was triggered by '${EVENT_NAME}'. Call it from 'on: pull_request' or 'on: pull_request_target'."
+              exit 1
+              ;;
+          esac
+
+      # Before anything expensive: a missing secret is reported by name
       # rather than surfacing later as a generic failure. `required: true`
       # does not enforce a non-blank value.
       - name: Confirm the key is available before doing anything expensive
@@ -88,12 +112,45 @@ jobs:
             exit 1
           fi
 
-      # fetch-depth: 0 is load-bearing: without it origin/<base> does not
-      # exist and the diff step dies with "unknown revision".
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      # fetch-depth: 0 is load-bearing in both checkouts below: without it
+      # origin/<base> does not exist and the diff step dies with "unknown
+      # revision".
+      #
+      # pull_request: no ref, so checkout takes github.ref/github.sha, which
+      # on this event are refs/pull/<number>/merge and its merge commit.
+      - name: Check out the pull request (pull_request)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # pull_request_target: github.ref/github.sha are the BASE branch tip, so
+      # the default checkout would review the base against itself. Name the
+      # same merge ref the pull_request event uses instead.
+      - name: Check out the pull request (pull_request_target)
+        if: github.event_name == 'pull_request_target'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      # GitHub rebuilds the merge ref asynchronously, so just after a push it
+      # can still be the merge of the PREVIOUS head (pull_request waits for
+      # it; pull_request_target does not). Its second parent is the head it
+      # was built from. A mismatch fails here, rather than reviewing one
+      # commit and reporting it against another.
+      - name: Confirm the merge ref is built on this event's head
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          merged_head="$(git rev-parse --verify --quiet 'HEAD^2' || true)"
+          if [ "${merged_head}" != "${PR_HEAD_SHA}" ]; then
+            echo "::error title=Review::The pull request's merge ref is not built on this event's head ${PR_HEAD_SHA} (its second parent is '${merged_head:-none}'). GitHub may still be computing the merge, or the pull request conflicts with its base. Re-run once the pull request shows as mergeable."
+            exit 1
+          fi
 
       # Every github.event value reaches a shell through env:, never through
       # an expression inside run:.
@@ -103,11 +160,12 @@ jobs:
         run: |
           if [ -z "${BASE_REF}" ]; then
             echo "No base ref. This workflow reviews a pull request against its base," >&2
-            echo "so call it from an 'on: pull_request' workflow." >&2
+            echo "so call it from an 'on: pull_request' or 'on: pull_request_target' workflow." >&2
             exit 1
           fi
-          # HEAD is the merge commit on a pull_request event, so --merge-base
-          # yields exactly the change.
+          # HEAD is the pull request's merge commit under both supported
+          # events (see the checkout steps above), so --merge-base yields
+          # exactly the change.
           git diff --merge-base "origin/${BASE_REF}" HEAD > "${RUNNER_TEMP}/review.diff"
 
       # The practices the lenses are derived from. Checked out inside the

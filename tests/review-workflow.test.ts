@@ -1,7 +1,10 @@
 // Pins the SHAPE of .github/workflows/review.yml: the properties that make it
 // safe to call from other repositories. Text-level on purpose (no YAML
 // dependency): it catches the regressions that matter, not every possible one.
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const text = readFileSync(new URL('../.github/workflows/review.yml', import.meta.url), 'utf8');
@@ -248,6 +251,208 @@ describe('review.yml shape', () => {
     const step = /repository: verevoir\/aigency-guardrails\n(?: {10}.+\n)+/.exec(text);
     expect(step).not.toBeNull();
     expect(step?.[0]).toContain('token: ${{ secrets.governance-token }}');
+  });
+});
+
+// The two events a caller may trigger the review with. Steps gated by
+// `if: github.event_name == '<event>'` run under that event only; every other
+// step runs under both.
+const EVENTS = ['pull_request', 'pull_request_target'] as const;
+type ReviewEvent = (typeof EVENTS)[number];
+
+const allSteps = text.split(/\n {6}- /).slice(1);
+
+function stepsUnder(event: ReviewEvent): string[] {
+  return allSteps.filter((step) => {
+    const gate = /^ {8}if: .*github\.event_name == '([a-z_]+)'/m.exec(step);
+    return gate === null || gate[1] === event;
+  });
+}
+
+const isCheckout = (step: string): boolean => /uses: actions\/checkout@/.test(step);
+const isCorpusCheckout = (step: string): boolean =>
+  step.includes('repository: verevoir/aigency-guardrails');
+
+function stepNamed(name: string): string {
+  const step = allSteps.find((s) => s.startsWith(`name: ${name}\n`));
+  expect(step, name).toBeDefined();
+  return step as string;
+}
+
+/** Runs one step's `run:` body under bash, with only PATH and the given env. */
+function runStep(name: string, env: Record<string, string>, cwd?: string) {
+  const body = runBodies(stepNamed(name))[0] as string;
+  return spawnSync('bash', ['-c', body], {
+    cwd,
+    env: { PATH: process.env.PATH ?? '', ...env },
+    encoding: 'utf8',
+  });
+}
+
+describe('review.yml under each event', () => {
+  it('fails the first step by name for an event it cannot review', () => {
+    expect(allSteps[0]).toMatch(/^name: Refuse an event this workflow cannot review\n/);
+    expect(allSteps[0]).not.toMatch(/^ {8}if:/m);
+    const result = runStep('Refuse an event this workflow cannot review', { EVENT_NAME: 'push' });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("triggered by 'push'");
+  });
+
+  it.each(EVENTS)('lets %s through the event check', (event) => {
+    const result = runStep('Refuse an event this workflow cannot review', { EVENT_NAME: event });
+    expect(result.status, result.stdout).toBe(0);
+  });
+
+  it.each(EVENTS)('checks out the repository under review exactly once under %s', (event) => {
+    const own = stepsUnder(event).filter((s) => isCheckout(s) && !isCorpusCheckout(s));
+    expect(own).toHaveLength(1);
+    expect(own[0]).toMatch(/^ {10}fetch-depth: 0$/m);
+  });
+
+  it('under pull_request, checks out the default ref (the merge commit), as before', () => {
+    const [own] = stepsUnder('pull_request').filter((s) => isCheckout(s) && !isCorpusCheckout(s));
+    expect(own).not.toMatch(/^ {10}ref:/m);
+  });
+
+  it("under pull_request_target, checks out the pull request's merge ref, not the base", () => {
+    const [own] = stepsUnder('pull_request_target').filter(
+      (s) => isCheckout(s) && !isCorpusCheckout(s),
+    );
+    expect(own).toMatch(
+      /^ {10}ref: refs\/pull\/\$\{\{ github\.event\.pull_request\.number \}\}\/merge$/m,
+    );
+  });
+
+  it.each(EVENTS)('sets persist-credentials: false on every checkout under %s', (event) => {
+    const checkouts = stepsUnder(event).filter(isCheckout);
+    expect(checkouts.length).toBeGreaterThanOrEqual(2);
+    for (const step of checkouts) {
+      expect(step).toMatch(/^ {10}persist-credentials: false$/m);
+    }
+  });
+
+  it.each(EVENTS)('executes nothing from the checkout under %s', (event) => {
+    // The only ways the workspace may appear: as data handed to programs that
+    // do not come from it.
+    const allowed = [
+      '--practices "${GITHUB_WORKSPACE}/.aigency-guardrails/corpus/practices"',
+      '--context-root "${GITHUB_WORKSPACE}"',
+      'git -C "${GITHUB_WORKSPACE}/.aigency-guardrails" rev-parse HEAD',
+    ];
+    for (const step of stepsUnder(event)) {
+      // No local action: `uses: ./...` would run code from the checkout.
+      expect(step).not.toMatch(/uses:\s*\.\//);
+      for (const body of runBodies(step)) {
+        const code = body
+          .split('\n')
+          .filter((l) => !l.trim().startsWith('#'))
+          .join('\n');
+        let rest = code;
+        for (const a of allowed) rest = rest.split(a).join('');
+        expect(rest, step).not.toMatch(/GITHUB_WORKSPACE|github\.workspace/);
+        // No relative executable, and nothing that would load a project
+        // file from the cwd or source a script.
+        expect(rest, step).not.toMatch(/(^|[\s;&|("'])\.\.?\//m);
+        expect(rest, step).not.toMatch(
+          /\b(npx|node|yarn|pnpm|bun|deno|make|python3?|ruby|perl|source)\b/,
+        );
+        expect(rest, step).not.toMatch(/(^\s*|[;&|]\s*)\.\s+\S/m);
+        expect(rest, step).not.toMatch(/\b(ba)?sh\s+[^-\s]/);
+        // The one executable invoked by path lives in RUNNER_TEMP.
+        for (const m of rest.matchAll(/\/\.bin\/[\w-]+/g)) {
+          const at = m.index ?? 0;
+          const line = rest.slice(rest.lastIndexOf('\n', at) + 1, at);
+          expect(line).toContain('${RUNNER_TEMP}/aigency-review/node_modules');
+        }
+      }
+    }
+  });
+
+  it.each(EVENTS)('computes the diff against the base and HEAD under %s', (event) => {
+    const diff = stepsUnder(event).find((s) => s.startsWith('name: Work out what changed\n'));
+    expect(diff).toBeDefined();
+    expect(diff).toContain('BASE_REF: ${{ github.base_ref }}');
+    expect(diff).toContain('git diff --merge-base "origin/${BASE_REF}" HEAD');
+  });
+
+  it.each(EVENTS)("lists the checks of the pull request's head commit under %s", (event) => {
+    const step = stepsUnder(event).find((s) => s.includes('check-runs'));
+    expect(step).toContain('HEAD_SHA: ${{ github.event.pull_request.head.sha }}');
+  });
+
+  it('uses neither github.sha nor github.ref, which name the base branch under pull_request_target', () => {
+    const code = text
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('#'))
+      .join('\n');
+    expect(code).not.toMatch(/github\.(sha|ref|head_ref)\b/);
+    expect(code).not.toMatch(/GITHUB_(SHA|REF)\b/);
+  });
+
+  describe('under pull_request_target, the merge ref must be built on the event head', () => {
+    const name = "Confirm the merge ref is built on this event's head";
+
+    it('runs only under pull_request_target, after the checkout', () => {
+      expect(stepsUnder('pull_request').some((s) => s.startsWith(`name: ${name}\n`))).toBe(false);
+      const prt = stepsUnder('pull_request_target');
+      const at = prt.findIndex((s) => s.startsWith(`name: ${name}\n`));
+      const checkoutAt = prt.findIndex((s) => isCheckout(s) && !isCorpusCheckout(s));
+      expect(at).toBeGreaterThan(checkoutAt);
+      expect(stepNamed(name)).toContain('PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}');
+    });
+
+    // A real merge commit in a throwaway repository: second parent = head.
+    function mergeRepo(): { dir: string; head: string; base: string } {
+      const dir = mkdtempSync(join(tmpdir(), 'review-merge-ref-'));
+      const env = {
+        PATH: process.env.PATH ?? '',
+        HOME: dir,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_AUTHOR_NAME: 't',
+        GIT_AUTHOR_EMAIL: 't@example.invalid',
+        GIT_COMMITTER_NAME: 't',
+        GIT_COMMITTER_EMAIL: 't@example.invalid',
+        GIT_MERGE_AUTOEDIT: 'no',
+      };
+      const git = (...args: string[]): string =>
+        execFileSync('git', args, {
+          cwd: dir,
+          env,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
+      git('init', '-q');
+      git('commit', '-q', '--allow-empty', '-m', 'base');
+      const base = git('rev-parse', 'HEAD');
+      git('checkout', '-q', '-b', 'head');
+      git('commit', '-q', '--allow-empty', '-m', 'head');
+      const head = git('rev-parse', 'HEAD');
+      git('checkout', '-q', '--detach', base);
+      git('merge', '-q', '--no-ff', '-m', 'merge', head);
+      return { dir, head, base };
+    }
+
+    it("passes when the merge commit's second parent is the event head", () => {
+      const { dir, head } = mergeRepo();
+      try {
+        const result = runStep(name, { PR_HEAD_SHA: head }, dir);
+        expect(result.status, result.stdout).toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('fails, naming both commits, when the merge ref is built on another head', () => {
+      const { dir, head, base } = mergeRepo();
+      try {
+        const result = runStep(name, { PR_HEAD_SHA: base }, dir);
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain(base);
+        expect(result.stdout).toContain(head);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });
 

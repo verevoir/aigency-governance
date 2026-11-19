@@ -30,6 +30,12 @@ pin also fixes the reviewer version, so keep it current: bump the SHA when this
 repository changes the reviewer pin or the workflow. The existing callers still
 use `@main` until their pin PRs land.
 
+The caller may trigger it with `on: pull_request` (above) or
+`on: pull_request_target`; read
+[Triggering it with pull_request_target](#triggering-it-with-pull_request_target)
+before choosing the second. Any other event fails the first step, naming the
+event it got.
+
 ### What the workflow does, and its interface
 
 - **The reviewer is pinned and installed from npm.** The workflow installs the
@@ -47,6 +53,11 @@ use `@main` until their pin PRs land.
   and the corpus commit the verdict was judged against.
 - **The job** has `timeout-minutes: 20` and permissions of exactly
   `contents: read` and `checks: read`. Nothing is written to your repository.
+- **It reviews the same commit under either trigger.** Under both
+  `pull_request` and `pull_request_target` the tree checked out is GitHub's
+  test merge of the pull request into its base (`refs/pull/<number>/merge`),
+  the diff is that merge against the base, and the checks listed for the
+  reviewer are those on the pull request's head commit.
 
 | Kind   | Name                | Required | Meaning                                                                                                                       |
 | ------ | ------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
@@ -163,16 +174,110 @@ wrong.
 
 ### On a fork's pull request
 
-Secrets are not passed to workflows triggered from a fork, so both arrive
-blank. The run fails at the very first step in the job — "Confirm the key is
-available before doing anything expensive" — which checks `anthropic-api-key`
-before any checkout or install runs. The corpus is never fetched and the
-reviewer is never installed.
+This section is about `on: pull_request`. Under `on: pull_request_target` a
+fork's pull request does get the secrets and is reviewed; see the next section.
+
+Under `pull_request`, secrets are not passed to workflows triggered from a
+fork, so both arrive blank. The run fails at the step "Confirm the key is
+available before doing anything expensive", which checks `anthropic-api-key`
+before any checkout or install runs. Only the event check runs before it. The
+corpus is never fetched and the reviewer is never installed.
 
 The outcome is right: the run is red, and your key is not spent reviewing a
 diff written by someone outside your repository. The message is
 `ANTHROPIC_API_KEY is not available to this workflow.`, from the workflow
 step's own `::error` lines.
+
+## Triggering it with pull_request_target
+
+```yaml
+on: pull_request_target
+```
+
+The rest of the caller is the same as the `pull_request` example above.
+
+Under `pull_request_target`, GitHub runs the caller's workflow **as it is on
+the base branch**, and passes the caller's secrets **even to a fork's pull
+request**. Its `github.ref` and `github.sha` are the base branch tip, not the
+pull request. Checking out that default would review the base against itself:
+an empty diff, reported as `Could not run`. So under this event the workflow
+names the pull request's merge ref explicitly.
+
+### What it protects
+
+- **A pull request cannot edit or skip its own review.** The job definition
+  that runs comes from the base branch, so a pull request that edits the
+  caller (removes the job, changes the pinned SHA, passes different inputs)
+  does not change the review of that pull request. Under `pull_request` the
+  caller is read from the pull request itself. This holds in GitHub's
+  `pull_request_target` semantics and in your caller's `uses:` pin, not in
+  `review.yml`.
+- **Fork pull requests get reviewed.** The secrets reach the job, so a fork's
+  change is reviewed instead of failing for a missing key.
+- **The fork's code does not run with those secrets.** This is what makes
+  the first two safe, and it is held in `.github/workflows/review.yml`:
+  - step **Check out the pull request (pull_request_target)** checks out
+    `refs/pull/<number>/merge` with `persist-credentials: false`, so no token
+    is left in the checkout's git config;
+  - step **Install the reviewer** installs the pinned `@verevoir/review` with
+    `working-directory: ${{ runner.temp }}`, `--prefix` in `RUNNER_TEMP` and
+    `--ignore-scripts`, so no `package.json`, `.npmrc` or lifecycle script
+    from the pull request is read or run;
+  - step **Review** runs the reviewer from `RUNNER_TEMP`, with its working
+    directory there too. The checkout is passed only as data:
+    `--context-root`, and the diff on stdin;
+  - the job's `permissions:` are `contents: read` and `checks: read`, so the
+    job's `GITHUB_TOKEN` cannot write to your repository;
+  - step **Fetch the practices corpus** checks out the bar from
+    `verevoir/aigency-guardrails`, not from the pull request, also with
+    `persist-credentials: false`.
+
+  `tests/review-workflow.test.ts` ("executes nothing from the checkout",
+  "sets persist-credentials: false on every checkout") pins these.
+
+- **It reviews the commit the event is about.** Step **Confirm the merge ref
+  is built on this event's head** fails if the merge ref's second parent is
+  not the event's head commit. GitHub rebuilds that ref asynchronously, so
+  just after a push it can still hold the previous head's merge; re-run the
+  check once the pull request shows as mergeable. A pull request that
+  conflicts with its base has no up-to-date merge ref and fails here too.
+- **Other events are refused.** Step **Refuse an event this workflow cannot
+  review** fails by name on anything but `pull_request` and
+  `pull_request_target`.
+
+### What it does not protect
+
+Anyone with write access to the repository can push a branch with a workflow
+of their own, triggered `on: push`, that reads the same secrets. Nothing in
+the review, under either trigger, stops that. `pull_request_target` moves
+where the review's definition comes from; it does not narrow who can reach
+the secrets.
+
+### The residual risk
+
+The pull request's content (the diff, its title and description, the files
+under `--context-root`, the names of its checks) reaches the model as data.
+A pull request written to manipulate the model (prompt injection) could sway
+the verdict. No step executes that content, so it cannot run code. The
+reviewer's report is printed to the job log, so text the model echoes could
+also appear there as a forged annotation. The verdict is input to a human
+decision, not a merge.
+
+### Concurrency, if your caller sets it
+
+Under `pull_request_target`, `github.ref` is the base branch, so a
+`concurrency` group keyed on `github.ref` would put every open pull request
+in one group and cancel reviews of other pull requests. Key it on
+`github.event.pull_request.number` instead. `review.yml` itself sets no
+concurrency.
+
+### Not yet confirmed by a real run
+
+The workflow's tests are text-level and local. No real `pull_request_target`
+run has been observed yet. In particular, it is not yet confirmed that the
+check this produces is attached where branch protection's required checks
+look for it: a `pull_request_target` run's `GITHUB_SHA` is the base branch's
+commit, not the pull request's head.
 
 ## Running it locally
 
