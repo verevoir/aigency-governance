@@ -520,8 +520,6 @@ The repository's `verify` gate (`npm run verify`: typecheck, tests, lint) runs
 **none** of the infra checks. They run only in `.github/workflows/infra.yml`.
 The commands below reproduce its `check` and `scan` jobs from the repository
 root, with the same arguments and working directories and no cloud credentials.
-They were written from `infra.yml` and the scan job's CI log, and have not been
-run here.
 
 **OpenTofu: the `check` job** (`infra.yml:76-98`). CI installs
 `tofu_version: 1.12.x` (`infra.yml:89`), the newest 1.12 patch at run time, so
@@ -567,7 +565,8 @@ docker run --rm -v "$PWD:/src:ro" -w /src --entrypoint checkov \
   -d infra --framework terraform --quiet --download-external-modules false
 ```
 
-Or with Python, the same Checkov version from PyPI:
+Or with Python, the same Checkov version from PyPI (this route has not been
+run):
 
 ```sh
 pipx run --spec checkov==3.4.3 checkov \
@@ -578,8 +577,7 @@ A non-zero exit is a failure, as `soft_fail: false` makes it in CI. One
 difference: the action writes its report as SARIF (`--output sarif`, to
 `results.sarif`, per the CI log), while these commands print Checkov's default
 console report and write no file. The pass or fail is understood not to depend
-on the output format (unverified here). That the image runs with
-`--entrypoint checkov` is also unverified here.
+on the output format (unverified here).
 
 **No local equivalent.** Every step of the `check` and `scan` jobs has one
 above. The `plan`, `apply` and `drift` jobs have none: they authenticate through
