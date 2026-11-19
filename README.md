@@ -162,7 +162,8 @@ gap is the failure that matters.
 The CLI appends its report to the job summary itself, and the workflow does not
 append it again. The **Review** step also prints the report to the job log,
 bracketed by `::stop-commands::<token>` and `::<token>::`. The token is random
-and made in that step (`openssl rand -hex 32`), so the reviewer cannot know
+and made in that step (`openssl rand -hex 32`; `openssl` is already on the
+runner), so the reviewer cannot know
 it, and nothing it prints between them (including text the model quotes from
 the pull request, such as `::error::` or `::add-mask::`) is read as a workflow
 command. Commands resume after the reviewer exits, whatever its exit status. When the CLI exits 1, the **Take the verdict** step adds an
@@ -277,10 +278,14 @@ names the pull request's merge ref explicitly.
 
 - **It reviews the commit the event is about.** Step **Confirm the merge ref
   is built on this event's head** fails if the merge ref's second parent is
-  not the event's head commit. GitHub rebuilds that ref asynchronously, so
-  just after a push it can still hold the previous head's merge; re-run the
-  check once the pull request shows as mergeable. A pull request that
-  conflicts with its base has no up-to-date merge ref and fails here too.
+  not the event's head commit, rather than reviewing one commit and reporting
+  the verdict against another. GitHub rebuilds that ref asynchronously after
+  a push; a `pull_request` run waits for it and a `pull_request_target` run
+  does not, so just after a push the ref can still hold the previous head's
+  merge. Re-run the check once the pull request shows as mergeable. A pull
+  request that conflicts with its base fails earlier, at step **Check out the
+  pull request (pull_request_target)**, with checkout's own error, because
+  GitHub builds no merge ref for it.
 - **Other events are refused.** Step **Refuse an event this workflow cannot
   review** fails by name on anything but `pull_request` and
   `pull_request_target`.
@@ -308,7 +313,8 @@ The label admits one event, not the pull request. A later push by the same
 author is a `synchronize` event and fails the gate again, even with the label
 still on the pull request, so a maintainer removes and re-adds it to review
 the new head, after reading what changed. Spending happens only when a
-maintainer acts. Under `pull_request` this step does not run.
+maintainer acts. Under `pull_request` this step does not run: there GitHub
+does not pass the secrets to a fork's pull request at all.
 
 What the associations mean is GitHub's, not this workflow's. GitHub defines
 `MEMBER` as "Author is a member of the organization that owns the

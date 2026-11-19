@@ -17,17 +17,8 @@
 # tree is only READ: as the diff, and as files under --context-root. Nothing
 # in it is installed, built or executed.
 #
-# Callers trigger it with `on: pull_request` or `on: pull_request_target`.
-# Any other event fails the first step, naming the event. Under both, the
-# tree checked out is GitHub's test merge of the pull request into its base
-# (refs/pull/<number>/merge), so the diff and the --context-root tree are the
-# same. pull_request_target runs the caller's workflow as it is on the base
-# branch, and passes the caller's secrets even to a fork's pull request. That
-# is why the "only READ" rule above carries the weight, and why, under that
-# event, an author the repository does not trust is reviewed only when a
-# maintainer adds the opt-in label (the step "Admit the author before
-# spending anything"). The threat model is in README.md, under "Triggering it
-# with pull_request_target".
+# Triggered by pull_request or pull_request_target only. The threat model is
+# in README.md, "Triggering it with pull_request_target".
 name: review
 
 on:
@@ -107,15 +98,9 @@ jobs:
               ;;
           esac
 
-      # pull_request_target hands the caller's key to a fork's pull request,
-      # and GitHub's approval gate for outside contributors does not apply to
-      # that event. Without this step anyone could spend the caller's
-      # anthropic-api-key, on a diff of any size, by opening or pushing to a
-      # pull request. So before any secret, checkout or model call, the review
-      # runs only for an author the repository trusts, or on the event of a
-      # maintainer adding the opt-in label. Anything else fails here,
-      # including a blank association and a blank label input. Under
-      # pull_request it is skipped: there GitHub withholds the key from forks.
+      # Before any secret is used: a trusted author, or a maintainer's opt-in
+      # label, or fail closed. See README.md, "Who it runs for" and "The
+      # residual risk".
       - name: Admit the author before spending anything
         if: github.event_name == 'pull_request_target'
         env:
@@ -176,11 +161,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # GitHub rebuilds the merge ref asynchronously, so just after a push it
-      # can still be the merge of the PREVIOUS head (pull_request waits for
-      # it; pull_request_target does not). Its second parent is the head it
-      # was built from. A mismatch fails here, rather than reviewing one
-      # commit and reporting it against another.
+      # The merge ref is rebuilt asynchronously, so its second parent must be
+      # this event's head. See README.md, "What it protects".
       - name: Confirm the merge ref is built on this event's head
         if: github.event_name == 'pull_request_target'
         env:
@@ -282,11 +264,8 @@ jobs:
       # change the verdict. The CLI appends its own report to
       # GITHUB_STEP_SUMMARY, so nothing re-appends it.
       #
-      # Nothing the reviewer prints is read as a workflow command. Its report
-      # quotes the pull request, and the model could echo `::error::` or
-      # `::add-mask::` lines, so commands are suspended with a token made here
-      # (openssl, already on the runner) that the reviewer never sees, and
-      # resumed once it exits, whatever its exit status.
+      # Workflow commands are suspended around the reviewer's output. See
+      # README.md, "What comes back".
       - name: Review
         id: review
         continue-on-error: true
