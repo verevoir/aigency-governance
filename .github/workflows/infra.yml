@@ -48,8 +48,8 @@ env:
   INSTALLATION: infra/installations/verevoir
 
 jobs:
-  # Misconfiguration scan of the OpenTofu code. It cannot be run locally here,
-  # so the first CI run is what shows what it finds. No skip_check input is used
+  # Misconfiguration scan of the OpenTofu code. To run it locally, see INSTALL.md
+  # section 7, "Run the infra checks locally". No skip_check input is used
   # here; the two skips (CKV_GCP_62 on both buckets, CKV_GCP_125 on the provider)
   # are inline comments in the module, each with its reason.
   # RESIDUAL RISK: the SHA pins the action's own code, but the action pulls its
