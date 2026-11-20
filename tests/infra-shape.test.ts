@@ -726,6 +726,15 @@ describe('scripts/iam-drift.mjs: live IAM against state', () => {
     });
   });
 
+  it('reports a single-subject pool principal that state lacks as unexpected drift', () => {
+    const subject = `principal://iam.googleapis.com/${pool}/subject/x`;
+    const handAdded = { role: impersonation.role, members: [subject] };
+    expect(run({ ...clean, sa: { bindings: [impersonation, handAdded] } })).toEqual({
+      status: 2,
+      out: expect.stringContaining(`unexpected: sa:${sa} ${impersonation.role} ${subject}`),
+    });
+  });
+
   it('does not look at grants to principals outside the module', () => {
     const bucket = bucketWith(...clean.bucket.bindings, {
       role: 'roles/storage.admin',
