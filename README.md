@@ -130,6 +130,31 @@ self-review drift, not against a same-repository writer, who can already run
 workflows with the repository's secrets. Fork PRs receive no secrets. `@main` is
 deliberate here because main is the base; other callers should pin by SHA.
 
+## Moving to a keyless corpus
+
+The practices corpus is moving off the `GOVERNANCE_TOKEN` secret. It will be
+published by `aigency-guardrails`' own CI to a private GCS bucket and read by
+the review with GitHub Actions' OIDC token, federated through GCP Workload
+Identity Federation: no token, no app key and no corpus secret anywhere.
+
+The infrastructure is an OpenTofu module (`infra/modules/review-corpus/`) that
+is meant to be installed repeatedly, for other projects and colleagues as well
+as this one. **[`infra/INSTALL.md`](infra/INSTALL.md)** is the numbered,
+copy-pasteable install, teardown and reinstall path. A merge to `main` that
+changes `infra/` is planned, then applied through `.github/workflows/infra.yml`
+behind the `infra-apply` environment. That gate holds only once the operator has
+configured required reviewers on the environment, which is a GitHub setting this
+repository cannot enforce; without them the apply is not held for approval. The
+same workflow checks weekly for drift, in the resources the module manages and
+in the live IAM policies of the module's own principals, and opens an issue when
+it finds any (a check that itself fails opens a separate "check failed" issue);
+it never applies from that job. It does not look at grants to
+principals outside the module.
+
+`review.yml` still reads the corpus with `governance-token` today. It switches
+to fetching from the bucket in a follow-up change; until then nothing about how
+you call the review changes.
+
 ## What comes back
 
 The CLI reports one of four outcomes, and its exit code decides the check:
