@@ -16,6 +16,9 @@
 # under review, with --ignore-scripts, and run from there. The pull request's
 # tree is only READ: as the diff, and as files under --context-root. Nothing
 # in it is installed, built or executed.
+#
+# Triggered by pull_request or pull_request_target only. The threat model is
+# in README.md, "Triggering it with pull_request_target".
 name: review
 
 on:
@@ -44,6 +47,17 @@ on:
         type: string
         required: false
         default: ''
+      outside-author-label:
+        description: >-
+          pull_request_target only. The label a maintainer adds to run the
+          review on a pull request whose author is not OWNER, MEMBER or
+          COLLABORATOR. It admits the one `labeled` event that adds it, not
+          the pull request: after each new push it must be removed and added
+          again. Blank admits no outside author at all. Ignored under
+          pull_request.
+        type: string
+        required: false
+        default: review:run
     secrets:
       anthropic-api-key:
         description: The key the panel calls with. One model call per lens.
@@ -69,7 +83,42 @@ jobs:
       contents: read
       checks: read
     steps:
-      # First, before anything expensive: a missing secret is reported by name
+      # Only these two events carry a pull request. Anything else has no pull
+      # request to review: no checkout of it runs and base_ref is blank. So
+      # it is refused here, by name.
+      - name: Refuse an event this workflow cannot review
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          case "${EVENT_NAME}" in
+            pull_request | pull_request_target) ;;
+            *)
+              echo "::error title=Review::This workflow reviews a pull request, but it was triggered by '${EVENT_NAME}'. Call it from 'on: pull_request' or 'on: pull_request_target'."
+              exit 1
+              ;;
+          esac
+
+      # Before any secret is used: a trusted author, or a maintainer's opt-in
+      # label, or fail closed. See README.md, "Who it runs for" and "The
+      # residual risk".
+      - name: Admit the author before spending anything
+        if: github.event_name == 'pull_request_target'
+        env:
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          EVENT_ACTION: ${{ github.event.action }}
+          ADDED_LABEL: ${{ github.event.label.name }}
+          RUN_LABEL: ${{ inputs.outside-author-label }}
+        run: |
+          case "${AUTHOR_ASSOCIATION}" in
+            OWNER | MEMBER | COLLABORATOR) exit 0 ;;
+          esac
+          if [ -n "${RUN_LABEL}" ] && [ "${EVENT_ACTION}" = "labeled" ] && [ "${ADDED_LABEL}" = "${RUN_LABEL}" ]; then
+            exit 0
+          fi
+          echo "::error title=Review::review not run: outside author ${AUTHOR_ASSOCIATION:-(none)}; a maintainer adds label ${RUN_LABEL:-(none configured)} to run it"
+          exit 1
+
+      # Before anything expensive: a missing secret is reported by name
       # rather than surfacing later as a generic failure. `required: true`
       # does not enforce a non-blank value.
       - name: Confirm the key is available before doing anything expensive
@@ -88,12 +137,39 @@ jobs:
             exit 1
           fi
 
-      # fetch-depth: 0 is load-bearing: without it origin/<base> does not
-      # exist and the diff step dies with "unknown revision".
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      # Both checkouts need fetch-depth: 0; under pull_request, checkout's
+      # default ref is the merge ref. See README.md, "What the workflow does,
+      # and its interface".
+      - name: Check out the pull request (pull_request)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # pull_request_target: github.ref/github.sha are the BASE branch tip, so
+      # the default checkout would review the base against itself. Name the
+      # same merge ref the pull_request event uses instead.
+      - name: Check out the pull request (pull_request_target)
+        if: github.event_name == 'pull_request_target'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The merge ref is rebuilt asynchronously, so its second parent must be
+      # this event's head. See README.md, "What it protects".
+      - name: Confirm the merge ref is built on this event's head
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          merged_head="$(git rev-parse --verify --quiet 'HEAD^2' || true)"
+          if [ "${merged_head}" != "${PR_HEAD_SHA}" ]; then
+            echo "::error title=Review::The pull request's merge ref is not built on this event's head ${PR_HEAD_SHA} (its second parent is '${merged_head:-none}'). GitHub may still be computing the merge, or the pull request conflicts with its base. Re-run once the pull request shows as mergeable."
+            exit 1
+          fi
 
       # Every github.event value reaches a shell through env:, never through
       # an expression inside run:.
@@ -103,11 +179,12 @@ jobs:
         run: |
           if [ -z "${BASE_REF}" ]; then
             echo "No base ref. This workflow reviews a pull request against its base," >&2
-            echo "so call it from an 'on: pull_request' workflow." >&2
+            echo "so call it from an 'on: pull_request' or 'on: pull_request_target' workflow." >&2
             exit 1
           fi
-          # HEAD is the merge commit on a pull_request event, so --merge-base
-          # yields exactly the change.
+          # HEAD is the pull request's merge commit under both supported
+          # events (see the checkout steps above), so --merge-base yields
+          # exactly the change.
           git diff --merge-base "origin/${BASE_REF}" HEAD > "${RUNNER_TEMP}/review.diff"
 
       # The practices the lenses are derived from. Checked out inside the
@@ -126,6 +203,15 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
+
+      # Problem matchers ignore stop-commands. The owners setup-node registers
+      # at the pinned sha; every action must run above this step. See
+      # README.md, "What it protects".
+      - name: Remove setup-node's problem matchers
+        run: |
+          echo "::remove-matcher owner=tsc::"
+          echo "::remove-matcher owner=eslint-stylish::"
+          echo "::remove-matcher owner=eslint-compact::"
 
       # Outside the repo, no lockfile, no lifecycle scripts. Runs with cwd in
       # RUNNER_TEMP, not the PR checkout, so a PR-supplied .npmrc cannot steer
@@ -174,15 +260,25 @@ jobs:
             echo '```'
             echo ""
           } >> "${GITHUB_STEP_SUMMARY}"
-          # Also in the job log, since the summary is not part of it.
+          # Also in the job log. Check names come from the pull request's own
+          # jobs, so workflow commands are suspended while they print.
+          if ! stop_token="$(openssl rand -hex 32)" || [ -z "${stop_token}" ]; then
+            echo "::error title=Review::Could not generate a stop-commands token, so the checks were not printed and the reviewer was not run."
+            exit 1
+          fi
           echo "::group::Checks given to the reviewer"
+          echo "::stop-commands::${stop_token}"
           cat "${RUNNER_TEMP}/checks.txt"
+          echo "::${stop_token}::"
           echo "::endgroup::"
 
       # continue-on-error, with the verdict taken again below: the report is
       # published whether the review passed or failed, and publishing must not
       # change the verdict. The CLI appends its own report to
       # GITHUB_STEP_SUMMARY, so nothing re-appends it.
+      #
+      # Workflow commands are suspended around the reviewer's output. See
+      # README.md, "What comes back".
       - name: Review
         id: review
         continue-on-error: true
@@ -203,9 +299,19 @@ jobs:
             printf '%s\n' "${PR_BODY}" > "${RUNNER_TEMP}/description.md"
             args+=(--description-file "${RUNNER_TEMP}/description.md")
           fi
+          if ! stop_token="$(openssl rand -hex 32)" || [ -z "${stop_token}" ]; then
+            echo "::error title=Review::Could not generate a stop-commands token, so the reviewer was not run."
+            exit 1
+          fi
+          echo "::stop-commands::${stop_token}"
+          status=0
           "${RUNNER_TEMP}/aigency-review/node_modules/.bin/aigency-review" "${args[@]}" \
-            < "${RUNNER_TEMP}/review.diff" \
-            | tee "${RUNNER_TEMP}/review.md"
+            < "${RUNNER_TEMP}/review.diff" 2> "${RUNNER_TEMP}/review.stderr" \
+            | tee "${RUNNER_TEMP}/review.md" || status=$?
+          # stderr is a separate pipe; printed here, it cannot land after the resume.
+          cat "${RUNNER_TEMP}/review.stderr" || true
+          echo "::${stop_token}::"
+          exit "${status}"
 
       # The CLI already wrote the report to the summary. This only covers a
       # failure before any report existed. tee creates review.md even when the
