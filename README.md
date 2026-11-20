@@ -204,8 +204,8 @@ wrong.
 
 This section is about `on: pull_request`. Under `on: pull_request_target` a
 fork's pull request does get the secrets, and is reviewed only when its author
-is trusted (whoever pushed the commit) or a maintainer adds the opt-in label;
-see [Who it runs for](#who-it-runs-for).
+is trusted (regardless of who pushed the commit) or a maintainer adds the
+opt-in label; see [Who it runs for](#who-it-runs-for).
 
 Under `pull_request`, secrets are not passed to workflows triggered from a
 fork, so both arrive blank. The run fails at the step "Confirm the key is
@@ -355,8 +355,8 @@ this event's head** fails if the merge ref is built on any other head. So a
 push landing between the maintainer reading the head and adding the label is
 reviewed without having been read. A push after the label is added is not
 reviewed under that label. On an outside author's pull request, spending
-happens only when a maintainer acts. Under `pull_request` this step does not run: there GitHub does not pass the
-secrets to a fork's pull request at all.
+happens only when a maintainer acts. Under `pull_request` this step does not
+run: there GitHub does not pass the secrets to a fork's pull request at all.
 
 What the associations mean is GitHub's, not this workflow's. GitHub defines
 `MEMBER` as "Author is a member of the organization that owns the
