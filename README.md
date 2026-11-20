@@ -204,8 +204,8 @@ wrong.
 
 This section is about `on: pull_request`. Under `on: pull_request_target` a
 fork's pull request does get the secrets, and is reviewed only when its author
-is trusted or a maintainer adds the opt-in label; see
-[Who it runs for](#who-it-runs-for).
+is trusted (whoever pushed the commit) or a maintainer adds the opt-in label;
+see [Who it runs for](#who-it-runs-for).
 
 Under `pull_request`, secrets are not passed to workflows triggered from a
 fork, so both arrive blank. The run fails at the step "Confirm the key is
@@ -250,7 +250,8 @@ names the pull request's merge ref explicitly.
   `review.yml`.
 - **Fork pull requests can be reviewed.** The secrets reach the job, so a
   fork's change can be reviewed instead of failing for a missing key. Whether
-  it is depends on who wrote it; see [Who it runs for](#who-it-runs-for).
+  it is depends on who opened the pull request, not on who pushed to it; see
+  [Who it runs for](#who-it-runs-for).
 - **The fork's code does not run with those secrets.** This is what makes
   the first two safe, and it is held in `.github/workflows/review.yml`:
   - step **Check out the pull request (pull_request_target)** checks out
@@ -335,8 +336,17 @@ Otherwise the run fails with
 Both fail closed: a blank association counts as an outside author, and a
 blank `outside-author-label` means no label admits anyone.
 
-The label admits one event, not the pull request. A later push by the same
-author is a `synchronize` event and fails the gate again, even with the label
+The gate judges the pull request's author, not whoever triggered the event:
+`author_association` describes the person who opened the pull request, and the
+event's sender is not checked. So spend follows the author's trust. On a
+trusted author's pull request every push is reviewed and spends the key,
+whoever made it, including anyone the author lets push to the pull request's
+head branch (a collaborator on the author's fork, say). See
+[The residual risk](#the-residual-risk).
+
+On an outside author's pull request, the label admits one event, not the pull
+request. A later push, by the author or anyone else, is a `synchronize` event
+and fails the gate again, even with the label
 still on the pull request, so a maintainer removes and re-adds it to review
 the new head, after reading what changed. The head reviewed is the one at
 the moment the label is added: the `labeled` event carries the pull
@@ -344,8 +354,8 @@ request's head at that moment, and step **Confirm the merge ref is built on
 this event's head** fails if the merge ref is built on any other head. So a
 push landing between the maintainer reading the head and adding the label is
 reviewed without having been read. A push after the label is added is not
-reviewed under that label. Spending happens only when a maintainer acts.
-Under `pull_request` this step does not run: there GitHub does not pass the
+reviewed under that label. On an outside author's pull request, spending
+happens only when a maintainer acts. Under `pull_request` this step does not run: there GitHub does not pass the
 secrets to a fork's pull request at all.
 
 What the associations mean is GitHub's, not this workflow's. GitHub defines
@@ -391,7 +401,19 @@ a fork's pull request, as often as they like, with a diff and description of
 any size, and spend that key. The mitigation is step **Admit the author before
 spending anything** (see [Who it runs for](#who-it-runs-for)): an outside
 author's pull request is reviewed only on the event of a maintainer adding
-the label, once per push.
+the label, once per push. A trusted author's pull request is not gated this
+way, whoever pushes to it; see the next paragraph.
+
+**Pushes to a trusted author's pull request spend under the author's trust.**
+The gate reads `github.event.pull_request.author_association`, the trust of
+whoever opened the pull request, not of whoever triggered the event. On
+`synchronize`, a push by anyone the author lets push to the head branch (a
+collaborator on the author's fork, say) runs a full review and spends the key
+without a maintainer acting. No code from that push runs (see
+[What it protects](#what-it-protects)); only cost is at stake. The planned
+mitigation, tracked as a follow-up, is to admit `synchronize` only when the
+event's sender is the pull request's author, and otherwise to require the
+label.
 
 **Every label spends on a trusted author's pull request.** Callers list
 `labeled` in their `types` so the opt-in label can start a run. The gate admits
@@ -399,9 +421,10 @@ the label, once per push.
 added to their pull request, whatever its name, starts a full review and
 spends the key. That spend is not gated.
 
-What is left is spend a maintainer chose, at the size
-of the diff they admitted, and the spend of trusted authors. A spend-capped
-key bounds both.
+What is left is spend a maintainer chose, at the size of the diff they
+admitted; the spend of trusted authors; and the spend of anyone a trusted
+author lets push to their pull request's head branch. A spend-capped key
+bounds all three.
 
 ### Concurrency, if your caller sets it
 
