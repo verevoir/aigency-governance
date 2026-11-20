@@ -172,9 +172,20 @@ A fork's own jobs choose those names. Each token is random and made in its
 step (`openssl rand -hex 32`; `openssl` is already on the runner), so neither
 the reviewer nor the pull request can know it. Nothing printed between them
 (such as `::error::` or `::add-mask::` text the model quotes from the pull
-request, or a check named like one) is read as a workflow command. Commands
-resume after the reviewer exits, whatever its exit status. If no token can be
-made, the step fails by name and prints nothing it was given. When the CLI
+request, or a check named like one) is read as a workflow command. The
+reviewer's stderr is written to a file and printed inside the bracket too,
+because the runner reads stderr on a separate pipe and a line written there
+could otherwise be processed after the resume; it is not part of the report,
+so the verdict is unaffected. Commands resume after the reviewer exits,
+whatever its exit status. If no token can be made, the step fails by name and
+prints nothing it was given.
+
+Stop-commands does not stop problem matchers: the runner passes every line
+that is not a workflow command to the registered matchers, which turn a
+matching line into an annotation. `actions/setup-node` registers three (owners
+`tsc`, `eslint-stylish` and `eslint-compact`), so step **Remove setup-node's
+problem matchers** removes them, after the last action and before either
+print. When the CLI
 exits 1, the **Take the verdict** step adds an
 annotation to the Checks tab: one saying the review did not approve if the report
 heading is `Rejected`; an empty, missing, `Could not run` or unrecognised report
@@ -298,13 +309,15 @@ names the pull request's merge ref explicitly.
 - **Other events are refused.** Step **Refuse an event this workflow cannot
   review** fails by name on anything but `pull_request` and
   `pull_request_target`.
-- **Nothing the pull request or the model controls is read as a workflow
-  command.** The names of the pull request's checks are chosen by whoever
-  wrote its jobs, a fork included, and the reviewer's report quotes the pull
-  request. Step **Collect the other checks** prints the check names, and
-  step **Review** the report, between `::stop-commands::<token>` and
-  `::<token>::`, each with a fresh token; see
-  [What comes back](#what-comes-back).
+- **Nothing the pull request or the model controls becomes a workflow
+  command or an annotation.** The names of the pull request's checks are
+  chosen by whoever wrote its jobs, a fork included, and the reviewer's report
+  quotes the pull request. Step **Collect the other checks** prints the check
+  names, and step **Review** the report and the reviewer's stderr, between
+  `::stop-commands::<token>` and `::<token>::`, each with a fresh token, so no
+  workflow command in them runs. Step **Remove setup-node's problem
+  matchers** runs before both, so no problem matcher is registered when
+  either prints; see [What comes back](#what-comes-back).
 
 ### Who it runs for
 
@@ -357,12 +370,15 @@ the secrets.
 The pull request's content (the diff, its title and description, the files
 under `--context-root`, the names of its checks) reaches the model as data.
 A pull request written to manipulate the model (prompt injection) could sway
-the verdict. No step executes that content, so it cannot run code. Neither the
-check names nor what the model echoes is read as a workflow command when it
-reaches the job log, so it cannot forge an annotation or mask a value: steps
-**Collect the other checks** and **Review** print them inside a
-`::stop-commands::` bracket. The verdict is input to a human decision,
-not a merge.
+the verdict. No step executes that content, so it cannot run code. When the
+check names or what the model echoes reach the job log, no workflow command in
+them runs and no problem matcher is registered, so they cannot forge an
+annotation or mask a value: steps **Collect the other checks** and **Review**
+print them inside a `::stop-commands::` bracket, after step **Remove
+setup-node's problem matchers**. That last guarantee holds only while no
+action runs after the removal step. A setup step added later, or a
+`setup-node` version bump that registers a matcher under another owner, needs
+the same removal. The verdict is input to a human decision, not a merge.
 
 **Spending the key.** Under `pull_request_target`, GitHub's approval gate for
 outside contributors does not apply, and every model call is paid for with
@@ -398,7 +414,8 @@ concurrency.
 ### Not yet confirmed by a real run
 
 The workflow's tests are local: text-level checks, plus the gate, the
-merge-ref check and the two stop-commands brackets run under bash. No real
+merge-ref check, the matcher removal and the two stop-commands brackets run
+under bash. No real
 `pull_request_target` run has been observed yet. In particular, it is not yet
 confirmed that:
 
@@ -412,7 +429,8 @@ confirmed that:
   pull request (pull_request_target)**, because GitHub builds no merge ref
   for it;
 - the runner honours `::stop-commands::` for the check names and the
-  reviewer's output as documented.
+  reviewer's output as documented, and `::remove-matcher` removes
+  setup-node's matchers before those prints.
 
 From 2 December 2026, GitHub plans to block `pull_request_target` workflows
 in **public** repositories that have no applicable Actions event policy, so a

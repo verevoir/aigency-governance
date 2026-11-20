@@ -204,6 +204,15 @@ jobs:
         with:
           node-version: 22
 
+      # Problem matchers ignore stop-commands. The owners setup-node registers
+      # at the pinned sha; every action must run above this step. See
+      # README.md, "What it protects".
+      - name: Remove setup-node's problem matchers
+        run: |
+          echo "::remove-matcher owner=tsc::"
+          echo "::remove-matcher owner=eslint-stylish::"
+          echo "::remove-matcher owner=eslint-compact::"
+
       # Outside the repo, no lockfile, no lifecycle scripts. Runs with cwd in
       # RUNNER_TEMP, not the PR checkout, so a PR-supplied .npmrc cannot steer
       # the registry.
@@ -297,8 +306,10 @@ jobs:
           echo "::stop-commands::${stop_token}"
           status=0
           "${RUNNER_TEMP}/aigency-review/node_modules/.bin/aigency-review" "${args[@]}" \
-            < "${RUNNER_TEMP}/review.diff" \
+            < "${RUNNER_TEMP}/review.diff" 2> "${RUNNER_TEMP}/review.stderr" \
             | tee "${RUNNER_TEMP}/review.md" || status=$?
+          # stderr is a separate pipe; printed here, it cannot land after the resume.
+          cat "${RUNNER_TEMP}/review.stderr" || true
           echo "::${stop_token}::"
           exit "${status}"
 

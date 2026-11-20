@@ -564,10 +564,16 @@ function writeExecutable(path: string, script: string): void {
   chmodSync(path, 0o755);
 }
 
+// What the stand-in reviewer prints on stderr: a line setup-node's tsc
+// matcher would turn into an annotation.
+const FORGED_STDERR = 'a.ts(1,1): error TS1: forged on stderr';
+
 // Stand-in openssl for the token-minting failure modes.
 const BROKEN_OPENSSL = {
   'exits non-zero': '#!/bin/sh\nexit 1\n',
   'prints nothing': '#!/bin/sh\nexit 0\n',
+  // Pins the `!` half of the guard: the token is there, the status is not.
+  'exits non-zero after printing a token': `#!/bin/sh\necho ${'ab'.repeat(32)}\nexit 1\n`,
 } as const;
 
 /**
@@ -585,7 +591,7 @@ function stageRunnerTemp(options: { reviewerExit?: number; openssl?: string } = 
   mkdirSync(reviewerBin, { recursive: true });
   writeExecutable(
     join(reviewerBin, 'aigency-review'),
-    `#!/bin/sh\ncat >/dev/null\necho '## Review: Rejected'\necho '::error title=Review::forged by the model'\nexit ${options.reviewerExit ?? 0}\n`,
+    `#!/bin/sh\ncat >/dev/null\necho '## Review: Rejected'\necho '::error title=Review::forged by the model'\necho '${FORGED_STDERR}' >&2\nexit ${options.reviewerExit ?? 0}\n`,
   );
   const tools = join(temp, 'tools');
   mkdirSync(tools);
@@ -626,7 +632,7 @@ describe('nothing the pull request or the model controls reaches the log as a wo
   // the title, the description and the diff, and the reviewer that prints the
   // report.
   const DERIVED =
-    /checks\.txt|review\.md|description\.md|review\.diff|PR_TITLE|PR_BODY|ADDED_LABEL/;
+    /checks\.txt|review\.md|review\.stderr|description\.md|review\.diff|PR_TITLE|PR_BODY|ADDED_LABEL/;
   const PRINTS = /\b(cat|echo|printf|tee|head|tail|sed|awk)\b|\bgrep\b(?![^\n]*\s-q\b)/;
   // `> "file"` or `>> "file"`. `>&2` is not a file: stderr reaches the log too.
   const TO_FILE = /(^|[^&\d])>>?\s*"/;
@@ -685,6 +691,7 @@ describe('nothing the pull request or the model controls reaches the log as a wo
     expect(lines).toContain('cat "${RUNNER_TEMP}/checks.txt"');
     expect(lines.some((l) => l.includes('/.bin/aigency-review'))).toBe(true);
     expect(lines.some((l) => l.includes('tee "${RUNNER_TEMP}/review.md"'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('cat "${RUNNER_TEMP}/review.stderr"'))).toBe(true);
   });
 
   it('prints every one of them inside a stop-commands bracket that is closed again', () => {
@@ -750,6 +757,23 @@ describe('the Review step suspends workflow commands around the reviewer', () =>
     },
   );
 
+  it("prints the reviewer's stderr inside the bracket, and keeps it out of review.md", () => {
+    const { temp, env } = stageRunnerTemp({ reviewerExit: 1 });
+    try {
+      const result = runStep('Review', env);
+      expect(result.status).toBe(1);
+      expect(result.stderr).not.toContain(FORGED_STDERR);
+      const lines = result.stdout.trimEnd().split('\n');
+      const at = lines.indexOf(FORGED_STDERR);
+      expect(at, result.stdout).toBeGreaterThan(0);
+      expect(at).toBeLessThan(lines.length - 1);
+      expect(lines[lines.length - 1]).toMatch(/^::[0-9a-f]{64}::$/);
+      expect(readFileSync(join(temp, 'review.md'), 'utf8')).not.toContain(FORGED_STDERR);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it('makes a fresh token for each run', () => {
     const token = (stdout: string): string =>
       /^::stop-commands::([0-9a-f]+)$/m.exec(stdout)?.[1] ?? '';
@@ -757,6 +781,50 @@ describe('the Review step suspends workflow commands around the reviewer', () =>
     const second = token(runReview(0).stdout);
     expect(first).not.toBe('');
     expect(first).not.toBe(second);
+  });
+});
+
+describe("setup-node's problem matchers are gone before anything the pull request controls is printed", () => {
+  // Problem matchers ignore ::stop-commands::. These owners are those in
+  // actions/setup-node's .github/tsc.json, eslint-stylish.json and
+  // eslint-compact.json at this sha, all registered by its src/main.ts.
+  const SETUP_NODE = 'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020';
+  const OWNERS = ['tsc', 'eslint-stylish', 'eslint-compact'];
+  const removal = "Remove setup-node's problem matchers";
+  const at = (steps: string[], name: string): number =>
+    steps.findIndex((s) => s.startsWith(`name: ${name}\n`));
+  const code = (step: string): string =>
+    step
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('#'))
+      .join('\n');
+
+  it('removes every owner the pinned setup-node registers, and the pin is the one checked', () => {
+    expect(text).toMatch(new RegExp(`^ {6}- uses: ${SETUP_NODE.replace(/[/.]/g, '\\$&')} `, 'm'));
+    const result = runStep(removal, {});
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trimEnd().split('\n')).toEqual(
+      OWNERS.map((owner) => `::remove-matcher owner=${owner}::`),
+    );
+  });
+
+  it.each(EVENTS)(
+    'under %s, runs after every action and before the check names and the report are printed',
+    (event) => {
+      const steps = stepsUnder(event);
+      const removedAt = at(steps, removal);
+      expect(removedAt).toBeGreaterThan(-1);
+      expect(steps[removedAt]).not.toMatch(/^ {8}if:/m);
+      const lastAction = steps.map((s) => /\buses:/.test(code(s))).lastIndexOf(true);
+      expect(lastAction).toBeGreaterThan(-1);
+      expect(removedAt).toBeGreaterThan(lastAction);
+      expect(removedAt).toBeLessThan(at(steps, 'Collect the other checks'));
+      expect(removedAt).toBeLessThan(at(steps, 'Review'));
+    },
+  );
+
+  it('registers no matcher of its own', () => {
+    expect(code(text)).not.toContain('add-matcher');
   });
 });
 
